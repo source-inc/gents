@@ -489,6 +489,7 @@ async fn load_retry_parent_in_txn(
                 top_k
                 seed
                 max_tokens
+                max_total_tokens
                 metadata
                 status
                 lifecycle_state
