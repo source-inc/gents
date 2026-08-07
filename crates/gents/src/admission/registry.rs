@@ -164,6 +164,7 @@ impl AdmissionRegistry {
             call_kind,
             attempt: 1,
             call_seq: Arc::new(AtomicU64::new(0)),
+            current_call: Arc::new(std::sync::Mutex::new(None)),
             inference_token: None,
             terminal_failure_reason: None,
         };

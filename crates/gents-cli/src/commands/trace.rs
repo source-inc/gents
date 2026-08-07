@@ -31,8 +31,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::cli::args::{
-    TraceCommand, TraceExportArgs, TraceProjectArgs, TraceProjectSchemaArgs, TraceProjectionArg,
-    TraceProjectionFormatArg, TraceProjectionRedactionArg, TraceTimelineArgs,
+    TraceCaptureArgs, TraceCommand, TraceExportArgs, TraceProjectArgs, TraceProjectSchemaArgs,
+    TraceProjectionArg, TraceProjectionFormatArg, TraceProjectionRedactionArg, TraceTimelineArgs,
 };
 use crate::config_writes::ConfigAccess;
 use crate::{
@@ -46,7 +46,187 @@ pub(crate) async fn dispatch(command: TraceCommand) -> Result<()> {
         TraceCommand::Timeline(args) => trace_timeline(args).await,
         TraceCommand::Project(args) => trace_project(args).await,
         TraceCommand::ProjectSchema(args) => trace_project_schema(args),
+        TraceCommand::Capture(args) => trace_capture(args).await,
     }
+}
+
+/// Fetch rendered-request capture metadata — and, for exactly one match, its
+/// `request_json` field-commit CID. This is the one deliberate body read in
+/// the system: `--include-body` selects `request_json` and the raw provenance
+/// manifest; without it neither is even queried, and the default output is the
+/// same metadata surface the timeline exposes.
+async fn trace_capture(args: TraceCaptureArgs) -> Result<()> {
+    let (access, _home_dir) =
+        crate::resolve_config_access(args.home.as_deref(), args.graphql.as_deref()).await?;
+
+    let mut clauses = Vec::new();
+    if let Some(capture_key) = args.capture_key.as_deref() {
+        clauses.push(format!(
+            r#"capture_key: {{ _eq: "{}" }}"#,
+            escape_graphql_string(capture_key)
+        ));
+    }
+    if let Some(request_id) = args.request_id.as_deref() {
+        clauses.push(format!(
+            r#"request_id: {{ _eq: "{}" }}"#,
+            escape_graphql_string(request_id)
+        ));
+    }
+    if clauses.is_empty() {
+        anyhow::bail!("pass --capture-key or --request-id");
+    }
+    if let Some(scope) = args.scope.as_deref() {
+        clauses.push(format!(
+            r#"capture_scope: {{ _eq: "{}" }}"#,
+            escape_graphql_string(scope)
+        ));
+    }
+    if let Some(turn) = args.turn {
+        clauses.push(format!("turn_index: {{ _eq: {turn} }}"));
+    }
+    if let Some(attempt) = args.attempt {
+        clauses.push(format!("attempt: {{ _eq: {attempt} }}"));
+    }
+
+    let body_fields = if args.include_body {
+        "\n                request_json"
+    } else {
+        ""
+    };
+    let query = format!(
+        r#"{{
+            RenderedRequest(
+                filter: {{ {filter} }},
+                order: {{ created_at: ASC }}
+            ) {{
+                _docID
+                capture_key
+                request_doc_id
+                request_id
+                session_id
+                capture_scope
+                turn_index
+                attempt
+                capture_version
+                model_name
+                source
+                prompt_hash
+                tools_hash
+                provenance_json
+                created_at{body_fields}
+            }}
+        }}"#,
+        filter = clauses.join(", "),
+    );
+    let raw_rows =
+        graphql_rows_or_empty_if_collection_missing(&access, "RenderedRequest", &query).await?;
+
+    let mut entries = raw_rows
+        .into_iter()
+        .map(|raw| {
+            let row: gents::run_timeline::TimelineRenderedRequestRow =
+                serde_json::from_value(raw.clone()).context("decoding RenderedRequest row")?;
+            Ok((row, raw))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if entries.is_empty() {
+        anyhow::bail!("no capture rows matched");
+    }
+    // Identity order: parsed numeric order key first, unparseable rows last by
+    // capture key — deterministic either way, never a lexical seq sort.
+    entries.sort_by(|(left, _), (right, _)| {
+        let left_key = capture_order_padded(left);
+        let right_key = capture_order_padded(right);
+        left_key
+            .cmp(&right_key)
+            .then_with(|| left.capture_key.cmp(&right.capture_key))
+    });
+
+    if args.list {
+        let captures = entries
+            .iter()
+            .map(|(row, raw)| capture_metadata_value(row, raw, args.include_body))
+            .collect::<Vec<_>>();
+        let value = json!({ "captures": captures });
+        return write_or_print(args.output_file.as_deref(), &value);
+    }
+
+    if entries.len() > 1 {
+        let keys = entries
+            .iter()
+            .map(|(row, _)| {
+                format!(
+                    "  {} ({} turn {} attempt {})",
+                    row.capture_key,
+                    row.capture_scope.as_deref().unwrap_or("?"),
+                    row.turn_index.map_or("?".to_string(), |t| t.to_string()),
+                    row.attempt.map_or("?".to_string(), |a| a.to_string()),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        anyhow::bail!(
+            "{count} capture rows matched; narrow with --scope/--turn/--attempt or pass --list:\n{keys}",
+            count = entries.len(),
+        );
+    }
+
+    let (row, raw) = &entries[0];
+    let mut value = capture_metadata_value(row, raw, args.include_body);
+    let commit = match row.doc_id.as_deref() {
+        Some(doc_id) => gents::rendered_request::commits::request_json_commit(&access, doc_id)
+            .await?
+            .map(|commit| json!({ "cid": commit.cid, "height": commit.height })),
+        None => None,
+    };
+    value["request_json_commit"] = commit.unwrap_or_else(|| json!("unavailable"));
+    write_or_print(args.output_file.as_deref(), &value)
+}
+
+/// The metadata object for one capture row: the timeline's event derivation
+/// plus the document id, with the body fields attached only on request.
+fn capture_metadata_value(
+    row: &gents::run_timeline::TimelineRenderedRequestRow,
+    raw: &Value,
+    include_body: bool,
+) -> Value {
+    let event = gents::run_timeline::rendered_request_event(row);
+    let mut value = serde_json::to_value(&event).unwrap_or_else(|_| json!({}));
+    value["doc_id"] = json!(row.doc_id);
+    if include_body {
+        value["request_json"] = raw.get("request_json").cloned().unwrap_or(Value::Null);
+        value["provenance_json"] = json!(row.provenance_json);
+    }
+    value
+}
+
+fn capture_order_padded(row: &gents::run_timeline::TimelineRenderedRequestRow) -> String {
+    use gents_protocol::rendered_request::{CaptureOrderKey, CaptureScope};
+
+    let scope = row
+        .capture_scope
+        .as_deref()
+        .and_then(|scope| scope.parse::<CaptureScope>().ok());
+    match (scope, row.turn_index, row.attempt) {
+        (Some(scope), Some(turn_index), Some(attempt)) => CaptureOrderKey {
+            scope,
+            turn_index,
+            attempt,
+        }
+        .padded(),
+        // '~' sorts after every padded key's alphabet, pushing unparseable
+        // rows to the end.
+        _ => format!("~{}", row.capture_key),
+    }
+}
+
+fn write_or_print(output_file: Option<&std::path::Path>, value: &Value) -> Result<()> {
+    if let Some(path) = output_file {
+        write_json_output_file(path, value)?;
+    } else {
+        print_json(value)?;
+    }
+    Ok(())
 }
 
 async fn trace_timeline(args: TraceTimelineArgs) -> Result<()> {
@@ -565,6 +745,14 @@ async fn apply_projection_acp_read_filter(
         tool_calls: filtered_tool_calls,
         inference_calls: filtered_inference_calls,
         responses: filtered_responses,
+        // Passed through unfiltered: ACP enforcement is DefraDB's, not this
+        // filter's. Reads executed under a requester identity return only the
+        // rows that identity may see, and an unpoliced collection is public by
+        // DefraDB's own rules. When `RenderedRequest` gains its `@policy`,
+        // rows are excluded at the database read — with nothing to change
+        // here. (This per-row decider exists only for the actor-on-behalf
+        // GraphQL path the seven families above already use.)
+        rendered_requests: rows.rendered_requests,
     })
 }
 
@@ -763,6 +951,10 @@ fn should_keep_scoped_timeline_event(
                     })
         }
         RunTimelineEvent::InferenceCall(call) => allowed_request_ids.contains(&call.request_id),
+        RunTimelineEvent::RenderedRequest(rendered) => rendered
+            .request_id
+            .as_deref()
+            .is_some_and(|request_id| allowed_request_ids.contains(request_id)),
         RunTimelineEvent::Message(message) => scoped_request_id_allowed(
             message.request_id.as_deref(),
             Some(message.session_id.as_str()),
@@ -2153,6 +2345,7 @@ mod tests {
                     ..TimelineInferenceCallRow::default()
                 },
             ],
+            rendered_requests: Vec::new(),
         }
     }
 

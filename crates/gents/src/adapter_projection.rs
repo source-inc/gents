@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::run_timeline::{
-    RunTimeline, RunTimelineEvent, TimelineRequestEvent, TimelineResponseEvent,
+    RunTimeline, RunTimelineEvent, TimelineRenderedRequestEvent, TimelineRequestEvent,
+    TimelineResponseEvent,
 };
 
 mod atif;
@@ -85,7 +86,38 @@ pub struct AdapterProjectionEnvelope {
     pub source_behavior_id: Option<String>,
     pub redaction_mode: ProjectionRedactionMode,
     pub provenance: ProjectionProvenance,
+    /// Rendered-request capture metadata for the projected request — the
+    /// timeline's capture events verbatim: keys, hashes, ordering facts, and
+    /// the admission join. **Never bodies.** The timeline never selects
+    /// `request_json`, so a captured body cannot reach this envelope in any
+    /// redaction mode; the one body read in the system is the CLI's explicit
+    /// `--include-body`. Uniform across all four projections, including the
+    /// two whose native shapes are closed to extension.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rendered_captures: Vec<TimelineRenderedRequestEvent>,
     pub output: AdapterProjection,
+}
+
+/// The capture events of a timeline, in timeline order.
+fn rendered_capture_events(timeline: &RunTimeline) -> Vec<TimelineRenderedRequestEvent> {
+    timeline
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RunTimelineEvent::RenderedRequest(event) => Some(event.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The same capture events as a JSON array, for open extension surfaces
+/// (ATIF `extra`, LangGraph `values`). `None` when the timeline has none.
+pub(crate) fn rendered_captures_json(timeline: &RunTimeline) -> Option<Value> {
+    let captures = rendered_capture_events(timeline);
+    if captures.is_empty() {
+        return None;
+    }
+    serde_json::to_value(captures).ok()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,6 +414,7 @@ pub fn build_adapter_projection(
             source_projection_version: ADAPTER_PROJECTION_VERSION.to_string(),
             actor_did: context.actor_did.clone(),
         },
+        rendered_captures: rendered_capture_events(timeline),
         output: match kind {
             AdapterProjectionKind::AtifTrajectory => {
                 AdapterProjection::AtifTrajectory(atif::build_atif_trajectory(timeline, context))
@@ -1011,6 +1044,7 @@ pub fn adapter_projection_json_schema(kind: AdapterProjectionKind) -> Value {
             "source_behavior_id": optional_string_schema(),
             "redaction_mode": redaction_mode_schema(),
             "provenance": provenance_schema(),
+            "rendered_captures": rendered_captures_schema(),
             "output": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1019,6 +1053,40 @@ pub fn adapter_projection_json_schema(kind: AdapterProjectionKind) -> Value {
                     "adapter": { "const": kind.id() },
                     "projection": envelope_projection_json_schema(kind)
                 }
+            }
+        }
+    })
+}
+
+/// Schema for the envelope's `rendered_captures` section: capture metadata
+/// only — the shape has no field a captured body could travel in.
+fn rendered_captures_schema() -> Value {
+    json!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["capture_key", "provenance_status"],
+            "properties": {
+                "capture_key": string_schema(),
+                "request_doc_id": optional_string_schema(),
+                "request_id": optional_string_schema(),
+                "session_id": optional_string_schema(),
+                "capture_scope": optional_string_schema(),
+                "scope_kind": optional_string_schema(),
+                "scope_seq": { "type": "integer" },
+                "turn_index": { "type": "integer" },
+                "attempt": { "type": "integer" },
+                "capture_version": { "type": "integer" },
+                "model_name": optional_string_schema(),
+                "source": optional_string_schema(),
+                "prompt_hash": optional_string_schema(),
+                "tools_hash": optional_string_schema(),
+                "provenance_status": string_schema(),
+                "manifest_version": { "type": "integer" },
+                "call_id": optional_string_schema(),
+                "call_seq": { "type": "integer" },
+                "created_at": optional_string_schema()
             }
         }
     })
@@ -1707,6 +1775,9 @@ fn build_openai_codex_run_trace(
                     timestamp: event.timestamp.clone(),
                 });
             }
+            // Captures ride the envelope's `rendered_captures`; the Codex
+            // native item shapes are additionalProperties:false throughout.
+            RunTimelineEvent::RenderedRequest(_) => {}
             RunTimelineEvent::InferenceCall(_) => {}
             RunTimelineEvent::Message(event) => {
                 items.push(OpenAiCodexTraceItem::Message {
@@ -1792,6 +1863,9 @@ fn build_langgraph_state_history(
             parent_tool_call_id,
             status,
         ) = match event {
+            // Captures surface in `values.rendered_captures`, not as graph
+            // nodes — a capture is a fact about an inference call, not a step.
+            RunTimelineEvent::RenderedRequest(_) => continue,
             RunTimelineEvent::Request(event) => (
                 format!("request:{}", event.request_id),
                 "request".to_string(),
@@ -1898,6 +1972,9 @@ fn build_langgraph_state_history(
             json!(redact_option(response.content.as_deref(), context)),
         );
     }
+    if let Some(rendered_captures) = rendered_captures_json(timeline) {
+        values.insert("rendered_captures".to_string(), rendered_captures);
+    }
 
     let mut projection = LangGraphStateHistoryProjection {
         thread_id: timeline.session_id.clone(),
@@ -1983,6 +2060,9 @@ fn build_multi_agent_task(
                     });
                 }
             }
+            // Captures ride the envelope's `rendered_captures`; the
+            // multi-agent native shape is additionalProperties:false.
+            RunTimelineEvent::RenderedRequest(_) => {}
             RunTimelineEvent::InferenceCall(_) => {}
             RunTimelineEvent::Message(message) => {
                 messages.push(MultiAgentMessage {

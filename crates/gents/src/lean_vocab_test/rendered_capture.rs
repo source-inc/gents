@@ -51,3 +51,29 @@ pub(crate) struct LeanRenderedCaptureKeyCase {
     pub(crate) right_attempt: u32,
     pub(crate) same_fact: bool,
 }
+
+/// One `capture_scope` label vector (#1066): what the shared consumer parser
+/// (`gents_protocol::rendered_request::CaptureScope`) must accept — with the
+/// kind and numeric seq it must recover — or reject, never default.
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct LeanCaptureScopeCase {
+    pub(crate) label: String,
+    pub(crate) kind: String,
+    pub(crate) seq: u64,
+    pub(crate) valid: bool,
+}
+
+/// One ordering verdict over `(kind rank, seq, turn, attempt)`, decided by the
+/// Lean comparison. `inference.10` vs `inference.2` is in the list precisely
+/// so a lexical implementation cannot pass.
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct LeanCaptureOrderCase {
+    pub(crate) name: String,
+    pub(crate) left_label: String,
+    pub(crate) left_turn: i64,
+    pub(crate) left_attempt: i64,
+    pub(crate) right_label: String,
+    pub(crate) right_turn: i64,
+    pub(crate) right_attempt: i64,
+    pub(crate) left_before_right: bool,
+}

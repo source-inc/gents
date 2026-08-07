@@ -219,6 +219,10 @@ def snapshotJson : String :=
       ++ renderedCaptureCasesJson ++ ","
     ++ "\"rendered_capture_key_cases\":"
       ++ renderedCaptureKeyCasesJson ++ ","
+    ++ "\"capture_scope_cases\":"
+      ++ captureScopeCasesJson ++ ","
+    ++ "\"capture_order_cases\":"
+      ++ captureOrderCasesJson ++ ","
     ++ "\"compaction_reducer_cases\":"
       ++ jsonArray
         (Compaction.compactionReducerCases.map compactionReducerCaseJson) ++ ","

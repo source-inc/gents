@@ -805,6 +805,18 @@ fn lean_contract_coverage_ledger_accounts_for_every_emitted_domain() {
             "RenderedCaptureKeyCases".to_string(),
         ));
     }
+    if !snapshot.capture_scope_cases.is_empty() {
+        emitted.insert((
+            "rendered_capture_cases".to_string(),
+            "CaptureScopeCases".to_string(),
+        ));
+    }
+    if !snapshot.capture_order_cases.is_empty() {
+        emitted.insert((
+            "rendered_capture_cases".to_string(),
+            "CaptureOrderCases".to_string(),
+        ));
+    }
     assert_eq!(
         snapshot.event_delivery_transition_case_count,
         snapshot.event_delivery_transition_cases.len(),

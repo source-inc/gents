@@ -47,4 +47,30 @@ def renderedCaptureKeyCaseJson (witness : RenderedCaptureKeyCase) : String :=
 def renderedCaptureKeyCasesJson : String :=
   jsonArray (renderedCaptureKeyCases.map renderedCaptureKeyCaseJson)
 
+def captureScopeCaseJson (witness : CaptureScopeCase) : String :=
+  "{"
+    ++ "\"label\":" ++ jsonString witness.label ++ ","
+    ++ "\"kind\":" ++ jsonString witness.kind ++ ","
+    ++ "\"seq\":" ++ toString witness.seq ++ ","
+    ++ "\"valid\":" ++ boolString witness.valid
+    ++ "}"
+
+def captureScopeCasesJson : String :=
+  jsonArray (captureScopeCases.map captureScopeCaseJson)
+
+def captureOrderCaseJson (witness : CaptureOrderCase) : String :=
+  "{"
+    ++ "\"name\":" ++ jsonString witness.name ++ ","
+    ++ "\"left_label\":" ++ jsonString witness.leftLabel ++ ","
+    ++ "\"left_turn\":" ++ toString witness.leftTurn ++ ","
+    ++ "\"left_attempt\":" ++ toString witness.leftAttempt ++ ","
+    ++ "\"right_label\":" ++ jsonString witness.rightLabel ++ ","
+    ++ "\"right_turn\":" ++ toString witness.rightTurn ++ ","
+    ++ "\"right_attempt\":" ++ toString witness.rightAttempt ++ ","
+    ++ "\"left_before_right\":" ++ boolString witness.leftBeforeRight
+    ++ "}"
+
+def captureOrderCasesJson : String :=
+  jsonArray (captureOrderCases.map captureOrderCaseJson)
+
 end Conformance.Contracts

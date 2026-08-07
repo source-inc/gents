@@ -88,6 +88,39 @@ async fn current_session_id_reflects_request_scope() {
     assert_eq!(super::current_session_id(), None);
 }
 
+/// `next_call` publishes the minted call identity to the shared slot, and
+/// `current_call_join()` reads it back on the same task — the seam the
+/// rendered-request capture uses for its exact `InferenceCall` join.
+#[tokio::test]
+async fn current_call_join_reflects_the_minted_call() {
+    assert!(super::current_call_join().is_none());
+
+    let context = AdmissionCallContext::for_request(&request("req-j"), "default", "backend-1");
+    // Keep a handle sharing the same slot Arc, exactly like scope_call clones do.
+    let minting_handle = context.clone();
+    scope_request(context, async move {
+        // Scoped but nothing admitted yet: no join to report.
+        assert!(super::current_call_join().is_none());
+
+        let first = minting_handle.next_call("runtime-test");
+        let join = super::current_call_join().expect("join after mint");
+        assert_eq!(join.call_id, first.call_id);
+        assert_eq!(join.call_seq, 1);
+
+        // A second admitted call replaces the slot; the join always names the
+        // call currently in flight.
+        let second = minting_handle.next_call("runtime-test");
+        let join = super::current_call_join().expect("join after second mint");
+        assert_eq!(join.call_id, second.call_id);
+        assert_eq!(join.call_seq, 2);
+        assert_ne!(first.call_id, second.call_id);
+    })
+    .await;
+
+    // Cleared with the scope: no ambient join leaks across requests.
+    assert!(super::current_call_join().is_none());
+}
+
 const ADMISSION_TERMINAL_REASON_SOURCES: &[&str] = &[
     include_str!("controller.rs"),
     include_str!("permit.rs"),

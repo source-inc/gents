@@ -62,47 +62,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::llm::message::{Message, ToolResultContent, UserContent};
-
+pub mod commits;
 pub(crate) mod scope;
 pub mod sink;
 pub(crate) mod transport;
 
-pub use scope::CaptureScopeKind;
+pub use gents_protocol::rendered_request::{
+    AdmissionJoin, AssemblyBuildPath, AssemblyTrace, AssistantMessageId, CaptureOrderKey,
+    CaptureScope, CaptureScopeKind, CaptureSeam, ParsedProvenance, ProvenanceManifest,
+    ProvenanceStatus, RenderedRequestSource, ThreadedToolResult, ASSEMBLY_TRACE_VERSION,
+    CAPTURE_VERSION, PROVENANCE_MANIFEST_VERSION,
+};
 pub(crate) use sink::defra_rendered_request_capture_factory;
 pub use sink::DefraRenderedRequestSink;
 pub use transport::RenderedRequestCapturingHttpClient;
 
-/// Capture format version stamped onto every row. Bump when the *set of
-/// columns* a reader must understand changes.
-pub const CAPTURE_VERSION: u32 = 1;
-
-/// Provenance manifest version. Bump when `ProvenanceManifest`'s serialized
-/// shape changes. A reader that does not know this number must report
-/// `UnsupportedManifest` rather than guessing.
-pub const PROVENANCE_MANIFEST_VERSION: u32 = 2;
-
-/// Assembly-trace version. Bump when `AssemblyTrace`'s serialized shape
-/// changes. Versioned independently of the manifest so a manifest that later
-/// gains pinned config CIDs does not have to re-version the trace.
-pub const ASSEMBLY_TRACE_VERSION: u32 = 2;
-
 /// Prefix on every capture key. Bound to the *key derivation*, not to
 /// `CAPTURE_VERSION`: adding a column must not silently re-key existing facts.
 const CAPTURE_KEY_PREFIX: &str = "rendered:v1";
-
-/// Request paths whose body is a completion request, and the wire shape each
-/// one implies. The capturing transport only claims a pending capture for one
-/// of these, so a `/models` listing or a token-refresh call issued while a
-/// capture is armed passes through untouched instead of consuming — and
-/// mis-describing — the turn's fact.
-const COMPLETION_REQUEST_PATHS: &[(&str, RenderedRequestSource)] = &[
-    ("/responses", RenderedRequestSource::OpenAiResponses),
-    (
-        "/chat/completions",
-        RenderedRequestSource::OpenAiChatCompletions,
-    ),
-];
 
 pub(crate) type RenderedRequestCaptureSink = Arc<
     dyn Fn(RenderedCompletionRequest) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
@@ -112,322 +89,6 @@ pub(crate) type RenderedRequestCaptureSink = Arc<
 
 pub(crate) type RenderedRequestCaptureFactory =
     Arc<dyn Fn(RenderedRequestContext) -> RenderedRequestCaptureSink + Send + Sync>;
-
-/// The provider wire shape a captured body was actually sent on.
-///
-/// Derived from the request path the transport posted to, never from behavior
-/// configuration: configuration says what the runtime *intended*, and this
-/// column has to say what the provider *received*. The two can disagree — a
-/// backend document can be edited between reconcile and send.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RenderedRequestSource {
-    #[serde(rename = "openai_responses")]
-    OpenAiResponses,
-    #[serde(rename = "openai_chat_completions")]
-    OpenAiChatCompletions,
-}
-
-impl RenderedRequestSource {
-    /// Classify by the completion request path. `None` means "not a completion
-    /// request", which is the transport's signal to forward without capturing.
-    pub(crate) fn for_request_path(path: &str) -> Option<Self> {
-        COMPLETION_REQUEST_PATHS
-            .iter()
-            .find(|(suffix, _)| path.ends_with(suffix))
-            .map(|(_, source)| *source)
-    }
-
-    /// The body field carrying the provider message list on this wire shape.
-    fn messages_field(self) -> &'static str {
-        match self {
-            Self::OpenAiResponses => "input",
-            Self::OpenAiChatCompletions => "messages",
-        }
-    }
-}
-
-/// Which of the owned loop's two request builders produced the captured
-/// `CompletionRequest`.
-///
-/// This is one of the four unrecoverable inputs. `build_budgeted_request`
-/// applies `clamp_request_output_budget` before returning
-/// (`agent/loop_stream.rs`), but the completion-retry `Repair` directive calls
-/// `build_request` directly (`agent/loop_stream.rs:353,447`) and never clamps.
-/// A repaired attempt therefore carries the raw configured `max_tokens` while
-/// the original attempt for the same turn carries the clamped one. Without this
-/// discriminator a reconstructor cannot tell which of the two it should
-/// reproduce, and both are legal.
-///
-/// The clamp *value* is deliberately not stored: it is a pure function of the
-/// assembled request plus durable config, and `completion_request_input_estimate`
-/// does not read `max_tokens`, so a single reconstruction pass reproduces it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssemblyBuildPath {
-    /// `build_budgeted_request`: ordinary assembly, output clamp applied, and
-    /// per-turn compaction when the request exceeded the input budget.
-    Budgeted,
-    /// `build_request` invoked directly by a completion-retry repair. No output
-    /// clamp is applied on this path.
-    Repair,
-}
-
-impl AssemblyBuildPath {
-    /// Whether the loop applied `clamp_request_output_budget` on this path.
-    pub fn applies_output_clamp(self) -> bool {
-        matches!(self, Self::Budgeted)
-    }
-}
-
-/// A provider-assigned assistant message id, positioned in the effective
-/// message list.
-///
-/// One of the four unrecoverable inputs. `close_streaming_turn` stamps the
-/// provider's `MessageId` event onto the threaded assistant message
-/// (`agent/loop_stream.rs:802-806`) because OpenAI Responses and ChatGPT Codex
-/// follow-up requests reference prior `msg_` ids. The persistence path builds
-/// its assistant message with `id: None`
-/// (`agent/stream_processor.rs:305`), so the id exists in the provider request
-/// and nowhere in the durable transcript.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AssistantMessageId {
-    /// Index into `AssemblyTrace::effective_messages`.
-    pub message_index: usize,
-    pub message_id: String,
-}
-
-/// The exact tool-result content threaded back into provider history for one
-/// tool call.
-///
-/// One of the four unrecoverable inputs. The loop threads
-/// `truncate_text(outcome.model_facing_text(), tool_result_truncation_mode(name),
-/// &TruncationLimits::default())` (`agent/loop_stream.rs:655-658`). Persistence
-/// re-derives its text from the stored `AgentToolCall.result` with
-/// `TruncationMode::Head`, the hook's own `truncation_limits`, and
-/// `model_observation_for_tool_result`
-/// (`hook/persistence/message_spawn.rs:296-324`). Those are different functions
-/// over different inputs, so replaying from the transcript does not reproduce
-/// the bytes the model actually saw.
-///
-/// `content` is the full threaded `Vec<ToolResultContent>`, not a flattened
-/// string: `ToolResultContent::from_tool_output` can split a JSON payload into
-/// several parts, and that split is part of what the provider received.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ThreadedToolResult {
-    /// Index into `AssemblyTrace::effective_messages`.
-    pub message_index: usize,
-    /// `ToolResult.id` — rig's locally minted tool-call id.
-    pub tool_call_id: String,
-    /// `ToolResult.call_id` — the provider-side call id when one exists.
-    pub call_id: Option<String>,
-    pub content: Vec<ToolResultContent>,
-}
-
-/// The genuinely unrecoverable inputs to one rendered provider request.
-///
-/// Everything else that shapes a request is either durable (transcript rows,
-/// behavior/profile/backend/skill documents) or a pure function of durable data.
-/// These four are not:
-///
-/// 1. `assistant_message_ids` — provider-assigned, persisted as `None`.
-/// 2. `threaded_tool_results` — the loop and the persistence path derive
-///    different text from different sources.
-/// 3. `effective_messages` — when a rendered request-context message or
-///    per-turn compaction adds ephemeral content. Compaction is a *sticky*
-///    mutation
-///    (`*history = compacted; *new_messages = vec![compacted_prompt]`,
-///    `agent/loop_stream.rs:1350-1351`), so one turn's model-generated summary
-///    governs every later turn of the same request, and that summary is never
-///    written as an `AgentCompactionEntry`. Re-running the summarizer does not
-///    produce the same words.
-/// 4. `build_path` — see `AssemblyBuildPath`.
-///
-/// `assistant_message_ids` and `threaded_tool_results` are projections of the
-/// effective message list, derived by the same constructor so they cannot drift
-/// from it.
-/// They are carried explicitly because a reconstructor rebuilds its message
-/// list from `AgentMessage` rows and needs these as an *overlay* keyed by
-/// position and call id; `effective_messages` is the oracle it checks itself
-/// against. `effective_messages` is present only when that list contains a
-/// rendered request-context message, a model-generated per-turn compaction
-/// summary, or the result of a repair rewrite. Otherwise the durable transcript
-/// plus these overlays reconstructs it exactly.
-///
-/// ## Size
-///
-/// Ordinary turns do not retain the full native message list next to the
-/// provider-wire copy in `request_json`; that list is reconstructible from
-/// durable rows plus the overlays. Once request-context rendering, per-turn
-/// compaction, or a repair introduces content no durable row reproduces, the
-/// full native list becomes the oracle and is retained on that and every later
-/// turn of the request. Compacted lists are bounded by the context window
-/// rather than growing with the unabridged session.
-///
-/// `threaded_tool_results` is carried on **every** turn, compact path included,
-/// because rig joins multi-part tool-result content with `"\n"` on the Chat
-/// Completions wire — the native `Vec<ToolResultContent>` split is genuinely
-/// unrecoverable from `request_json`. So a tool-heavy turn does duplicate its
-/// tool-result payloads; only the surrounding message list is elided.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AssemblyTrace {
-    pub trace_version: u32,
-    pub build_path: AssemblyBuildPath,
-    /// Number of native messages passed to assembly. This validates positional
-    /// overlays even when the reconstructible common-path list is omitted.
-    pub effective_message_count: usize,
-    /// The full effective provider message list at capture time, retained only
-    /// after request-context rendering or per-turn compaction introduces
-    /// ephemeral content. Native `Message`s, not provider wire shapes: this is
-    /// the *input* to assembly, whereas `request_json` is its output.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effective_messages: Option<Vec<Message>>,
-    pub assistant_message_ids: Vec<AssistantMessageId>,
-    pub threaded_tool_results: Vec<ThreadedToolResult>,
-}
-
-impl AssemblyTrace {
-    /// The only constructor that keeps the overlays consistent with
-    /// `effective_messages`. Build traces with this, never with a struct
-    /// literal.
-    pub fn from_effective_messages(
-        build_path: AssemblyBuildPath,
-        effective_messages: Vec<Message>,
-    ) -> Self {
-        Self::from_messages(build_path, effective_messages, true)
-    }
-
-    /// Build the compact common-path trace when the native list can be rebuilt
-    /// from durable transcript/configuration documents plus the overlays.
-    pub(crate) fn from_reconstructible_messages(
-        build_path: AssemblyBuildPath,
-        effective_messages: Vec<Message>,
-    ) -> Self {
-        Self::from_messages(build_path, effective_messages, false)
-    }
-
-    fn from_messages(
-        build_path: AssemblyBuildPath,
-        effective_messages: Vec<Message>,
-        retain_effective_messages: bool,
-    ) -> Self {
-        let mut assistant_message_ids = Vec::new();
-        let mut threaded_tool_results = Vec::new();
-
-        for (message_index, message) in effective_messages.iter().enumerate() {
-            match message {
-                Message::Assistant {
-                    id: Some(message_id),
-                    ..
-                } => assistant_message_ids.push(AssistantMessageId {
-                    message_index,
-                    message_id: message_id.clone(),
-                }),
-                Message::User { content } => {
-                    for item in content {
-                        if let UserContent::ToolResult(result) = item {
-                            threaded_tool_results.push(ThreadedToolResult {
-                                message_index,
-                                tool_call_id: result.id.clone(),
-                                call_id: result.call_id.clone(),
-                                content: result.content.clone(),
-                            });
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let effective_message_count = effective_messages.len();
-        Self {
-            trace_version: ASSEMBLY_TRACE_VERSION,
-            build_path,
-            effective_message_count,
-            effective_messages: retain_effective_messages.then_some(effective_messages),
-            assistant_message_ids,
-            threaded_tool_results,
-        }
-    }
-}
-
-/// How much this capture claims about reconstructibility.
-///
-/// Explicit, never inferred from an absent field. A manifest that simply omits
-/// pinned CIDs must not read as "nothing needed pinning".
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProvenanceStatus {
-    /// The rendered request is durable and exact, but no durable source
-    /// versions are pinned alongside it, so a reconstruction cannot be
-    /// verified against it. This is the only status version 1 emits.
-    CapturedOnly,
-}
-
-/// Where in the send path the captured bytes were read.
-///
-/// Recorded positively so a reader never has to infer it. A row that says
-/// `TransportBody` is claiming the stronger thing: these are the bytes the HTTP
-/// client forwarded, after every provider-specific rewrite.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CaptureSeam {
-    /// The last `HttpClientExt` before the network client. The only seam
-    /// version 1 emits.
-    TransportBody,
-}
-
-/// Versioned provenance travelling in the `provenance_json` column.
-///
-/// Version 1 carries the assembly trace, the seam the bytes came from, the
-/// capture scope, and an honest `CapturedOnly` status. Pinned
-/// config/transcript CIDs are a later version; when they arrive, a version-1
-/// row must still be readable and must still report `CapturedOnly`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ProvenanceManifest {
-    pub manifest_version: u32,
-    pub status: ProvenanceStatus,
-    /// Why this row is not `Verified`, in words, so a projection can say so
-    /// without the reader reverse-engineering it from missing fields.
-    pub status_reason: String,
-    pub capture_seam: CaptureSeam,
-    /// Mirrors the `capture_scope` column. Duplicated here so a manifest read
-    /// in isolation still identifies which completion loop it describes.
-    pub capture_scope: String,
-    /// Scheme and authority the body was actually posted to, observed at the
-    /// seam. `None` only when the URI carried no authority.
-    ///
-    /// This is the one routing fact that is otherwise lost in time. `model_name`
-    /// alone cannot distinguish OpenAI from OpenRouter from a local vLLM from
-    /// Grok, and for daemon requests the answer is recoverable only by joining
-    /// to `InferenceCall.backend_id` — a join that does not exist for one-shot
-    /// runs, which never enter an admission scope. Configuration says where the
-    /// bytes were meant to go; this says where they went.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_endpoint: Option<String>,
-    pub assembly_trace: AssemblyTrace,
-}
-
-impl ProvenanceManifest {
-    const CAPTURED_ONLY_REASON: &'static str =
-        "this provenance manifest pins no config or transcript versions, so a \
-         reconstruction cannot be verified against this capture";
-
-    pub fn captured_only(
-        capture_scope: String,
-        provider_endpoint: Option<String>,
-        assembly_trace: AssemblyTrace,
-    ) -> Self {
-        Self {
-            manifest_version: PROVENANCE_MANIFEST_VERSION,
-            status: ProvenanceStatus::CapturedOnly,
-            status_reason: Self::CAPTURED_ONLY_REASON.to_string(),
-            capture_seam: CaptureSeam::TransportBody,
-            capture_scope,
-            provider_endpoint,
-            assembly_trace,
-        }
-    }
-}
 
 /// Identity and routing for every capture belonging to one request.
 ///
@@ -605,6 +266,7 @@ pub(crate) fn build_rendered_completion_request(
     let manifest = ProvenanceManifest::captured_only(
         capture_scope.to_string(),
         provider_endpoint,
+        admission_join_for_scope(capture_scope),
         assembly_trace.clone(),
     );
     let provenance_json = canonical_json(
@@ -640,6 +302,43 @@ pub(crate) fn build_rendered_completion_request(
         assembly_trace,
         provenance_json,
     })
+}
+
+/// The admission identity to stamp into this capture's provenance, if the call
+/// in flight on this task belongs to the loop the capture describes.
+///
+/// The kind guard is what keeps a cross-loop race honest: the `current_call`
+/// slot is shared across every admission scope of the request, so a title
+/// call minted concurrently with an inference capture must not be joined to
+/// it. A dropped join degrades to the pre-#1066 ordinal situation; a wrong
+/// join would be worse than none. One-shot captures never join — no admission
+/// scope exists there.
+fn admission_join_for_scope(capture_scope: &str) -> Option<AdmissionJoin> {
+    let join = crate::admission::current_call_join()?;
+    let scope_kind = capture_scope.parse::<CaptureScope>().ok()?.kind;
+    admission_kind_matches_scope(join.call_kind, scope_kind).then(|| AdmissionJoin {
+        call_id: join.call_id,
+        call_seq: join.call_seq,
+    })
+}
+
+/// Which admission [`CallKind`](crate::admission::CallKind) legitimately
+/// produces captures of which [`CaptureScopeKind`]. `OneShot` maps to nothing:
+/// one-shot runs have no admission scope at all, so a join observed under a
+/// oneshot capture could only be another loop's call.
+pub(crate) fn admission_kind_matches_scope(
+    call_kind: crate::admission::CallKind,
+    scope_kind: CaptureScopeKind,
+) -> bool {
+    use crate::admission::CallKind;
+
+    matches!(
+        (call_kind, scope_kind),
+        (CallKind::Inference, CaptureScopeKind::Inference)
+            | (CallKind::Compaction, CaptureScopeKind::Compaction)
+            | (CallKind::Compaction, CaptureScopeKind::CompactionFallback)
+            | (CallKind::OneOff, CaptureScopeKind::Title)
+    )
 }
 
 /// Derive the durable capture key from the five-component identity tuple.
@@ -726,7 +425,9 @@ pub(crate) fn sha256_canonical_json(value: &Value) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use gents_protocol::message::{AssistantContent, Text, ToolCall, ToolFunction};
+    use gents_protocol::message::{
+        AssistantContent, Message, ToolCall, ToolFunction, ToolResultContent, UserContent,
+    };
     use serde_json::json;
 
     use super::*;
@@ -893,40 +594,6 @@ mod tests {
         );
         assert_eq!(rendered.tool_choice_json, Value::Null);
         assert_eq!(rendered.sampling_json["temperature"], Value::Null);
-    }
-
-    /// The wire shape is read off the path the transport posted to, so the
-    /// column reports what was sent rather than what was configured.
-    #[test]
-    fn rendered_source_follows_the_request_path() {
-        assert_eq!(
-            RenderedRequestSource::for_request_path("/v1/responses"),
-            Some(RenderedRequestSource::OpenAiResponses)
-        );
-        assert_eq!(
-            RenderedRequestSource::for_request_path("/backend-api/codex/responses"),
-            Some(RenderedRequestSource::OpenAiResponses)
-        );
-        assert_eq!(
-            RenderedRequestSource::for_request_path("/v1/chat/completions"),
-            Some(RenderedRequestSource::OpenAiChatCompletions)
-        );
-        assert_eq!(RenderedRequestSource::for_request_path("/v1/models"), None);
-        assert_eq!(RenderedRequestSource::for_request_path("/key"), None);
-    }
-
-    /// Every suffix the capture path claims must classify to the wire shape the
-    /// table names, and the table must stay the only definition of "completion
-    /// request".
-    #[test]
-    fn completion_path_suffixes_all_classify() {
-        for (suffix, source) in COMPLETION_REQUEST_PATHS {
-            assert_eq!(
-                RenderedRequestSource::for_request_path(suffix),
-                Some(*source),
-                "{suffix} must classify as a completion path"
-            );
-        }
     }
 
     /// A Responses body names its message list `input`, and the derived views
@@ -1118,128 +785,6 @@ mod tests {
     }
 
     #[test]
-    fn assembly_trace_records_assistant_message_ids_by_position() {
-        let trace = AssemblyTrace::from_effective_messages(
-            AssemblyBuildPath::Budgeted,
-            vec![
-                Message::user("hi"),
-                assistant_with_tool_call(Some("msg_abc"), "call-1"),
-                tool_result_message("call-1", Some("fc_1"), "ok"),
-                // An assistant turn the provider gave no id for.
-                Message::assistant("done"),
-            ],
-        );
-
-        assert_eq!(
-            trace.assistant_message_ids,
-            vec![AssistantMessageId {
-                message_index: 1,
-                message_id: "msg_abc".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn assembly_trace_records_threaded_tool_results_by_call_identity() {
-        let trace = AssemblyTrace::from_effective_messages(
-            AssemblyBuildPath::Budgeted,
-            vec![
-                assistant_with_tool_call(Some("msg_abc"), "call-1"),
-                tool_result_message("call-1", Some("fc_1"), "threaded bytes"),
-                tool_result_message("call-2", None, "no provider call id"),
-            ],
-        );
-
-        assert_eq!(
-            trace.threaded_tool_results,
-            vec![
-                ThreadedToolResult {
-                    message_index: 1,
-                    tool_call_id: "call-1".to_string(),
-                    call_id: Some("fc_1".to_string()),
-                    content: vec![ToolResultContent::Text(Text {
-                        text: "threaded bytes".to_string()
-                    })],
-                },
-                ThreadedToolResult {
-                    message_index: 2,
-                    tool_call_id: "call-2".to_string(),
-                    call_id: None,
-                    content: vec![ToolResultContent::Text(Text {
-                        text: "no provider call id".to_string()
-                    })],
-                },
-            ]
-        );
-    }
-
-    /// The overlays index into `effective_messages`; a projection that reads
-    /// them has to land back on the message it came from.
-    #[test]
-    fn assembly_trace_overlay_indexes_address_the_effective_messages() {
-        let messages = vec![
-            Message::user("hi"),
-            assistant_with_tool_call(Some("msg_abc"), "call-1"),
-            tool_result_message("call-1", Some("fc_1"), "threaded bytes"),
-        ];
-        let trace =
-            AssemblyTrace::from_effective_messages(AssemblyBuildPath::Budgeted, messages.clone());
-
-        let effective_messages = trace
-            .effective_messages
-            .as_ref()
-            .expect("explicit oracle trace");
-        assert_eq!(effective_messages, &messages);
-        for overlay in &trace.assistant_message_ids {
-            assert!(matches!(
-                &effective_messages[overlay.message_index],
-                Message::Assistant { id: Some(id), .. } if *id == overlay.message_id
-            ));
-        }
-        for overlay in &trace.threaded_tool_results {
-            assert!(matches!(
-                &effective_messages[overlay.message_index],
-                Message::User { .. }
-            ));
-        }
-    }
-
-    /// Per-turn compaction rewrites `history` and `new_messages` in place, so
-    /// the trace has to describe the *post*-compaction list. Nothing else
-    /// records it: the summary is model-generated and never becomes an
-    /// `AgentCompactionEntry`.
-    #[test]
-    fn assembly_trace_carries_the_post_compaction_message_list() {
-        let compacted = vec![
-            Message::system("<system-reminder>continuation checkpoint</system-reminder>"),
-            Message::user("continue"),
-        ];
-        let trace =
-            AssemblyTrace::from_effective_messages(AssemblyBuildPath::Budgeted, compacted.clone());
-
-        assert_eq!(trace.effective_messages, Some(compacted));
-        assert_eq!(trace.trace_version, ASSEMBLY_TRACE_VERSION);
-    }
-
-    #[test]
-    fn reconstructible_trace_does_not_duplicate_message_bodies() {
-        let marker = "ordinary-message-body-".repeat(1_000);
-        let messages = vec![Message::user(marker.clone()), Message::assistant("done")];
-        let compact = AssemblyTrace::from_reconstructible_messages(
-            AssemblyBuildPath::Budgeted,
-            messages.clone(),
-        );
-        let oracle = AssemblyTrace::from_effective_messages(AssemblyBuildPath::Budgeted, messages);
-
-        let compact_json = serde_json::to_string(&compact).expect("compact trace");
-        let oracle_json = serde_json::to_string(&oracle).expect("oracle trace");
-        assert_eq!(compact.effective_message_count, 2);
-        assert!(compact.effective_messages.is_none());
-        assert!(!compact_json.contains(&marker));
-        assert!(oracle_json.len() > compact_json.len() + marker.len());
-    }
-
-    #[test]
     fn build_path_records_whether_the_output_clamp_ran() {
         assert!(AssemblyBuildPath::Budgeted.applies_output_clamp());
         assert!(!AssemblyBuildPath::Repair.applies_output_clamp());
@@ -1320,6 +865,50 @@ mod tests {
 
         assert_eq!(rendered.provenance_json["capture_seam"], "transport_body");
         assert_eq!(rendered.provenance_json["capture_scope"], "inference.1");
+    }
+
+    /// Outside an admission scope (the one-shot situation) there is no join,
+    /// and its absence is an absent key — never a null or a placeholder.
+    #[test]
+    fn provenance_without_an_admission_scope_carries_no_join() {
+        let rendered = build(0, 0, empty_trace(), components());
+
+        assert!(rendered.provenance_json.get("admission").is_none());
+        assert_eq!(
+            rendered.provenance_json["manifest_version"],
+            PROVENANCE_MANIFEST_VERSION
+        );
+    }
+
+    /// The kind guard: a join is stamped only when the admitted call's kind
+    /// legitimately produces the capture's loop. A wrong join would be worse
+    /// than none.
+    #[test]
+    fn admission_kinds_map_to_their_capture_scopes() {
+        use crate::admission::CallKind;
+
+        let cases = [
+            (CallKind::Inference, CaptureScopeKind::Inference, true),
+            (CallKind::Inference, CaptureScopeKind::Compaction, false),
+            (CallKind::Compaction, CaptureScopeKind::Compaction, true),
+            (
+                CallKind::Compaction,
+                CaptureScopeKind::CompactionFallback,
+                true,
+            ),
+            (CallKind::Compaction, CaptureScopeKind::Inference, false),
+            (CallKind::OneOff, CaptureScopeKind::Title, true),
+            (CallKind::OneOff, CaptureScopeKind::OneShot, false),
+            (CallKind::Inference, CaptureScopeKind::OneShot, false),
+            (CallKind::Scheduled, CaptureScopeKind::Inference, false),
+        ];
+        for (call_kind, scope_kind, expected) in cases {
+            assert_eq!(
+                admission_kind_matches_scope(call_kind, scope_kind),
+                expected,
+                "{call_kind:?} vs {scope_kind:?}"
+            );
+        }
     }
 
     fn agent_request() -> crate::watcher::AgentRequest {

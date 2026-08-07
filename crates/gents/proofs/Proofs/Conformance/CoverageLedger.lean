@@ -192,13 +192,8 @@ def featureSurfaceRequirements : List FeatureSurfaceRequirement :=
     , deferred := []
     }
   , { feature := "rendered-capture"
-    , required := [Surface.runtimeInternal]
-    , deferred :=
-        [ (Surface.operatorCli,
-            "#840 — `trace timeline|project` surfacing of captured requests lands with the projection slice; rows accumulate from this release onward with no reader")
-        , (Surface.operatorUi,
-            "#840 — the desktop rendered-request view lands with the same projection slice")
-        ]
+    , required := [Surface.runtimeInternal, Surface.operatorCli, Surface.operatorUi]
+    , deferred := []
     }
   , { feature := "streaming-response"
     , required := [Surface.agentFacing, Surface.operatorUi]
@@ -922,6 +917,26 @@ def caseCoverage : List CoverageEntry :=
       "RenderedCaptureKeyCases"
       "conformance::rendered_capture::generated_rendered_capture_key_cases_pin_the_capture_key_tuple")
       "rendered-capture" [Surface.runtimeInternal]
+  , tagged (consumerCoverage
+      "rendered_capture_cases"
+      "CaptureScopeCases"
+      "conformance::rendered_capture::generated_capture_scope_cases_pin_the_shared_parser_and_order")
+      "rendered-capture" [Surface.runtimeInternal]
+  , tagged (consumerCoverage
+      "rendered_capture_cases"
+      "CaptureOrderCases"
+      "conformance::rendered_capture::generated_capture_scope_cases_pin_the_shared_parser_and_order")
+      "rendered-capture" [Surface.runtimeInternal]
+  , tagged (consumerCoverage
+      "rendered_capture_cases"
+      "RenderedCaptureCases"
+      "cli_trace_export::trace_capture_fetches_metadata_with_field_commit_cid")
+      "rendered-capture" [Surface.operatorCli]
+  , tagged (consumerCoverage
+      "rendered_capture_cases"
+      "RenderedCaptureCases"
+      "apps/gents-desktop/tests/request-trace.test.tsx::request trace panel renders the reconstructed event stream")
+      "rendered-capture" [Surface.operatorUi]
   , tagged (consumerCoverage
       "event_delivery_cases"
       "EventDeliveryTransitionCases"

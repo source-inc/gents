@@ -652,6 +652,27 @@ pub fn registered_conformance_consumers() -> &'static [ConformanceConsumer] {
             function: "generated_rendered_capture_key_cases_pin_the_capture_key_tuple",
         },
         ConformanceConsumer::RustTest {
+            id: "conformance::rendered_capture::generated_capture_scope_cases_pin_the_shared_parser_and_order",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/rendered_capture.rs",
+            module_path: "conformance::rendered_capture",
+            function: "generated_capture_scope_cases_pin_the_shared_parser_and_order",
+        },
+        ConformanceConsumer::RustTest {
+            id: "cli_trace_export::trace_capture_fetches_metadata_with_field_commit_cid",
+            package: "gents-cli",
+            source_path: "crates/gents-cli/tests/cli_trace_export.rs",
+            module_path: "cli_trace_export",
+            function: "trace_capture_fetches_metadata_with_field_commit_cid",
+        },
+        ConformanceConsumer::TypeScriptTest {
+            id: "apps/gents-desktop/tests/request-trace.test.tsx::request trace panel renders the reconstructed event stream",
+            app: "gents-desktop",
+            source_path: "apps/gents-desktop/tests/request-trace.test.tsx",
+            suite: "request trace panel",
+            test: "renders the reconstructed event stream",
+        },
+        ConformanceConsumer::RustTest {
             id: "agent::loop_stream::tests::generated_layer_cases_pin_the_assembled_request_order",
             package: "gents",
             source_path: "crates/gents/src/agent/loop_stream/tests.rs",

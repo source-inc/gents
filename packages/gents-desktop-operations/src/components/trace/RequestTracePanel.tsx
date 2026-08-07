@@ -180,6 +180,20 @@ export function eventSummary(event: RunTimelineEventView): string {
       ]
         .filter(Boolean)
         .join(" — ");
+    case "rendered_request": {
+      const turn =
+        typeof event.turn_index === "number" ? `turn ${event.turn_index}` : null;
+      const attempt =
+        typeof event.attempt === "number" ? `attempt ${event.attempt}` : null;
+      return [
+        `captured ${str(event.capture_scope) ?? "request"}`,
+        [turn, attempt].filter(Boolean).join(" ") || null,
+        str(event.model_name),
+        str(event.provenance_status),
+      ]
+        .filter(Boolean)
+        .join(" — ");
+    }
     case "response":
       return [str(event.status) ?? "response", str(event.error_message)]
         .filter(Boolean)

@@ -148,6 +148,7 @@ fn rendered_in_scope(
         provenance_json: serde_json::to_value(ProvenanceManifest::captured_only(
             capture_scope.to_string(),
             None,
+            None,
             assembly_trace.clone(),
         ))
         .expect("provenance manifest"),
@@ -388,4 +389,72 @@ fn generated_rendered_capture_cases_never_permit_an_uncaptured_send() {
         "the generated rows must include an identical recapture; without it \
          idempotent redelivery is untested"
     );
+}
+
+/// #1066: the shared consumer vocabulary is the Lean vocabulary. Every emitted
+/// `capture_scope` label parses to the emitted `(kind, seq)` — or errors,
+/// never defaults — and `CaptureOrderKey` agrees with the model's
+/// `(kind rank, seq, turn, attempt)` comparison. `inference.10` vs
+/// `inference.2` is among the generated rows, so a lexical implementation
+/// cannot pass.
+#[test]
+fn generated_capture_scope_cases_pin_the_shared_parser_and_order() {
+    use gents::rendered_request::{CaptureOrderKey, CaptureScope};
+
+    let scope_cases = crate::lean_vocab_test::lean_capture_scope_cases();
+    assert!(
+        !scope_cases.is_empty(),
+        "Lean emitted no capture scope cases"
+    );
+    for case in scope_cases {
+        let parsed = case.label.parse::<CaptureScope>();
+        if case.valid {
+            let scope = parsed.unwrap_or_else(|error| {
+                panic!("{label:?} must parse: {error}", label = case.label)
+            });
+            assert_eq!(scope.kind.as_str(), case.kind, "{:?}", case.label);
+            assert_eq!(scope.seq, case.seq, "{:?}", case.label);
+            assert_eq!(
+                scope.to_string(),
+                case.label,
+                "label round trip must be exact"
+            );
+        } else {
+            assert!(
+                parsed.is_err(),
+                "{label:?} must be rejected, never defaulted",
+                label = case.label
+            );
+        }
+    }
+
+    let order_cases = crate::lean_vocab_test::lean_capture_order_cases();
+    assert!(
+        !order_cases.is_empty(),
+        "Lean emitted no capture order cases"
+    );
+    for case in order_cases {
+        let left = CaptureOrderKey {
+            scope: case.left_label.parse::<CaptureScope>().expect("left label"),
+            turn_index: case.left_turn,
+            attempt: case.left_attempt,
+        };
+        let right = CaptureOrderKey {
+            scope: case
+                .right_label
+                .parse::<CaptureScope>()
+                .expect("right label"),
+            turn_index: case.right_turn,
+            attempt: case.right_attempt,
+        };
+        assert_eq!(left < right, case.left_before_right, "{}", case.name);
+        // The padded rendering exists for string-only sort slots; its lexical
+        // order must agree with `Ord` everywhere the model decides.
+        assert_eq!(
+            left.padded() < right.padded(),
+            case.left_before_right,
+            "{} (padded)",
+            case.name
+        );
+    }
 }

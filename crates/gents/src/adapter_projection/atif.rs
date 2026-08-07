@@ -204,6 +204,7 @@ pub(super) fn build_atif_trajectory(
                 apply_root_response(&mut steps, response, context);
             }
             RunTimelineEvent::Request(_)
+            | RunTimelineEvent::RenderedRequest(_)
             | RunTimelineEvent::InferenceCall(_)
             | RunTimelineEvent::Message(_)
             | RunTimelineEvent::ToolCall(_)
@@ -301,6 +302,13 @@ pub(super) fn build_atif_trajectory(
         extra: optional_extra([
             ("source_projection_id", string_value("run_timeline")),
             ("source_request_id", string_value(&timeline.request_id)),
+            // Capture metadata only (keys, hashes, ordering, admission join).
+            // ATIF `extra` bypasses redaction, which is safe here precisely
+            // because bodies never enter the timeline this is derived from.
+            (
+                "rendered_captures",
+                super::rendered_captures_json(timeline),
+            ),
         ]),
     }
 }
