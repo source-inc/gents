@@ -195,6 +195,19 @@ class PopulateContextPostRunTest(unittest.TestCase):
         self.assertEqual(gents.get("failure_origin"), "compaction_provider")
 
 
+class PersistedRequestContractTest(unittest.TestCase):
+    def test_null_value_is_distinct_from_an_omitted_contract_field(self) -> None:
+        self.assertIsNone(
+            GentsAgent._persisted_request_value(
+                {"max_total_tokens": None}, "max_total_tokens"
+            )
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "omits required persisted field: max_total_tokens"
+        ):
+            GentsAgent._persisted_request_value({}, "max_total_tokens")
+
+
 class RunnerSupervisionTest(unittest.TestCase):
     def test_transient_graphql_waiter_failure_reconnects(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

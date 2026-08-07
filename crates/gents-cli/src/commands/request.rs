@@ -1392,6 +1392,23 @@ mod tests {
     }
 
     #[test]
+    fn request_show_json_retains_null_aggregate_budget_key() {
+        let request = json!({
+            "request_id": "request-one",
+            "agent_did": "did:key:agent",
+            "behavior_id": "default",
+            "session_id": "session-one",
+            "status": "pending",
+            "lifecycle_state": "pending",
+        });
+        let header = request_header_view(&request, None, Vec::new());
+        let value = serde_json::to_value(header).unwrap();
+
+        assert!(value.get("max_total_tokens").is_some());
+        assert!(value["max_total_tokens"].is_null());
+    }
+
+    #[test]
     fn transition_history_does_not_emit_processing_self_loop() {
         let request = json!({
             "lifecycle_state": "processing",

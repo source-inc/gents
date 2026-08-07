@@ -87,6 +87,15 @@ class GentsAgent(BaseAgent):
             f"stdout:\n{stdout}\nstderr:\n{stderr}"
         )
 
+    @staticmethod
+    def _persisted_request_value(request: dict[str, Any], field: str) -> Any:
+        if field not in request:
+            raise RuntimeError(
+                "Gents request-show contract omits required persisted field: "
+                f"{field}"
+            )
+        return request[field]
+
     async def _install_ca_bundle(self, environment: BaseEnvironment) -> None:
         """Provide TLS roots without invoking a package manager in every task."""
         ca_bundle = Path(certifi.where())
@@ -411,7 +420,9 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
                 f"requested={requested_seed!r} persisted={persisted_seed!r}"
             )
         requested_max_total = int(run_env["GENTS_MAX_TOTAL"])
-        persisted_max_total = persisted_request.get("max_total_tokens")
+        persisted_max_total = self._persisted_request_value(
+            persisted_request, "max_total_tokens"
+        )
         if persisted_max_total != requested_max_total:
             raise RuntimeError(
                 "Gents aggregate token-budget persistence mismatch: "

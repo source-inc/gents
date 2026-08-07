@@ -579,6 +579,46 @@ fn normalize_treats_empty_reasoning_effort_as_unset() {
 }
 
 #[test]
+fn normalize_trims_nonempty_reasoning_effort() {
+    let mut manifest = empty_manifest("did:test:test");
+    let mut inference_profile = profile("default-profile");
+    inference_profile.reasoning_effort = Some(" high ".to_string());
+    manifest.inference_profiles.push(inference_profile);
+
+    super::normalize::normalize_manifest(&mut manifest);
+
+    assert_eq!(
+        manifest.inference_profiles[0].reasoning_effort.as_deref(),
+        Some("high")
+    );
+}
+
+#[test]
+fn diff_treats_migrated_empty_reasoning_effort_as_unset() {
+    let mut desired = empty_manifest("did:test:test");
+    desired.inference_profiles.push(profile("default-profile"));
+    let mut live = desired.clone();
+    live.inference_profiles[0].reasoning_effort = Some(String::new());
+
+    super::normalize::normalize_manifest(&mut desired);
+    super::normalize::normalize_manifest(&mut live);
+    let report = diff_manifests(
+        &PathBuf::from("/tmp/fake-root"),
+        "local",
+        &desired,
+        Some(&live.agent_principal),
+        &live,
+        false,
+    );
+
+    assert_eq!(
+        report.collections.inference_profiles.unchanged,
+        vec!["default-profile"]
+    );
+    assert!(report.collections.inference_profiles.update.is_empty());
+}
+
+#[test]
 fn desired_tool_service_registry_normalizes_address_storage_fields() {
     let service: DesiredToolServiceRegistry = serde_json::from_value(json!({
         "service_id": "observability-mcp",
