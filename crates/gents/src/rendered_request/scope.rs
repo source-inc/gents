@@ -53,42 +53,10 @@ use std::sync::{Arc, Mutex};
 use super::{AssemblyTrace, RenderedRequestCaptureSink, RenderedRequestContext};
 use crate::agent::loop_stream::RenderedRequestSink;
 
-/// Which completion loop inside a request is issuing provider calls.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum CaptureScopeKind {
-    /// The request's own owned completion loop (`agent/loop_stream.rs`).
-    Inference,
-    /// The guided per-turn compaction summarizer. Its output is the ephemeral
-    /// continuation checkpoint injected straight into provider history and
-    /// never written as an `AgentCompactionEntry`, which is the single fact
-    /// this whole design exists to make explainable.
-    Compaction,
-    /// The strict-JSON compaction fallback, taken when guided structured output
-    /// exhausts its recovery.
-    CompactionFallback,
-    /// Conversation title generation.
-    Title,
-    /// The one-shot runner (`oneshot::run_openai_oneshot_with_tools`).
-    OneShot,
-}
-
-impl CaptureScopeKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Inference => "inference",
-            Self::Compaction => "compaction",
-            Self::CompactionFallback => "compaction_fallback",
-            Self::Title => "title",
-            Self::OneShot => "oneshot",
-        }
-    }
-}
-
-impl std::fmt::Display for CaptureScopeKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+// Re-exported here as well: the arming call sites name the kind through this
+// module (`rendered_request::scope::CaptureScopeKind`), and the type's home is
+// now `gents-protocol`.
+pub use super::CaptureScopeKind;
 
 /// One armed provider attempt, waiting for the transport to supply its body.
 #[derive(Clone, Debug)]

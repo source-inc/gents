@@ -491,6 +491,44 @@ async fn a_multi_turn_tool_using_request_captures_every_turn_in_order() {
         "the assembly trace must carry the threaded tool result verbatim: {threaded}"
     );
 
+    // #1066: the provenance manifest carries the exact admission join — the
+    // `call_id`/`call_seq` the admission registry minted for the call this
+    // capture preceded. This is the Rust fence for the task-local plumbing:
+    // `next_call` writes the slot, the transport-side capture reads it, and
+    // the values must be the ones persisted on the request's `InferenceCall`
+    // rows, not an ordinal guess.
+    let calls = inference_calls(db.node.as_ref(), "req-capture-multi-turn").await;
+    let inference_call_seqs: Vec<i64> = calls
+        .iter()
+        .filter(|call| call["call_kind"].as_str() == Some("inference"))
+        .filter_map(|call| call["call_seq"].as_i64())
+        .collect();
+    let mut seen_call_ids = std::collections::BTreeSet::new();
+    for row in &rows {
+        let manifest = parse_json(&row["provenance_json"]);
+        assert_eq!(manifest["manifest_version"], 3, "manifest version");
+        let admission = manifest
+            .get("admission")
+            .unwrap_or_else(|| panic!("daemon capture must carry an admission join: {manifest}"));
+        let call_seq = admission["call_seq"].as_i64().expect("join call_seq");
+        assert!(
+            inference_call_seqs.contains(&call_seq),
+            "joined call_seq {call_seq} must name a persisted inference InferenceCall \
+             (persisted: {inference_call_seqs:?})"
+        );
+        let call_id = admission["call_id"].as_str().expect("join call_id");
+        assert!(
+            calls
+                .iter()
+                .any(|call| call["call_id"].as_str() == Some(call_id)),
+            "joined call_id {call_id} must name a persisted InferenceCall row"
+        );
+        assert!(
+            seen_call_ids.insert(call_id.to_string()),
+            "each capture joins a distinct provider call"
+        );
+    }
+
     agent.shutdown().await;
 }
 
@@ -1164,6 +1202,7 @@ fn rendered_fixture(request_json: Value) -> RenderedCompletionRequest {
             gents::rendered_request::ProvenanceManifest::captured_only(
                 capture_scope,
                 None,
+                None,
                 assembly_trace.clone(),
             ),
         )
@@ -1245,6 +1284,33 @@ async fn rendered_requests(node: &EmbeddedNode, request_id: &str) -> Vec<Value> 
         )
     });
     rows
+}
+
+/// The persisted `InferenceCall` rows for one request — the other half of the
+/// provenance admission join.
+async fn inference_calls(node: &EmbeddedNode, request_id: &str) -> Vec<Value> {
+    let query = format!(
+        r#"query {{
+            InferenceCall(filter: {{ request_id: {{ _eq: "{request_id}" }} }}) {{
+                call_id
+                call_seq
+                call_kind
+                attempt
+            }}
+        }}"#,
+        request_id = escape_graphql_string(request_id),
+    );
+    let response = node.execute(&query).await;
+    assert!(
+        !response.has_errors(),
+        "InferenceCall query failed: {:?}",
+        response.errors
+    );
+    response
+        .data
+        .and_then(|data| data.get("InferenceCall").cloned())
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
 }
 
 /// Every `(field_name, cid)` DefraDB holds for the row under `capture_key`,

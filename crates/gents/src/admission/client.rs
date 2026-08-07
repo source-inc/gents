@@ -152,6 +152,17 @@ impl CallKind {
     }
 }
 
+/// The identity of the admission call currently in flight on this task:
+/// exactly what `next_call` minted for it. This is what makes the
+/// capture-to-`InferenceCall` join exact instead of ordinal — an admission
+/// rejection consumes no `call_seq` and stores no join.
+#[derive(Clone, Debug)]
+pub(crate) struct CurrentCallJoin {
+    pub(crate) call_id: String,
+    pub(crate) call_seq: i64,
+    pub(crate) call_kind: CallKind,
+}
+
 #[derive(Clone)]
 pub(crate) struct AdmissionCallContext {
     pub(super) request_id: String,
@@ -162,6 +173,11 @@ pub(crate) struct AdmissionCallContext {
     pub(super) call_kind: CallKind,
     pub(super) attempt: i64,
     pub(super) call_seq: Arc<AtomicU64>,
+    /// Written by `next_call`, read by `current_call_join()` at the transport
+    /// seam. Shared (`Arc`) across the request's call scopes — `scope_call`
+    /// clones the context, and the clone must observe the same slot the
+    /// admitted call writes.
+    pub(super) current_call: Arc<Mutex<Option<CurrentCallJoin>>>,
     pub(super) inference_token: Option<CancellationToken>,
     pub(super) terminal_failure_reason: Option<TerminalFailureReasonObserver>,
 }
@@ -181,6 +197,7 @@ impl AdmissionCallContext {
             call_kind: CallKind::Inference,
             attempt: 1,
             call_seq: Arc::new(AtomicU64::new(0)),
+            current_call: Arc::new(Mutex::new(None)),
             inference_token: None,
             terminal_failure_reason: None,
         }
@@ -188,7 +205,7 @@ impl AdmissionCallContext {
 
     pub(super) fn next_call(&self, runtime_instance_id: &str) -> PendingCallMetadata {
         let call_seq = self.call_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        PendingCallMetadata {
+        let metadata = PendingCallMetadata {
             call_id: uuid::Uuid::new_v4().to_string(),
             runtime_instance_id: runtime_instance_id.to_string(),
             request_id: self.request_id.clone(),
@@ -198,7 +215,17 @@ impl AdmissionCallContext {
             agent_did: self.agent_did.clone(),
             call_kind: self.call_kind,
             attempt: self.attempt,
+        };
+        let join = CurrentCallJoin {
+            call_id: metadata.call_id.clone(),
+            call_seq: i64::try_from(call_seq).unwrap_or(i64::MAX),
+            call_kind: self.call_kind,
+        };
+        match self.current_call.lock() {
+            Ok(mut slot) => *slot = Some(join),
+            Err(poisoned) => *poisoned.into_inner() = Some(join),
         }
+        metadata
     }
 }
 
@@ -280,4 +307,17 @@ pub(crate) fn current_session_id() -> Option<String> {
     ADMISSION_CALL_CONTEXT
         .try_with(|context| context.session_id.clone())
         .ok()
+}
+
+/// The admission identity of the call currently in flight on this task, if
+/// one has been admitted. `None` outside an admission scope (one-shot runs)
+/// and before the first `next_call` of a scope.
+pub(crate) fn current_call_join() -> Option<CurrentCallJoin> {
+    ADMISSION_CALL_CONTEXT
+        .try_with(|context| match context.current_call.lock() {
+            Ok(slot) => slot.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        })
+        .ok()
+        .flatten()
 }

@@ -506,6 +506,92 @@ pub struct CompactionEntryRow {
     pub created_at: Option<String>,
 }
 
+/// One durable rendered-request fact (#840/#1059): the exact provider request
+/// body persisted before it was sent, keyed uniquely by `capture_key`.
+///
+/// Wire-shape mirror like every row here — only the identity key is required.
+/// `request_json` is the captured provider body; consumers that only need
+/// metadata should not select it (and the run timeline never does).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RenderedRequestRow {
+    pub capture_key: String,
+    #[serde(default)]
+    pub request_doc_id: Option<String>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub agent_did: Option<String>,
+    #[serde(default)]
+    pub requester_did: Option<String>,
+    #[serde(default)]
+    pub behavior_id: Option<String>,
+    #[serde(default)]
+    pub capture_scope: Option<String>,
+    #[serde(default)]
+    pub turn_index: Option<i64>,
+    #[serde(default)]
+    pub attempt: Option<i64>,
+    #[serde(default)]
+    pub capture_version: Option<i64>,
+    #[serde(default)]
+    pub model_name: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub request_json: Option<String>,
+    #[serde(default)]
+    pub prompt_hash: Option<String>,
+    #[serde(default)]
+    pub tools_hash: Option<String>,
+    #[serde(default)]
+    pub provenance_json: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+impl RenderedRequestRow {
+    /// The row's stable identity ordering. Errors when `capture_scope`,
+    /// `turn_index`, or `attempt` is missing or malformed: those are core
+    /// facts, and defaulting them to zero would silently collide the row with
+    /// a real first-turn capture.
+    pub fn order_key(
+        &self,
+    ) -> Result<crate::rendered_request::CaptureOrderKey, crate::rendered_request::CaptureOrderKeyError>
+    {
+        use crate::rendered_request::{CaptureOrderKey, CaptureOrderKeyError, CaptureScope};
+
+        let scope: CaptureScope = self
+            .capture_scope
+            .as_deref()
+            .ok_or(CaptureOrderKeyError::MissingScope)?
+            .parse()
+            .map_err(CaptureOrderKeyError::Scope)?;
+        let turn_index = self
+            .turn_index
+            .ok_or(CaptureOrderKeyError::MissingTurnIndex)?;
+        let attempt = self.attempt.ok_or(CaptureOrderKeyError::MissingAttempt)?;
+        Ok(CaptureOrderKey {
+            scope,
+            turn_index,
+            attempt,
+        })
+    }
+
+    /// Read the row's provenance manifest through the versioned reader.
+    pub fn provenance(
+        &self,
+    ) -> Result<crate::rendered_request::ParsedProvenance, crate::rendered_request::ProvenanceParseError>
+    {
+        crate::rendered_request::ProvenanceManifest::parse(
+            self.provenance_json
+                .as_deref()
+                .ok_or(crate::rendered_request::ProvenanceParseError::Empty)?,
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskRow {
     pub task_id: String,
@@ -873,6 +959,71 @@ pub struct ToolServiceHealthStateRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rendered_request_row_parses_a_graphql_response_row() {
+        let json = r#"{
+            "capture_key": "rendered:v1:abc",
+            "request_doc_id": "bae-doc-1",
+            "request_id": "req-1",
+            "session_id": "s-1",
+            "agent_did": "did:test:amy",
+            "requester_did": "",
+            "behavior_id": "amy-code",
+            "capture_scope": "compaction.2",
+            "turn_index": 1,
+            "attempt": 0,
+            "capture_version": 1,
+            "model_name": "test-model",
+            "source": "openai_chat_completions",
+            "request_json": "{\"model\":\"test-model\"}",
+            "prompt_hash": "aa",
+            "tools_hash": "bb",
+            "provenance_json": "{\"manifest_version\":99}",
+            "created_at": "2026-08-07T12:00:00Z"
+        }"#;
+        let row: RenderedRequestRow = serde_json::from_str(json).expect("parse");
+        assert_eq!(row.capture_key, "rendered:v1:abc");
+
+        let key = row.order_key().expect("order key");
+        assert_eq!(key.scope.kind.as_str(), "compaction");
+        assert_eq!(key.scope.seq, 2);
+        assert_eq!((key.turn_index, key.attempt), (1, 0));
+
+        // Unknown manifest versions are reported, not guessed at.
+        assert_eq!(
+            row.provenance().expect("well-formed provenance"),
+            crate::rendered_request::ParsedProvenance::Unsupported {
+                manifest_version: 99
+            }
+        );
+    }
+
+    /// A DefraDB response may omit unpopulated columns entirely; the row still
+    /// deserializes, but it cannot be ordered — and must say so rather than
+    /// defaulting into a first-turn collision.
+    #[test]
+    fn rendered_request_row_without_order_facts_deserializes_but_will_not_order() {
+        let row: RenderedRequestRow =
+            serde_json::from_str(r#"{ "capture_key": "rendered:v1:abc" }"#).expect("parse");
+        assert_eq!(
+            row.order_key(),
+            Err(crate::rendered_request::CaptureOrderKeyError::MissingScope)
+        );
+
+        let row: RenderedRequestRow = serde_json::from_str(
+            r#"{ "capture_key": "rendered:v1:abc", "capture_scope": "inference.1", "attempt": 0 }"#,
+        )
+        .expect("parse");
+        assert_eq!(
+            row.order_key(),
+            Err(crate::rendered_request::CaptureOrderKeyError::MissingTurnIndex)
+        );
+        assert!(matches!(
+            row.provenance(),
+            Err(crate::rendered_request::ProvenanceParseError::Empty)
+        ));
+    }
 
     #[test]
     fn agent_request_row_roundtrips() {

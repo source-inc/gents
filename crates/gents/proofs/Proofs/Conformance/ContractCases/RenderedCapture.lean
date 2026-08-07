@@ -201,4 +201,142 @@ theorem renderedCaptureKeyCases_pinned :
       ] := by
   rfl
 
+/-! ## Capture scope labels and the consumer ordering (#1066)
+
+The producer writes the loop discriminator as `"{kind}.{seq}"`. These cases fix
+the label vocabulary a consumer's parser must accept, the reject vectors it
+must error on (never default), and the identity ordering
+`(kind rank, seq, turn, attempt)` — with `seq` compared numerically, because a
+lexical sort of the raw column puts `inference.10` before `inference.2`. -/
+
+inductive CaptureScopeKind
+  | inference
+  | compaction
+  | compactionFallback
+  | title
+  | oneshot
+  deriving Repr, DecidableEq
+
+def CaptureScopeKind.label : CaptureScopeKind → String
+  | .inference => "inference"
+  | .compaction => "compaction"
+  | .compactionFallback => "compaction_fallback"
+  | .title => "title"
+  | .oneshot => "oneshot"
+
+/-- Declaration-order rank — the stable identity order across kinds. Not a
+temporal order: loops interleave in wall-clock time. -/
+def CaptureScopeKind.rank : CaptureScopeKind → Nat
+  | .inference => 0
+  | .compaction => 1
+  | .compactionFallback => 2
+  | .title => 3
+  | .oneshot => 4
+
+def allCaptureScopeKinds : List CaptureScopeKind :=
+  [.inference, .compaction, .compactionFallback, .title, .oneshot]
+
+structure CaptureScopeCase where
+  label : String
+  kind : String
+  seq : Nat
+  valid : Bool
+  deriving Repr
+
+private def validScopeCase (kind : CaptureScopeKind) (seq : Nat) : CaptureScopeCase :=
+  { label := kind.label ++ "." ++ toString seq
+  , kind := kind.label
+  , seq := seq
+  , valid := true
+  }
+
+private def invalidScopeCase (label : String) : CaptureScopeCase :=
+  { label := label, kind := "", seq := 0, valid := false }
+
+/-- Every kind at seq 1, multi-digit seqs (so a lexical sort cannot pass the
+ordering fence), and the parser's reject vectors. -/
+def captureScopeCases : List CaptureScopeCase :=
+  (allCaptureScopeKinds.map (validScopeCase · 1))
+    ++ [ validScopeCase .inference 2
+       , validScopeCase .inference 10
+       , validScopeCase .compaction 2
+       ]
+    ++ [ invalidScopeCase ""
+       , invalidScopeCase "inference"
+       , invalidScopeCase "inference."
+       , invalidScopeCase ".1"
+       , invalidScopeCase "mystery.1"
+       , invalidScopeCase "inference.0x2"
+       , invalidScopeCase "inference.1.2"
+       , invalidScopeCase "inference. 2"
+       ]
+
+/-- Valid labels are pairwise distinct — the label round-trip is injective over
+the emitted vocabulary. -/
+theorem captureScopeCases_valid_labels_distinct :
+    ((captureScopeCases.filter (·.valid)).map (·.label)).Nodup := by
+  decide
+
+structure CaptureOrderCase where
+  name : String
+  leftLabel : String
+  leftTurn : Nat
+  leftAttempt : Nat
+  rightLabel : String
+  rightTurn : Nat
+  rightAttempt : Nat
+  leftBeforeRight : Bool
+  deriving Repr
+
+private def orderTuple
+    (kind : CaptureScopeKind) (seq turn attempt : Nat) : Nat × Nat × Nat × Nat :=
+  (kind.rank, seq, turn, attempt)
+
+private def tupleLt : Nat × Nat × Nat × Nat → Nat × Nat × Nat × Nat → Bool
+  | (a1, a2, a3, a4), (b1, b2, b3, b4) =>
+    if a1 ≠ b1 then a1 < b1
+    else if a2 ≠ b2 then a2 < b2
+    else if a3 ≠ b3 then a3 < b3
+    else a4 < b4
+
+private def orderCase (name : String)
+    (leftKind : CaptureScopeKind) (leftSeq leftTurn leftAttempt : Nat)
+    (rightKind : CaptureScopeKind) (rightSeq rightTurn rightAttempt : Nat) :
+    CaptureOrderCase :=
+  { name := name
+  , leftLabel := (validScopeCase leftKind leftSeq).label
+  , leftTurn := leftTurn
+  , leftAttempt := leftAttempt
+  , rightLabel := (validScopeCase rightKind rightSeq).label
+  , rightTurn := rightTurn
+  , rightAttempt := rightAttempt
+  , leftBeforeRight :=
+      tupleLt (orderTuple leftKind leftSeq leftTurn leftAttempt)
+        (orderTuple rightKind rightSeq rightTurn rightAttempt)
+  }
+
+def captureOrderCases : List CaptureOrderCase :=
+  [ orderCase "numeric_seq_dominates_lexical" .inference 2 3 1 .inference 10 0 0
+  , orderCase "attempt_breaks_turn_tie" .inference 1 0 0 .inference 1 0 1
+  , orderCase "turn_dominates_attempt" .inference 1 0 5 .inference 1 1 0
+  , orderCase "kind_rank_dominates_seq" .inference 9 9 9 .compaction 1 0 0
+  , orderCase "fallback_ranks_after_compaction" .compaction 5 0 0 .compactionFallback 1 0 0
+  , orderCase "oneshot_ranks_last" .title 1 0 0 .oneshot 1 0 0
+  , orderCase "equal_keys_do_not_order" .inference 1 2 3 .inference 1 2 3
+  ]
+
+/-- Pinned so a change to the rank or comparison shows up as a Lean build
+failure and a conscious decision, not a silent re-sort of every consumer. -/
+theorem captureOrderCases_pinned :
+    captureOrderCases.map (fun row => (row.name, row.leftBeforeRight)) =
+      [ ("numeric_seq_dominates_lexical", true)
+      , ("attempt_breaks_turn_tie", true)
+      , ("turn_dominates_attempt", true)
+      , ("kind_rank_dominates_seq", true)
+      , ("fallback_ranks_after_compaction", true)
+      , ("oneshot_ranks_last", true)
+      , ("equal_keys_do_not_order", false)
+      ] := by
+  rfl
+
 end Conformance.ContractCases

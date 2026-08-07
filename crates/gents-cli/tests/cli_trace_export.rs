@@ -457,6 +457,235 @@ async fn trace_timeline_reconstructs_request_events_from_persisted_rows() -> Res
     Ok(())
 }
 
+/// Seed one request with two rendered-request captures (turn 0 attempts 0 and
+/// 1) carrying v3 provenance manifests with the admission join.
+async fn seed_rendered_request_rows(node: &EmbeddedNode) -> Result<()> {
+    exec(
+        node,
+        r#"mutation {
+            create_AgentRequest(input: {
+                request_id: "req-cap",
+                agent_did: "did:test:amy",
+                behavior_id: "amy",
+                session_id: "session-cap",
+                content: "capture me",
+                metadata: "",
+                status: "completed",
+                lifecycle_state: "complete",
+                backend_id: "studios-cluster",
+                failure_reason: "",
+                created_at: "2026-08-07T12:00:00Z",
+                retry_count: 0
+            }) { _docID }
+        }"#,
+    )
+    .await?;
+    for (suffix, attempt, call_id, call_seq, created_at) in [
+        ("a0", 0, "call-cap-1", 1, "2026-08-07T12:00:02Z"),
+        ("a1", 1, "call-cap-2", 2, "2026-08-07T12:00:04Z"),
+    ] {
+        let provenance = json!({
+            "manifest_version": 3,
+            "status": "captured_only",
+            "status_reason": "seeded",
+            "capture_seam": "transport_body",
+            "capture_scope": "inference.1",
+            "admission": { "call_id": call_id, "call_seq": call_seq },
+            "assembly_trace": {
+                "trace_version": 2,
+                "build_path": "budgeted",
+                "effective_message_count": 0,
+                "assistant_message_ids": [],
+                "threaded_tool_results": []
+            }
+        })
+        .to_string();
+        let request_json = json!({
+            "model": "test-model",
+            "messages": [{ "role": "user", "content": "capture me" }]
+        })
+        .to_string();
+        exec(
+            node,
+            &format!(
+                r#"mutation {{
+                    create_RenderedRequest(input: {{
+                        capture_key: "rendered:v1:seeded-{suffix}",
+                        request_doc_id: "doc-req-cap",
+                        request_id: "req-cap",
+                        session_id: "session-cap",
+                        agent_did: "did:test:amy",
+                        requester_did: "",
+                        behavior_id: "amy",
+                        capture_scope: "inference.1",
+                        turn_index: 0,
+                        attempt: {attempt},
+                        capture_version: 1,
+                        model_name: "test-model",
+                        source: "openai_chat_completions",
+                        request_json: "{request_json}",
+                        prompt_hash: "aa",
+                        tools_hash: "bb",
+                        provenance_json: "{provenance}",
+                        created_at: "{created_at}"
+                    }}) {{ _docID }}
+                }}"#,
+                request_json = gents::graphql::escape_graphql_string(&request_json),
+                provenance = gents::graphql::escape_graphql_string(&provenance),
+            ),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn trace_capture_fetches_metadata_with_field_commit_cid() -> Result<()> {
+    let tempdir = tempfile::tempdir().context("creating tempdir")?;
+    let agent_home = tempdir.path().join("agent-home");
+    let data_dir = agent_home.join("data");
+
+    {
+        let node = EmbeddedNode::builder()
+            .data_path(&data_dir)
+            .with_storage_backend(StorageBackend::RocksDb)
+            .build()
+            .await
+            .context("opening embedded node")?;
+        ensure_runtime_schemas(&node).await?;
+        seed_rendered_request_rows(&node).await?;
+    }
+    let home = agent_home.to_str().context("agent home utf8")?;
+
+    // --list: both captures, in numeric identity order, metadata only.
+    let output = run_cli_text(
+        tempdir.path(),
+        &[
+            "trace", "capture", "--home", home, "--request-id", "req-cap", "--list",
+        ],
+    )?;
+    let listing = serde_json::from_str::<Value>(&output).context("parsing capture list")?;
+    let captures = listing
+        .get("captures")
+        .and_then(Value::as_array)
+        .context("captures array")?;
+    assert_eq!(captures.len(), 2, "{listing:#}");
+    assert_eq!(
+        captures[0].get("attempt").and_then(Value::as_i64),
+        Some(0),
+        "identity order: attempt 0 first"
+    );
+    assert!(
+        captures.iter().all(|capture| capture.get("request_json").is_none()),
+        "list output must not carry bodies: {listing:#}"
+    );
+    assert_eq!(
+        captures[0].get("call_seq").and_then(Value::as_i64),
+        Some(1),
+        "admission join surfaces: {listing:#}"
+    );
+
+    // Exactly one match: metadata plus the request_json field-commit CID.
+    let output = run_cli_text(
+        tempdir.path(),
+        &[
+            "trace",
+            "capture",
+            "--home",
+            home,
+            "--request-id",
+            "req-cap",
+            "--scope",
+            "inference.1",
+            "--turn",
+            "0",
+            "--attempt",
+            "0",
+        ],
+    )?;
+    let capture = serde_json::from_str::<Value>(&output).context("parsing single capture")?;
+    assert_eq!(
+        capture.get("capture_key").and_then(Value::as_str),
+        Some("rendered:v1:seeded-a0")
+    );
+    assert_eq!(
+        capture.get("provenance_status").and_then(Value::as_str),
+        Some("captured_only")
+    );
+    let cid = capture
+        .pointer("/request_json_commit/cid")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("expected field-commit cid: {capture:#}"));
+    assert!(!cid.is_empty());
+    assert!(
+        capture.get("request_json").is_none(),
+        "default output must not carry the body: {capture:#}"
+    );
+
+    // --include-body is the one deliberate body read.
+    let output = run_cli_text(
+        tempdir.path(),
+        &[
+            "trace",
+            "capture",
+            "--home",
+            home,
+            "--capture-key",
+            "rendered:v1:seeded-a1",
+            "--include-body",
+        ],
+    )?;
+    let capture = serde_json::from_str::<Value>(&output).context("parsing bodied capture")?;
+    let body = capture
+        .get("request_json")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("expected request_json with --include-body: {capture:#}"));
+    assert!(body.contains("capture me"));
+    assert!(capture.get("provenance_json").is_some());
+
+    // Ambiguity without --list fails with a narrowing hint.
+    let stderr = run_cli_failure_stderr(
+        tempdir.path(),
+        &["trace", "capture", "--home", home, "--request-id", "req-cap"],
+    )?;
+    assert!(
+        stderr.contains("narrow with --scope/--turn/--attempt"),
+        "{stderr}"
+    );
+
+    // The run timeline surfaces the same captures as events.
+    let output = run_cli_text(
+        tempdir.path(),
+        &[
+            "trace", "timeline", "--home", home, "--request-id", "req-cap",
+        ],
+    )?;
+    let timeline = serde_json::from_str::<Value>(&output).context("parsing timeline")?;
+    let rendered_events = timeline
+        .get("events")
+        .and_then(Value::as_array)
+        .context("timeline events")?
+        .iter()
+        .filter(|event| event.get("kind").and_then(Value::as_str) == Some("rendered_request"))
+        .collect::<Vec<_>>();
+    assert_eq!(rendered_events.len(), 2, "{timeline:#}");
+    assert_eq!(
+        rendered_events[0]
+            .get("provenance_status")
+            .and_then(Value::as_str),
+        Some("captured_only")
+    );
+    assert!(
+        rendered_events
+            .iter()
+            .all(|event| event.get("request_json").is_none()
+                && event.get("provenance_json").is_none()),
+        "timeline events must stay metadata-only: {timeline:#}"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn trace_project_exports_first_adapter_shapes_from_persisted_rows() -> Result<()> {
     let tempdir = tempfile::tempdir().context("creating tempdir")?;

@@ -1045,6 +1045,49 @@ pub(crate) enum TraceCommand {
         about = "Print the JSON Schema for an adapter projection output"
     )]
     ProjectSchema(TraceProjectSchemaArgs),
+    #[command(
+        name = "capture",
+        about = "Fetch rendered-request capture metadata, with the request_json field-commit CID"
+    )]
+    Capture(TraceCaptureArgs),
+}
+
+#[derive(clap::Args)]
+pub(crate) struct TraceCaptureArgs {
+    #[arg(long, help = "Agent home directory. Defaults to ~/.gents")]
+    pub(crate) home: Option<PathBuf>,
+    #[arg(long, help = "GraphQL endpoint to read instead of local home state")]
+    pub(crate) graphql: Option<String>,
+    #[arg(
+        long = "capture-key",
+        conflicts_with = "request_id",
+        help = "Fetch one capture by its unique capture_key"
+    )]
+    pub(crate) capture_key: Option<String>,
+    #[arg(long = "request-id", help = "Fetch the captures of one request")]
+    pub(crate) request_id: Option<String>,
+    #[arg(
+        long,
+        requires = "request_id",
+        help = "Narrow to one capture scope, e.g. inference.1 or compaction.2"
+    )]
+    pub(crate) scope: Option<String>,
+    #[arg(long, requires = "request_id", help = "Narrow to one turn_index")]
+    pub(crate) turn: Option<i64>,
+    #[arg(long, requires = "request_id", help = "Narrow to one attempt")]
+    pub(crate) attempt: Option<i64>,
+    #[arg(
+        long,
+        help = "List every match as metadata instead of requiring exactly one"
+    )]
+    pub(crate) list: bool,
+    #[arg(
+        long = "include-body",
+        help = "Include request_json and the raw provenance manifest — the captured provider request body — in the output"
+    )]
+    pub(crate) include_body: bool,
+    #[arg(long = "output-file", help = "Write JSON to a file instead of stdout")]
+    pub(crate) output_file: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]

@@ -2,9 +2,182 @@ use super::*;
 use std::collections::BTreeSet;
 
 use crate::run_timeline::{
-    build_run_timeline, RunTimelineRows, TimelineMessageRow, TimelineRequestRow,
-    TimelineResponseRow, TimelineToolCallRow,
+    build_run_timeline, RunTimelineRows, TimelineInferenceCallRow, TimelineMessageRow,
+    TimelineRenderedRequestRow, TimelineRequestRow, TimelineResponseRow, TimelineToolCallRow,
 };
+
+const BODY_SENTINEL: &str = "SENTINEL_RENDERED_BODY_9f3a";
+
+/// A timeline whose capture rows carry the sentinel in the one place a body
+/// realistically travels — `assembly_trace.effective_messages` inside
+/// `provenance_json`. Built through `build_run_timeline`, not hand-crafted
+/// events, so the test fences the whole rows→events→projection pipeline.
+fn timeline_with_captures() -> crate::run_timeline::RunTimeline {
+    let provenance = serde_json::json!({
+        "manifest_version": 3,
+        "status": "captured_only",
+        "status_reason": "fixture",
+        "capture_seam": "transport_body",
+        "capture_scope": "inference.1",
+        "admission": { "call_id": "call-1", "call_seq": 1 },
+        "assembly_trace": {
+            "trace_version": 2,
+            "build_path": "budgeted",
+            "effective_message_count": 1,
+            "effective_messages": [
+                { "role": "user", "content": [{ "type": "text", "text": BODY_SENTINEL }] }
+            ],
+            "assistant_message_ids": [],
+            "threaded_tool_results": []
+        }
+    })
+    .to_string();
+
+    let capture = |capture_key: &str, attempt: i64, created_at: &str, provenance: String| {
+        TimelineRenderedRequestRow {
+            capture_key: capture_key.to_string(),
+            request_doc_id: Some("doc-req-1".to_string()),
+            request_id: Some("req-1".to_string()),
+            session_id: Some("session-1".to_string()),
+            capture_scope: Some("inference.1".to_string()),
+            turn_index: Some(0),
+            attempt: Some(attempt),
+            capture_version: Some(1),
+            model_name: Some("test-model".to_string()),
+            source: Some("openai_chat_completions".to_string()),
+            prompt_hash: Some("aa".to_string()),
+            tools_hash: Some("bb".to_string()),
+            provenance_json: Some(provenance),
+            created_at: Some(created_at.to_string()),
+            ..Default::default()
+        }
+    };
+
+    build_run_timeline(RunTimelineRows {
+        request: TimelineRequestRow {
+            request_id: "req-1".to_string(),
+            agent_did: Some("did:test:amy".to_string()),
+            behavior_id: Some("amy".to_string()),
+            session_id: Some("session-1".to_string()),
+            content: Some("hello".to_string()),
+            status: Some("completed".to_string()),
+            created_at: Some("2026-08-07T12:00:00Z".to_string()),
+            ..Default::default()
+        },
+        inference_calls: vec![TimelineInferenceCallRow {
+            call_id: "call-1".to_string(),
+            request_id: "req-1".to_string(),
+            call_seq: 1,
+            attempt: 1,
+            call_state: "completed".to_string(),
+            call_kind: "inference".to_string(),
+            queued_at: Some("2026-08-07T12:00:01Z".to_string()),
+            ..Default::default()
+        }],
+        rendered_requests: vec![
+            capture("rendered:v1:one", 0, "2026-08-07T12:00:02Z", provenance),
+            capture(
+                "rendered:v1:two",
+                1,
+                "2026-08-07T12:00:03Z",
+                format!(r#"{{"manifest_version":99,"body":{body:?}}}"#, body = BODY_SENTINEL),
+            ),
+        ],
+        ..Default::default()
+    })
+}
+
+/// Capture metadata surfaces in every projection's envelope; captured bodies
+/// never appear in ANY serialized output, in any redaction mode. This is the
+/// positive default #1066 demands — Harbor invokes `trace project` with
+/// neither `--redaction` nor `--actor-did`, so the exclusion cannot be a
+/// caller responsibility.
+#[test]
+fn rendered_captures_surface_as_metadata_and_bodies_never_leak() {
+    let timeline = timeline_with_captures();
+    for kind in [
+        AdapterProjectionKind::AtifTrajectory,
+        AdapterProjectionKind::OpenAiCodexRunTrace,
+        AdapterProjectionKind::LangGraphStateHistory,
+        AdapterProjectionKind::MultiAgentTask,
+    ] {
+        for mode in [
+            ProjectionRedactionMode::Full,
+            ProjectionRedactionMode::TrainingSafe,
+            ProjectionRedactionMode::Public,
+        ] {
+            let envelope = build_adapter_projection(
+                kind,
+                &timeline,
+                &ProjectionContext {
+                    actor_did: None,
+                    redaction_mode: mode,
+                },
+            );
+            let serialized = serde_json::to_string(&envelope).unwrap();
+            assert!(
+                !serialized.contains(BODY_SENTINEL),
+                "{kind:?}/{mode:?} leaked a captured body"
+            );
+            assert_eq!(
+                envelope.rendered_captures.len(),
+                2,
+                "{kind:?}/{mode:?} lost capture metadata"
+            );
+            assert_eq!(
+                envelope.rendered_captures[0].call_seq,
+                Some(1),
+                "{kind:?}/{mode:?} lost the admission join"
+            );
+            assert_eq!(
+                envelope.rendered_captures[1].provenance_status,
+                "unsupported_manifest"
+            );
+            assert_adapter_projection_matches_json_schema(&envelope);
+        }
+    }
+}
+
+/// The open extension surfaces carry the same metadata: ATIF at trajectory
+/// `extra.rendered_captures`, LangGraph in `values.rendered_captures`.
+#[test]
+fn open_extension_surfaces_carry_capture_metadata() {
+    let timeline = timeline_with_captures();
+    let context = ProjectionContext::default();
+
+    let atif = build_adapter_projection(
+        AdapterProjectionKind::AtifTrajectory,
+        &timeline,
+        &context,
+    );
+    let AdapterProjection::AtifTrajectory(trajectory) = &atif.output else {
+        panic!("expected ATIF output");
+    };
+    let captures = trajectory
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.get("rendered_captures"))
+        .and_then(Value::as_array)
+        .expect("ATIF trajectory extra.rendered_captures");
+    assert_eq!(captures.len(), 2);
+    assert_eq!(captures[0]["capture_key"], "rendered:v1:one");
+
+    let langgraph = build_adapter_projection(
+        AdapterProjectionKind::LangGraphStateHistory,
+        &timeline,
+        &context,
+    );
+    let AdapterProjection::LangGraphStateHistory(projection) = &langgraph.output else {
+        panic!("expected LangGraph output");
+    };
+    let captures = projection
+        .values
+        .get("rendered_captures")
+        .and_then(Value::as_array)
+        .expect("LangGraph values.rendered_captures");
+    assert_eq!(captures.len(), 2);
+    assert_eq!(captures[1]["provenance_status"], "unsupported_manifest");
+}
 
 fn workspace_root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

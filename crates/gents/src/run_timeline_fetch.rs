@@ -13,8 +13,8 @@ use crate::config_client::ConfigAccess;
 use crate::graphql::escape_graphql_string;
 use crate::run_timeline::{
     build_run_timeline, RunTimeline, RunTimelineRows, TimelineConversationRow,
-    TimelineInferenceCallRow, TimelineMessageRow, TimelineRequestRow, TimelineResponseRow,
-    TimelineSessionRow, TimelineToolCallRow,
+    TimelineInferenceCallRow, TimelineMessageRow, TimelineRenderedRequestRow, TimelineRequestRow,
+    TimelineResponseRow, TimelineSessionRow, TimelineToolCallRow,
 };
 use gents_protocol::graphql::graphql_rows_from_response;
 
@@ -57,6 +57,15 @@ pub async fn load_run_timeline_rows(
         inference_calls
             .extend(load_timeline_inference_calls_for_request(access, &request_id).await?);
     }
+    let mut rendered_requests = Vec::new();
+    for session_id in &session_ids {
+        rendered_requests
+            .extend(load_timeline_rendered_requests_for_session(access, session_id).await?);
+    }
+    if session_ids.is_empty() || root_session_id.is_none() {
+        rendered_requests
+            .extend(load_timeline_rendered_requests_for_request(access, &request.request_id).await?);
+    }
 
     let session = match root_session_id.as_deref() {
         Some(session_id) => load_timeline_session(access, session_id).await?,
@@ -76,6 +85,7 @@ pub async fn load_run_timeline_rows(
         tool_calls,
         inference_calls,
         responses,
+        rendered_requests,
     })
 }
 
@@ -106,6 +116,9 @@ async fn load_timeline_request_by_id(
                 interrupt_requested_at
                 caused_by_parent_request_id
                 caused_by_parent_tool_call_id
+                execution_origin
+                caused_by_trigger_id
+                caused_by_trigger_kind
             }}
         }}"#,
         escape_graphql_string(request_id)
@@ -143,6 +156,9 @@ async fn load_timeline_requests_for_session(
                 interrupt_requested_at
                 caused_by_parent_request_id
                 caused_by_parent_tool_call_id
+                execution_origin
+                caused_by_trigger_id
+                caused_by_trigger_kind
             }}
         }}"#,
         escape_graphql_string(session_id)
@@ -176,6 +192,9 @@ async fn load_timeline_child_requests(
                 interrupt_requested_at
                 caused_by_parent_request_id
                 caused_by_parent_tool_call_id
+                execution_origin
+                caused_by_trigger_id
+                caused_by_trigger_kind
             }}
         }}"#,
         escape_graphql_string(parent_request_id)
@@ -363,11 +382,83 @@ async fn load_timeline_inference_calls_for_request(
                 ended_at
                 backend_id
                 call_kind
+                prompt_tokens
+                completion_tokens
+                cached_input_tokens
             }}
         }}"#,
         escape_graphql_string(request_id)
     );
     load_rows(access, "InferenceCall", &query).await
+}
+
+/// The rendered-request capture rows for one session, metadata columns only.
+/// `request_json` is deliberately never selected here — see
+/// `TimelineRenderedRequestRow`. Pre-#1059 databases have no `RenderedRequest`
+/// collection; `load_rows` reports that as an empty section, not a failed
+/// timeline.
+async fn load_timeline_rendered_requests_for_session(
+    access: &ConfigAccess,
+    session_id: &str,
+) -> Result<Vec<TimelineRenderedRequestRow>> {
+    let query = format!(
+        r#"{{
+            RenderedRequest(
+                filter: {{ session_id: {{ _eq: "{}" }} }},
+                order: {{ created_at: ASC }}
+            ) {{
+                _docID
+                capture_key
+                request_doc_id
+                request_id
+                session_id
+                capture_scope
+                turn_index
+                attempt
+                capture_version
+                model_name
+                source
+                prompt_hash
+                tools_hash
+                provenance_json
+                created_at
+            }}
+        }}"#,
+        escape_graphql_string(session_id)
+    );
+    load_rows(access, "RenderedRequest", &query).await
+}
+
+async fn load_timeline_rendered_requests_for_request(
+    access: &ConfigAccess,
+    request_id: &str,
+) -> Result<Vec<TimelineRenderedRequestRow>> {
+    let query = format!(
+        r#"{{
+            RenderedRequest(
+                filter: {{ request_id: {{ _eq: "{}" }} }},
+                order: {{ created_at: ASC }}
+            ) {{
+                _docID
+                capture_key
+                request_doc_id
+                request_id
+                session_id
+                capture_scope
+                turn_index
+                attempt
+                capture_version
+                model_name
+                source
+                prompt_hash
+                tools_hash
+                provenance_json
+                created_at
+            }}
+        }}"#,
+        escape_graphql_string(request_id)
+    );
+    load_rows(access, "RenderedRequest", &query).await
 }
 
 async fn load_timeline_session(

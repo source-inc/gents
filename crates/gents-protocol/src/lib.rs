@@ -4,6 +4,7 @@ pub mod graphql;
 pub mod message;
 pub mod network_token;
 pub mod pairing_token;
+pub mod rendered_request;
 pub mod row;
 pub mod schemas;
 pub mod timeline;
