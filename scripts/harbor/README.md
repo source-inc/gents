@@ -155,6 +155,14 @@ Useful overrides:
 | `GENTS_SUPERVISION_POLL_SECS` | `1` | Poll interval for the server/response-waiter lifecycle supervisor |
 | `GENTS_TOOL_ROOT` | `/app` | Filesystem and shell tool root |
 
+Jack Bench's retained controller sets `GENTS_JACK_BENCH_ATTESTATION=1` and
+`GENTS_HARBOR_CONTROLLER_BINARY_SHA256=<sha256>`. These are not general run
+overrides. In that mode the pinned adapter independently rehashes the complete
+private task package, Harbor task content, adapter sources, Gents binary, and
+executing Harbor entry point; verifies the installed Gents commit and Harbor
+version; and writes an exclusive `jack-bench-runtime-attestation.json` beside
+the trial's `agent/` directory before inference. Any mismatch fails agent setup.
+
 Each trial retains:
 
 - `trajectory.json` — Harbor-native ATIF v1.7 trajectory

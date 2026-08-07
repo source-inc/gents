@@ -20,6 +20,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -76,6 +77,7 @@ _stub_module("harbor.models.agent.context", AgentContext=_AgentContext)
 sys.path.insert(0, str(_REPO_ROOT))
 
 from scripts.harbor.gents_agent import GentsAgent  # noqa: E402
+from scripts.harbor import jack_bench_attestation  # noqa: E402
 
 _TRAJECTORY = {
     "session_id": "session-1",
@@ -309,6 +311,132 @@ class PersistedRequestContractTest(unittest.TestCase):
         self.assertIsNone(context.n_input_tokens)
         self.assertIsNone(context.n_cache_tokens)
         self.assertIsNone(context.n_output_tokens)
+
+
+class JackBenchRuntimeAttestationTest(unittest.TestCase):
+    def _fixture(self, root: Path) -> tuple[GentsAgent, Path, Path]:
+        package = root / "package"
+        adapter = package / "adapter"
+        source = adapter / "scripts" / "harbor" / "gents_agent.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("# pinned adapter\n")
+        binary = adapter / "gents"
+        binary.write_text("pinned gents binary\n")
+        binary.chmod(0o755)
+        (package / "environment").mkdir()
+        (package / "environment" / "Dockerfile").write_text("FROM scratch\n")
+        (package / "tests").mkdir()
+        (package / "tests" / "test.sh").write_text("#!/bin/sh\n")
+        (package / "tests" / "test.sh").chmod(0o755)
+        (package / "task.toml").write_text('version = "1.0"\n')
+        (package / "instruction.md").write_text("finish the task\n")
+
+        controller = root / "harbor"
+        controller.write_text("#!/bin/sh\n")
+        controller.chmod(0o755)
+        adapter_files = {
+            "adapter/scripts/harbor/gents_agent.py": jack_bench_attestation.sha256_file(
+                source
+            )
+        }
+        payload = {
+            "schema_version": "jack-bench-harbor-export/v1",
+            "package_payload_sha256": jack_bench_attestation.package_sha256(package),
+            "harbor": {
+                "version": "0.20.0",
+                "commit": "459ff6ec99417589b7f679d14ddf3b3f0ae4f1dc",
+                "agent_adapter": "scripts.harbor.gents_agent:GentsAgent",
+            },
+            "gents": {
+                "commit": "a" * 40,
+                "sha256": jack_bench_attestation.sha256_file(binary),
+                "package_path": "adapter/gents",
+            },
+            "gents_adapter_files_sha256": adapter_files,
+            "environment_image": "example/environment@sha256:" + "b" * 64,
+            "verifier_image": "example/verifier@sha256:" + "c" * 64,
+            "platform": "linux/amd64",
+        }
+        export = {
+            "artifact_schema": jack_bench_attestation.EXPORT_SCHEMA,
+            "payload_sha256": jack_bench_attestation.serde_json_sha256(payload),
+            "payload": payload,
+        }
+        (package / "jack-bench-export.json").write_text(json.dumps(export))
+
+        trial = root / "trial"
+        logs = trial / "agent"
+        logs.mkdir(parents=True)
+        agent = GentsAgent.__new__(GentsAgent)
+        agent.logs_dir = logs
+        agent.extra_env = {
+            "GENTS_BINARY_PATH": str(binary),
+            "GENTS_JACK_BENCH_ATTESTATION": "1",
+            "GENTS_HARBOR_CONTROLLER_BINARY_SHA256": (
+                jack_bench_attestation.sha256_file(controller)
+            ),
+        }
+        return agent, package, controller
+
+    def test_emits_observed_runtime_receipt_at_trial_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            agent, package, controller = self._fixture(Path(temp_dir))
+            with mock.patch.object(sys, "argv", [str(controller)]), mock.patch(
+                "scripts.harbor.gents_agent.importlib.metadata.version",
+                return_value="0.20.0",
+            ):
+                agent._write_jack_bench_runtime_attestation(
+                    f"gents 0.10.1 ({'a' * 40})"
+                )
+
+            receipt_path = (
+                agent.logs_dir.parent
+                / GentsAgent._JACK_BENCH_RUNTIME_ATTESTATION_FILE
+            )
+            receipt = json.loads(receipt_path.read_text())
+            export = json.loads((package / "jack-bench-export.json").read_text())[
+                "payload"
+            ]
+            self.assertEqual(
+                receipt["schema_version"],
+                GentsAgent._JACK_BENCH_RUNTIME_ATTESTATION_SCHEMA,
+            )
+            self.assertEqual(
+                receipt["package_payload_sha256"],
+                export["package_payload_sha256"],
+            )
+            self.assertEqual(
+                receipt["task_content_sha256"],
+                jack_bench_attestation.task_content_sha256(package),
+            )
+            self.assertEqual(
+                receipt["controller_binary_sha256"],
+                jack_bench_attestation.sha256_file(controller),
+            )
+
+    def test_rejects_package_drift_before_emitting_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            agent, package, controller = self._fixture(Path(temp_dir))
+            (package / "instruction.md").write_text("tampered\n")
+            with mock.patch.object(sys, "argv", [str(controller)]), mock.patch(
+                "scripts.harbor.gents_agent.importlib.metadata.version",
+                return_value="0.20.0",
+            ), self.assertRaisesRegex(RuntimeError, "package payload hash mismatch"):
+                agent._write_jack_bench_runtime_attestation(
+                    f"gents 0.10.1 ({'a' * 40})"
+                )
+
+    def test_rejects_a_different_executing_controller(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            agent, _package, controller = self._fixture(Path(temp_dir))
+            agent.extra_env["GENTS_HARBOR_CONTROLLER_BINARY_SHA256"] = "d" * 64
+            with mock.patch.object(sys, "argv", [str(controller)]), mock.patch(
+                "scripts.harbor.gents_agent.importlib.metadata.version",
+                return_value="0.20.0",
+            ), self.assertRaisesRegex(RuntimeError, "controller binary hash mismatch"):
+                agent._write_jack_bench_runtime_attestation(
+                    f"gents 0.10.1 ({'a' * 40})"
+                )
 
 
 class RunnerSupervisionTest(unittest.TestCase):
