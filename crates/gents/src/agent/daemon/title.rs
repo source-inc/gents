@@ -23,6 +23,17 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
         request: &AgentRequest,
         admission_context: AdmissionCallContext,
     ) {
+        // A generated title is optional presentation metadata, not part of the
+        // requested agent result. Budgeted requests therefore skip this
+        // out-of-band provider call instead of giving it a second allowance or
+        // racing it against the response loop's request-wide ledger.
+        if !title_generation_allowed(request.max_total_tokens) {
+            tracing::debug!(
+                request_id = %request.request_id,
+                "skipping generated title for an aggregate-token-budgeted request"
+            );
+            return;
+        }
         let node = Arc::clone(&self.node);
         let behavior_did = self.behavior.agent_did().to_string();
         let request = request.clone();
@@ -76,6 +87,10 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
             }
         });
     }
+}
+
+fn title_generation_allowed(max_total_tokens: Option<i64>) -> bool {
+    max_total_tokens.is_none()
 }
 
 async fn maybe_generate_conversation_title<M: rig::completion::CompletionModel + 'static>(
@@ -278,7 +293,13 @@ fn fallback_words(source: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_generated_title;
+    use super::{sanitize_generated_title, title_generation_allowed};
+
+    #[test]
+    fn budgeted_requests_do_not_dispatch_optional_title_inference() {
+        assert!(title_generation_allowed(None));
+        assert!(!title_generation_allowed(Some(100_000)));
+    }
 
     #[test]
     fn sanitize_generated_title_normalizes_output() {

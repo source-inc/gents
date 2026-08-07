@@ -2825,6 +2825,8 @@ pub(crate) struct RequestSubmitArgs {
     pub(crate) seed: Option<i64>,
     #[arg(long)]
     pub(crate) max_tokens: Option<i64>,
+    #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
+    pub(crate) max_total_tokens: Option<i64>,
     #[arg(long)]
     pub(crate) metadata: Option<String>,
     #[arg(

@@ -67,6 +67,7 @@ DOCKER_DEFAULT_PLATFORM=linux/amd64 PYTHONPATH="$PWD" \
   --ae GENTS_DOCKER_PLATFORM=linux/amd64 \
   --ae GENTS_CONTEXT_WINDOW=458752 \
   --ae GENTS_MAX_OUTPUT=393216 \
+  --ae GENTS_MAX_TOTAL=100000 \
   --ae GENTS_MAX_TURNS=1000 \
   --ae GENTS_REQUEST_TIMEOUT_SECS=86400
 ```
@@ -141,6 +142,7 @@ Useful overrides:
 | `GENTS_DOCKER_PLATFORM` | unset | Force task images/builds, e.g. `linux/amd64` |
 | `GENTS_GLIBC_BUNDLE_PATH` | unset | glibc loader/library bundle for musl task images |
 | `GENTS_MAX_OUTPUT` | `393216` | Per-turn output ceiling, matching DeepSeek's 384K (384 × 1024) `high`/`max` recommendation. Each completion clamps this ceiling to the context remaining after its assembled input. The name deliberately avoids Harbor's secret-key `TOKEN` heuristic. |
+| `GENTS_MAX_TOTAL` | required | Positive provider-reported token allowance for the whole durable request. Every completed provider call is charged, including tool turns, compaction, and later-retracted attempts; optional title inference is disabled for budgeted requests. Missing usage and observed overruns fail closed. The name avoids Harbor's secret-key `TOKEN` heuristic. |
 | `GENTS_CONTEXT_WINDOW` | `458752` | Gents prompt/compaction budget. The 75% compaction threshold admits up to 344,064 estimated input tokens; the per-turn output clamp preserves the combined-context invariant and the difference from D4F's 512K server limit leaves 53,248 tokens of tokenizer-accounting headroom. |
 | `GENTS_MAX_TURNS` | `1000` | Agent completion-loop turn ceiling |
 | `GENTS_RETRY_MAX_TRANSPORT` | `3` | Transient inference retry ceiling |
@@ -149,6 +151,7 @@ Useful overrides:
 | `GENTS_COMMAND_TIMEOUT_MAX_SECS` | `3600` | Foreground cap for explicit `timeout_secs` requests; kept far below `GENTS_REQUEST_TIMEOUT_SECS` so a pathological command returns control to the model (#1018) |
 | `GENTS_DIAGNOSTIC_TIMEOUT_SECS` | `10` | Per-command ceiling while capturing failure diagnostics |
 | `GENTS_DIAGNOSTIC_HOME_MAX_BYTES` | `67108864` | Maximum runtime-home size eligible for the diagnostic archive; larger homes retain an inventory and an archive-skipped note |
+| `GENTS_TRACE_SETTLE_TIMEOUT_SECS` | `30` | Maximum wait for root inference-call terminal usage persistence before accepting the ATIF export |
 | `GENTS_SUPERVISION_POLL_SECS` | `1` | Poll interval for the server/response-waiter lifecycle supervisor |
 | `GENTS_TOOL_ROOT` | `/app` | Filesystem and shell tool root |
 
@@ -164,3 +167,15 @@ Each trial retains:
   or `graphql-unavailable.txt`, partial response/timeline/ATIF output, and
   `gents-home-inventory.txt`. `gents-home.tar.gz` is also retained when the
   home fits `GENTS_DIAGNOSTIC_HOME_MAX_BYTES`.
+
+`trajectory.json.final_metrics` carries Harbor's standard
+`total_prompt_tokens`, `total_completion_tokens`, and `total_cached_tokens`.
+Those totals include every provider call owned by the root request, including
+compaction. The adapter copies the values into the Harbor `AgentContext`
+counters. It waits for every root `InferenceCall` row to leave
+`queued`/`running` before accepting the export, so asynchronous terminal
+persistence cannot silently undercount the last provider call. Exact turn or
+aggregate-token exhaustion after at least one charged call is returned to the
+verifier as a scoreable budget outcome; missing usage, provider-reported
+overrun, exhaustion before any provider call retained chargeable usage, and
+other runtime/provider failures remain agent errors.

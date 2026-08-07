@@ -33,6 +33,7 @@ pub struct AgentRequest {
     pub top_k: Option<i64>,
     pub seed: Option<i64>,
     pub max_tokens: Option<i64>,
+    pub max_total_tokens: Option<i64>,
     pub metadata: Option<String>,
     pub execution_origin: Option<String>,
     pub created_at: String,
@@ -45,6 +46,9 @@ pub struct AgentRequest {
 pub fn validate_agent_request(req: &AgentRequest) -> Result<()> {
     if req.seed.is_some_and(|seed| seed < 0) {
         anyhow::bail!("agent request seed must be non-negative");
+    }
+    if req.max_total_tokens.is_some_and(|limit| limit <= 0) {
+        anyhow::bail!("agent request max_total_tokens must be positive");
     }
     let has_parent_req = req.caused_by_parent_request_id.is_some();
     let has_parent_tc = req.caused_by_parent_tool_call_id.is_some();

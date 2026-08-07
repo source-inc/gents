@@ -174,6 +174,12 @@ pub struct TimelineInferenceCallRow {
     pub backend_id: Option<String>,
     #[serde(default)]
     pub call_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,6 +342,12 @@ pub struct TimelineInferenceCallEvent {
     pub backend_id: Option<String>,
     pub call_kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub queued_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
@@ -468,6 +480,9 @@ pub fn build_run_timeline(mut rows: RunTimelineRows) -> RunTimeline {
                 failure_reason: call.failure_reason.clone(),
                 backend_id: call.backend_id.clone(),
                 call_kind: call.call_kind.clone(),
+                prompt_tokens: call.prompt_tokens,
+                completion_tokens: call.completion_tokens,
+                cached_input_tokens: call.cached_input_tokens,
                 queued_at: call.queued_at.clone(),
                 started_at: call.started_at.clone(),
                 ended_at: call.ended_at.clone(),

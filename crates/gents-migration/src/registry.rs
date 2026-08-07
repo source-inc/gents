@@ -309,6 +309,11 @@ const AGENT_REQUEST_ADD_SEED_PATCH: &str = r#"[
   {"op":"replace","path":"/IsActive","value":false}
 ]"#;
 
+const AGENT_REQUEST_ADD_MAX_TOTAL_TOKENS_PATCH: &str = r#"[
+  {"op":"add","path":"/AgentRequest/Fields/-","value":{"Name":"max_total_tokens","Kind":"Int"}},
+  {"op":"replace","path":"/IsActive","value":false}
+]"#;
+
 /// Frozen baseline SDL set, ordered like
 /// `gents_protocol::schemas::{RUNTIME_ALL, ALL}` and feature-invariant (includes
 /// AgentMemory). Collections with post-cutover changes use frozen local SDL
@@ -563,6 +568,15 @@ pub static DEFAULT_STEPS: &[MigrationStep<'static>] = &[
         expected_version: Some("bafyreibraouw4tfoncf3hvqvjmlauvv66l4xnupofwiw5liielbb75ofdu"),
         expected_transform: None,
         expected_state: CollectionExpectation::fields(&["seed"]),
+    },
+    MigrationStep::PatchVersioned {
+        id: "agent-request-add-max-total-tokens",
+        collection: gents_protocol::schemas::AGENT_REQUEST_NAME,
+        patch: AGENT_REQUEST_ADD_MAX_TOTAL_TOKENS_PATCH,
+        lens: None,
+        expected_version: Some("bafyreibusca7yt6dos527ku5ezkcyim77xd3zv52532r2pdzi7tg3g75tq"),
+        expected_transform: None,
+        expected_state: CollectionExpectation::fields(&["seed", "max_total_tokens"]),
     },
 ];
 

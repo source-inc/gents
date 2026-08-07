@@ -15,3 +15,4 @@ import Proofs.Conformance.ContractCases.Transcript
 import Proofs.Conformance.ContractCases.ManagedExec
 import Proofs.Conformance.ContractCases.PromptAssembly
 import Proofs.Conformance.ContractCases.RenderedCapture
+import Proofs.Conformance.ContractCases.AggregateBudget

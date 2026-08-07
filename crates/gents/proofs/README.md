@@ -33,6 +33,11 @@ The proofs are strongest where the runtime is a state machine:
   safe entry input, so `PromptAssembly/Budget.lean` proves the per-turn guard
   and `input + effectiveOutput ≤ context` over the whole dispatch trace and
   drives a generated regression where only a later turn crosses the budget.
+  `PromptAssembly/AggregateBudget.lean` separately proves the request-wide
+  ledger: every reported completion (including a later-retracted attempt)
+  charges monotonically, each dispatch fits its remaining allowance, and an
+  exhausted ledger cannot dispatch again. Generated witnesses fence the Rust
+  clamp and fail-closed charge classifications.
   `Provider.sanitizeForProvider` models the full three-stage composition
   production runs (`normalize_assistant_content_order ∘
   drop_unpaired_tool_calls ∘ drop_orphaned_tool_results`); the coarser
@@ -80,7 +85,7 @@ lake env lean --run Proofs/Conformance/Contracts.lean
 
 ## What Is Proven
 
-The current proof suite covers fifteen practical areas:
+The current proof suite covers sixteen practical areas:
 
 1. Request/process/persistence state transitions
 2. Daemon storage-observation assumptions that refine persistence
@@ -102,6 +107,9 @@ The current proof suite covers fifteen practical areas:
     machine — demotion at exactly K consecutive failures, no flap below K,
     single-success promotion, and effective availability as
     intent ∧ ¬measured-unhealthy
+15. Provider-input and token-budget enforcement: prompt assembly and
+    sanitization, per-turn context clamps, and the request-wide aggregate
+    ledger across tool turns and retracted attempts
 
 Separately, **obligation models** (no Rust refinement tests yet):
 
@@ -122,7 +130,7 @@ The proof boundary matters:
 - External assumptions such as "DefraDB eventually makes an acked mutation
   visible" or "provider streamed bytes" are not proven here.
 
-15. Agent self-configuration writes: per-collection writable/protected field
+16. Agent self-configuration writes: per-collection writable/protected field
     partitions, patch-merge identity immutability and containment,
     transactional accept/reject totality, and no-lockout recoverability
 ## Cross-node TLA+ specs
@@ -179,6 +187,7 @@ and either tested at the Rust boundary or treated as an external assumption.
 | `Proofs/CommandPolicy.lean` | Barrel for command/tool execution policy validation, sandbox, env, and safety proofs |
 | `Proofs/ToolExecution.lean` | MCP/tool preflight and retry eligibility boundary model |
 | `Proofs/ManagedExec.lean` | Barrel for managed native executor state, executable transitions, liveness properties, and tool composition |
+| `Proofs/PromptAssembly/` | Provider-view sanitation and prompt assembly, per-turn context budgeting, and the request-wide aggregate token ledger. Fences: generated cases consumed by `agent::loop_stream::tests`. |
 | `Proofs/P2PBackpressure.lean` | Obligation model (no conformance bridge): success-ack backing, pending-DAG capacity, strict push-slot release on timeout |
 | `Proofs/PeerRegistryDiscovery/DirectoryProjection.lean` | Agent directory projection (machine index v1): source-owned membership, foreign-row preservation, idempotent convergence, write-free settled fixpoint, retraction soundness. Fence: `tests/conformance/directory_projection.rs`. |
 | `Proofs/Background/` | Subagent/background bridge model: `BridgedState` (parent/child composed pair, `SecondLeg` subagent-vs-tool vocabulary), six bridge transitions, completion-notification/continuation composition, and property modules (B1/B2 projection, B3/B3′ cascade/detach, B4 depth, B5 link symmetry, B6 foreground blocking, B7 budget, INV-UNIQUE, delegation graph) |
@@ -229,7 +238,9 @@ Related implementation-facing doc:
 ## Rust Conformance Extraction
 
 Rust conformance tests do not hand-maintain separate Lean parity tables for the
-core executable machines. The test helper in `src/lean_vocab_test.rs` runs:
+core executable machines. This includes the aggregate-budget dispatch and
+charge cases consumed at the owned completion-loop boundary. The test helper
+in `src/lean_vocab_test.rs` runs:
 
 ```bash
 cd crates/gents/proofs

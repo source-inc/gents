@@ -400,6 +400,7 @@ mod tests {
             top_k: None,
             seed: None,
             max_tokens: None,
+            max_total_tokens: None,
             metadata: None,
             execution_origin: Some("interactive".to_string()),
             created_at: created_at.to_string(),

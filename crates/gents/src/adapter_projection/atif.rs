@@ -106,6 +106,14 @@ pub struct AtifObservationResult {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AtifFinalMetrics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_prompt_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_completion_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_cached_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_cost_usd: Option<f64>,
     pub total_steps: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra: Option<BTreeMap<String, Value>>,
@@ -228,10 +236,23 @@ pub(super) fn build_atif_trajectory(
         step.step_id = index + 1;
     }
 
-    let inference_call_count = timeline
+    let root_provider_calls = timeline
         .inference_calls
         .iter()
-        .filter(|call| call.request_id == timeline.request_id && call.call_kind == "inference")
+        .filter(|call| call.request_id == timeline.request_id)
+        .collect::<Vec<_>>();
+    let inference_call_count = root_provider_calls.len();
+    let inference_call_pending_count = root_provider_calls
+        .iter()
+        .filter(|call| matches!(call.call_state.as_str(), "queued" | "running"))
+        .count();
+    let inference_call_usage_count = root_provider_calls
+        .iter()
+        .filter(|call| {
+            call.prompt_tokens.is_some()
+                || call.completion_tokens.is_some()
+                || call.cached_input_tokens.is_some()
+        })
         .count();
     let tool_call_count = timeline
         .events
@@ -240,6 +261,8 @@ pub(super) fn build_atif_trajectory(
             |event| matches!(event, RunTimelineEvent::ToolCall(tool) if root_tool(timeline, tool)),
         )
         .count();
+    let (total_prompt_tokens, total_completion_tokens, total_cached_tokens) =
+        inference_usage_totals(timeline);
 
     AtifTrajectory {
         schema_version: ATIF_SCHEMA_VERSION.to_string(),
@@ -280,6 +303,10 @@ pub(super) fn build_atif_trajectory(
             ]),
         },
         final_metrics: Some(AtifFinalMetrics {
+            total_prompt_tokens,
+            total_completion_tokens,
+            total_cached_tokens,
+            total_cost_usd: None,
             total_steps: steps.len(),
             extra: optional_extra([
                 ("request_id", string_value(&timeline.request_id)),
@@ -289,6 +316,14 @@ pub(super) fn build_atif_trajectory(
                     optional_string_value(timeline.request.lifecycle_state.as_deref()),
                 ),
                 ("inference_call_count", Some(json!(inference_call_count))),
+                (
+                    "inference_call_pending_count",
+                    Some(json!(inference_call_pending_count)),
+                ),
+                (
+                    "inference_call_usage_count",
+                    Some(json!(inference_call_usage_count)),
+                ),
                 ("tool_call_count", Some(json!(tool_call_count))),
                 ("child_request_ids", Some(json!(timeline.child_request_ids))),
             ]),
@@ -486,6 +521,15 @@ pub(super) fn atif_projection_schema() -> Value {
                 "additionalProperties": false,
                 "required": ["total_steps"],
                 "properties": {
+                    "total_prompt_tokens": optional_nonnegative_integer_schema(),
+                    "total_completion_tokens": optional_nonnegative_integer_schema(),
+                    "total_cached_tokens": optional_nonnegative_integer_schema(),
+                    "total_cost_usd": {
+                        "anyOf": [
+                            { "type": "number", "minimum": 0 },
+                            { "type": "null" }
+                        ]
+                    },
                     "total_steps": { "type": "integer", "minimum": 0 },
                     "extra": optional_object_schema()
                 }
@@ -845,6 +889,38 @@ fn optional_object_schema() -> Value {
     })
 }
 
+fn optional_nonnegative_integer_schema() -> Value {
+    json!({
+        "anyOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "null" }
+        ]
+    })
+}
+
+fn inference_usage_totals(timeline: &RunTimeline) -> (Option<u64>, Option<u64>, Option<u64>) {
+    let mut prompt = None::<u64>;
+    let mut completion = None::<u64>;
+    let mut cached = None::<u64>;
+    for call in timeline
+        .inference_calls
+        .iter()
+        .filter(|call| call.request_id == timeline.request_id)
+    {
+        add_nonnegative_usage(&mut prompt, call.prompt_tokens);
+        add_nonnegative_usage(&mut completion, call.completion_tokens);
+        add_nonnegative_usage(&mut cached, call.cached_input_tokens);
+    }
+    (prompt, completion, cached)
+}
+
+fn add_nonnegative_usage(total: &mut Option<u64>, value: Option<i64>) {
+    let Some(value) = value.and_then(|value| u64::try_from(value).ok()) else {
+        return;
+    };
+    *total = Some(total.unwrap_or_default().saturating_add(value));
+}
+
 fn require_nonempty(violations: &mut Vec<String>, path: &str, value: &str) {
     if value.trim().is_empty() {
         violations.push(format!("{path} is required"));
@@ -856,8 +932,8 @@ mod tests {
     use super::*;
     use crate::adapter_projection::{ProjectionRedactionMode, ATIF_SCHEMA_VERSION};
     use crate::run_timeline::{
-        build_run_timeline, RunTimelineRows, TimelineMessageRow, TimelineRequestRow,
-        TimelineResponseRow, TimelineToolCallRow,
+        build_run_timeline, RunTimelineRows, TimelineInferenceCallRow, TimelineMessageRow,
+        TimelineRequestRow, TimelineResponseRow, TimelineToolCallRow,
     };
     use gents_protocol::message::{
         AssistantContent, Message, Reasoning, ToolCall, ToolFunction, ToolResultContent,
@@ -909,6 +985,41 @@ mod tests {
                 completed_at: Some("2026-07-31T20:00:04Z".to_string()),
                 ..TimelineResponseRow::default()
             }],
+            inference_calls: vec![
+                TimelineInferenceCallRow {
+                    call_id: "inference-1".to_string(),
+                    request_id: "req-atif".to_string(),
+                    call_seq: 1,
+                    call_state: "completed".to_string(),
+                    call_kind: "inference".to_string(),
+                    prompt_tokens: Some(120),
+                    completion_tokens: Some(30),
+                    cached_input_tokens: Some(20),
+                    ..TimelineInferenceCallRow::default()
+                },
+                TimelineInferenceCallRow {
+                    call_id: "inference-2".to_string(),
+                    request_id: "req-atif".to_string(),
+                    call_seq: 2,
+                    call_state: "completed".to_string(),
+                    call_kind: "inference".to_string(),
+                    prompt_tokens: Some(180),
+                    completion_tokens: Some(70),
+                    cached_input_tokens: Some(40),
+                    ..TimelineInferenceCallRow::default()
+                },
+                TimelineInferenceCallRow {
+                    call_id: "compaction-1".to_string(),
+                    request_id: "req-atif".to_string(),
+                    call_seq: 3,
+                    call_state: "completed".to_string(),
+                    call_kind: "compaction".to_string(),
+                    prompt_tokens: Some(50),
+                    completion_tokens: Some(10),
+                    cached_input_tokens: Some(5),
+                    ..TimelineInferenceCallRow::default()
+                },
+            ],
             ..RunTimelineRows::default()
         })
     }
@@ -921,6 +1032,27 @@ mod tests {
         assert_eq!(trajectory.schema_version, ATIF_SCHEMA_VERSION);
         assert_eq!(trajectory.trajectory_id.as_deref(), Some("req-atif"));
         assert_eq!(trajectory.steps.len(), 3);
+        let metrics = trajectory.final_metrics.as_ref().unwrap();
+        assert_eq!(metrics.total_prompt_tokens, Some(350));
+        assert_eq!(metrics.total_completion_tokens, Some(110));
+        assert_eq!(metrics.total_cached_tokens, Some(65));
+        assert_eq!(metrics.total_cost_usd, None);
+        assert_eq!(
+            metrics
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.get("inference_call_pending_count"))
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            metrics
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.get("inference_call_usage_count"))
+                .and_then(Value::as_u64),
+            Some(3)
+        );
         assert_eq!(trajectory.steps[0].source, AtifStepSource::User);
         assert_eq!(trajectory.steps[1].source, AtifStepSource::Agent);
         assert_eq!(

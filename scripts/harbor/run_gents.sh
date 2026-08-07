@@ -12,6 +12,7 @@ set -eu
 # key-plus-prefix is safe against model content: JSON escapes quotes inside
 # string values, so this byte sequence can only introduce the real field.
 _MAX_TURN_ERROR_PREFIX='"error_message": "agent stream failed: PromptError: MaxTurnError: '
+_AGGREGATE_TOKEN_ERROR_PREFIX='"error_message": "agent stream failed: CompletionError: ProviderError: aggregate_token_budget_exhausted: '
 _COMPACTION_PROVIDER_ERROR='compaction_provider_failure:'
 
 response_error_has() {
@@ -20,6 +21,36 @@ response_error_has() {
   sed -n '/^[[:space:]]*"error_message":/p' "${response_file}" |
     head -1 |
     grep -qF "${expected}"
+}
+
+# Read one non-negative integer from the root final_metrics.extra object in
+# Gents' pretty-printed ATIF. Exact indentation anchors this to the top-level
+# metrics object, so model-authored tool arguments cannot forge the settle gate.
+atif_final_metrics_extra_u64() {
+  atif_path=$1
+  atif_key=$2
+  awk -v key="${atif_key}" '
+    /^  "final_metrics": \{$/ { in_final_metrics = 1; next }
+    in_final_metrics && /^    "extra": \{$/ { in_extra = 1; next }
+    in_extra && /^    \}/ { exit }
+    in_extra && $1 == "\"" key "\":" {
+      value = $2
+      sub(/,$/, "", value)
+      if (value ~ /^[0-9]+$/) print value
+      exit
+    }
+  ' "${atif_path}"
+}
+
+normalize_token_budget_outcome() {
+  candidate_outcome=$1
+  usage_count=$2
+  if [ "${candidate_outcome}" = "token_budget_exhausted" ] && \
+    [ "${usage_count}" -eq 0 ]; then
+    printf 'agent_error\n'
+  else
+    printf '%s\n' "${candidate_outcome}"
+  fi
 }
 
 classify_response() {
@@ -32,6 +63,8 @@ classify_response() {
     error)
       if grep -qF "${_MAX_TURN_ERROR_PREFIX}" "${response_file}"; then
         printf 'max_turns_exhausted\n'
+      elif grep -qF "${_AGGREGATE_TOKEN_ERROR_PREFIX}" "${response_file}"; then
+        printf 'token_budget_exhausted\n'
       elif response_error_has "${response_file}" "${_COMPACTION_PROVIDER_ERROR}"; then
         printf 'compaction_provider_error\n'
       else
@@ -73,6 +106,29 @@ run_self_test() {
   "error_message": null
 }
 EOF
+  cat >"${self_test_dir}/trajectory.json" <<'EOF'
+{
+  "steps": [
+    {
+      "observation": {
+        "final_metrics": {
+          "extra": {
+            "inference_call_count": 999
+          }
+        }
+      }
+    }
+  ],
+  "final_metrics": {
+    "total_steps": 1,
+    "extra": {
+      "inference_call_count": 2,
+      "inference_call_pending_count": 0,
+      "inference_call_usage_count": 2
+    }
+  }
+}
+EOF
   cat >"${self_test_dir}/completed.json" <<'EOF'
 {
   "request_id": "req-2",
@@ -95,6 +151,14 @@ EOF
   "status": "error",
   "content": null,
   "error_message": "agent stream failed: CompletionError: ProviderError: upstream returned HTTP 500"
+}
+EOF
+  cat >"${self_test_dir}/token-budget.json" <<'EOF'
+{
+  "request_id": "req-token-budget",
+  "status": "error",
+  "content": "partial work",
+  "error_message": "agent stream failed: CompletionError: ProviderError: aggregate_token_budget_exhausted: limit=100000, used=100000 after provider call"
 }
 EOF
   cat >"${self_test_dir}/compaction-error.json" <<'EOF'
@@ -192,6 +256,7 @@ EOF
   expect_outcome complete completed
   expect_outcome completed completed
   expect_outcome max-turns max_turns_exhausted
+  expect_outcome token-budget token_budget_exhausted
   expect_outcome provider-error agent_error
   expect_outcome compaction-error agent_error
   expect_outcome compaction-provider-error compaction_provider_error
@@ -202,6 +267,26 @@ EOF
   expect_outcome envelope-max-turns max_turns_exhausted
   expect_outcome envelope-nested-max-turn-only agent_error
   expect_outcome provider-echoes-max-turn agent_error
+
+  for metric_expectation in \
+    inference_call_count:2 \
+    inference_call_pending_count:0 \
+    inference_call_usage_count:2; do
+    metric_key=${metric_expectation%%:*}
+    metric_expected=${metric_expectation#*:}
+    metric_actual=$(atif_final_metrics_extra_u64 \
+      "${self_test_dir}/trajectory.json" "${metric_key}")
+    if [ "${metric_actual}" != "${metric_expected}" ]; then
+      printf 'FAIL: ATIF %s expected %s, got %s\n' \
+        "${metric_key}" "${metric_expected}" "${metric_actual}" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if [ "$(normalize_token_budget_outcome token_budget_exhausted 0)" != "agent_error" ] || \
+    [ "$(normalize_token_budget_outcome token_budget_exhausted 1)" != "token_budget_exhausted" ]; then
+    printf 'FAIL: pre-dispatch token exhaustion scoreability drifted\n' >&2
+    failures=$((failures + 1))
+  fi
 
   if [ "${failures}" -ne 0 ]; then
     printf 'self-test failed: %s classification(s) wrong\n' "${failures}" >&2
@@ -228,6 +313,7 @@ fi
 : "${GENTS_SEED:=}"
 : "${GENTS_REASONING_EFFORT:=max}"
 : "${GENTS_MAX_OUTPUT:=393216}"
+: "${GENTS_MAX_TOTAL:?GENTS_MAX_TOTAL is required}"
 : "${GENTS_CONTEXT_WINDOW:=458752}"
 : "${GENTS_MAX_TURNS:=1000}"
 : "${GENTS_RETRY_MAX_TRANSPORT:=3}"
@@ -239,12 +325,14 @@ fi
 : "${GENTS_DIAGNOSTIC_HOME_MAX_BYTES:=67108864}"
 : "${GENTS_SUPERVISION_POLL_SECS:=1}"
 : "${GENTS_RESPONSE_WAITER_MAX_RESTARTS:=10}"
+: "${GENTS_TRACE_SETTLE_TIMEOUT_SECS:=30}"
 : "${GENTS_LOGS_DIR:=/logs/agent}"
 
 for numeric_value in \
   "${GENTS_DIAGNOSTIC_TIMEOUT_SECS}" \
   "${GENTS_DIAGNOSTIC_HOME_MAX_BYTES}" \
-  "${GENTS_RESPONSE_WAITER_MAX_RESTARTS}"; do
+  "${GENTS_RESPONSE_WAITER_MAX_RESTARTS}" \
+  "${GENTS_TRACE_SETTLE_TIMEOUT_SECS}"; do
   case "${numeric_value}" in
     ''|*[!0-9]*|0)
       echo "diagnostic bounds must be positive integers" >&2
@@ -318,6 +406,13 @@ esac
 case "${GENTS_MAX_TURNS}" in
   ''|*[!0-9]*|0?*)
     echo "GENTS_MAX_TURNS must be a non-negative integer without leading zeros" >&2
+    exit 2
+    ;;
+esac
+
+case "${GENTS_MAX_TOTAL}" in
+  ''|*[!0-9]*|0|0?*)
+    echo "GENTS_MAX_TOTAL must be a positive integer without leading zeros" >&2
     exit 2
     ;;
 esac
@@ -416,8 +511,8 @@ record_server_exit() {
     server_exit_description="exit code ${server_wait_status}"
   fi
   if [ -n "${request_id}" ]; then
-    printf '{\n  "outcome": "runtime_server_lost",\n  "response_status": "unavailable",\n  "max_turns": %s,\n  "request_id": "%s"\n}\n' \
-      "${GENTS_MAX_TURNS}" "${request_id}" >"${outcome_log}"
+    printf '{\n  "outcome": "runtime_server_lost",\n  "response_status": "unavailable",\n  "max_turns": %s,\n  "max_total_tokens": %s,\n  "request_id": "%s"\n}\n' \
+      "${GENTS_MAX_TURNS}" "${GENTS_MAX_TOTAL}" "${request_id}" >"${outcome_log}"
   fi
   server_pid=""
 }
@@ -640,6 +735,7 @@ set -- "$@" \
   --temperature "${GENTS_TEMPERATURE}" \
   --top-p "${GENTS_TOP_P}" \
   --max-tokens "${GENTS_MAX_OUTPUT}" \
+  --max-total-tokens "${GENTS_MAX_TOTAL}" \
   --metadata "${metadata}" \
   --valid-until none \
   --no-wait \
@@ -727,28 +823,72 @@ while :; do
   exit "${waiter_status}"
 done
 
-"${GENTS_BINARY}" trace project \
-  --home "${GENTS_HOME}" \
-  --request-id "${request_id}" \
-  --projection atif \
-  --format native-json \
-  --output-file "${trajectory_path}"
+# Persist terminal classification before trace settling. If projection cannot
+# reopen the store, diagnostics still retain the response-derived outcome.
+response_status=$(sed -n 's/^[[:space:]]*"status": "\([^"]*\)",*$/\1/p' "${response_log}" | head -1)
+outcome=$(classify_response "${response_log}")
+printf '{\n  "outcome": "%s",\n  "response_status": "%s",\n  "max_turns": %s,\n  "max_total_tokens": %s,\n  "request_id": "%s"\n}\n' \
+  "${outcome}" "${response_status:-missing}" "${GENTS_MAX_TURNS}" "${GENTS_MAX_TOTAL}" "${request_id}" \
+  >"${outcome_log}"
 
-test -s "${trajectory_path}"
+trajectory_candidate="${trajectory_path}.pending"
+trace_settle_elapsed=0
+trace_settled=0
+inference_call_count=""
+inference_call_usage_count=""
+while [ "${trace_settle_elapsed}" -lt "${GENTS_TRACE_SETTLE_TIMEOUT_SECS}" ]; do
+  rm -f "${trajectory_candidate}"
+  if "${GENTS_BINARY}" trace project \
+    --home "${GENTS_HOME}" \
+    --request-id "${request_id}" \
+    --projection atif \
+    --format native-json \
+    --output-file "${trajectory_candidate}" && \
+    [ -s "${trajectory_candidate}" ]; then
+    inference_call_count=$(atif_final_metrics_extra_u64 \
+      "${trajectory_candidate}" inference_call_count)
+    pending_call_count=$(atif_final_metrics_extra_u64 \
+      "${trajectory_candidate}" inference_call_pending_count)
+    inference_call_usage_count=$(atif_final_metrics_extra_u64 \
+      "${trajectory_candidate}" inference_call_usage_count)
+    if [ -n "${inference_call_count}" ] && \
+      [ -n "${inference_call_usage_count}" ] && \
+      [ "${pending_call_count:-missing}" = "0" ]; then
+      mv "${trajectory_candidate}" "${trajectory_path}"
+      trace_settled=1
+      break
+    fi
+  fi
+  sleep 1
+  trace_settle_elapsed=$((trace_settle_elapsed + 1))
+done
+rm -f "${trajectory_candidate}"
+if [ "${trace_settled}" != "1" ]; then
+  echo "Gents inference-call usage did not settle within ${GENTS_TRACE_SETTLE_TIMEOUT_SECS}s" >&2
+  exit 1
+fi
+
+classification_reason=""
+normalized_outcome=$(normalize_token_budget_outcome \
+  "${outcome}" "${inference_call_usage_count:-0}")
+if [ "${normalized_outcome}" != "${outcome}" ]; then
+  classification_reason="aggregate token budget was exhausted before any provider call retained chargeable usage"
+fi
+outcome=${normalized_outcome}
 
 # `response wait` exits successfully after any terminal response, including a
 # provider/runtime failure. Do not let Harbor run the verifier against an
 # untouched task filesystem and record that infrastructure failure as a model
-# zero. The one exception is agent-budget exhaustion (MaxTurn): the workspace
-# holds up to GENTS_MAX_TURNS turns of real work, so return control to Harbor
+# zero. The exceptions are explicit agent-budget exhaustion (turns or aggregate
+# provider tokens): the workspace holds real work, so return control to Harbor
 # and let the verifier score it. Preserve the response and trajectory above in
 # every case; genuine failures stay agent exceptions so they can be retried or
 # recovered separately.
-response_status=$(sed -n 's/^[[:space:]]*"status": "\([^"]*\)",*$/\1/p' "${response_log}" | head -1)
-outcome=$(classify_response "${response_log}")
-printf '{\n  "outcome": "%s",\n  "response_status": "%s",\n  "max_turns": %s,\n  "request_id": "%s"\n}\n' \
-  "${outcome}" "${response_status:-missing}" "${GENTS_MAX_TURNS}" "${request_id}" \
-  >"${outcome_log}"
+if [ -n "${classification_reason}" ]; then
+  printf '{\n  "outcome": "%s",\n  "response_status": "%s",\n  "max_turns": %s,\n  "max_total_tokens": %s,\n  "request_id": "%s",\n  "classification_reason": "%s"\n}\n' \
+    "${outcome}" "${response_status:-missing}" "${GENTS_MAX_TURNS}" "${GENTS_MAX_TOTAL}" "${request_id}" "${classification_reason}" \
+    >"${outcome_log}"
+fi
 case "${outcome}" in
   completed)
     printf 'gents request %s completed; trajectory=%s\n' "${request_id}" "${trajectory_path}"
@@ -758,6 +898,12 @@ case "${outcome}" in
     sed -n '/^[[:space:]]*"error_message":/p' "${response_log}" >&2 || true
     printf 'gents request %s reached the %s-turn limit; trajectory=%s\n' \
       "${request_id}" "${GENTS_MAX_TURNS}" "${trajectory_path}"
+    ;;
+  token_budget_exhausted)
+    echo "Gents request ${request_id} exhausted its ${GENTS_MAX_TOTAL}-token aggregate budget; returning the workspace for verification" >&2
+    sed -n '/^[[:space:]]*"error_message":/p' "${response_log}" >&2 || true
+    printf 'gents request %s reached the %s-token aggregate limit; trajectory=%s\n' \
+      "${request_id}" "${GENTS_MAX_TOTAL}" "${trajectory_path}"
     ;;
   compaction_provider_error)
     echo "Gents request ${request_id} terminated because both guided and strict fallback compaction failed" >&2

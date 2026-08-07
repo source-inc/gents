@@ -136,6 +136,7 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
         shutdown: &mut tokio::sync::watch::Receiver<bool>,
         interrupt_rx: &mut tokio::sync::watch::Receiver<Option<crate::interrupt::InterruptIntent>>,
         request_token: &tokio_util::sync::CancellationToken,
+        aggregate_token_budget: Option<crate::agent::loop_stream::AggregateTokenBudget>,
     ) -> Result<HandleRequestOutcome> {
         let request_deadline = lifecycle.claimed_deadline_at();
         let workspace_cwd = request_workspace_cwd(request);
@@ -199,12 +200,16 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                     &self.behavior,
                     self.preamble.clone(),
                     request,
+                    aggregate_token_budget.clone(),
                     self.loop_tools.len(),
                 )?;
                 loop_config.deadline = request_deadline;
                 let turn_compactor = self.compactor.clone();
                 let turn_context_window = self.behavior.context_window;
-                let turn_compaction_options = self.compaction_options_for_request(request_deadline);
+                let turn_compaction_options = self.compaction_options_for_request(
+                    request_deadline,
+                    aggregate_token_budget,
+                );
                 let turn_node = self.node.clone();
                 let turn_session_id = request.session_id.clone();
                 let turn_request_id = request.request_id.clone();
@@ -786,6 +791,7 @@ mod tests {
             top_k: None,
             seed: None,
             max_tokens: None,
+            max_total_tokens: None,
             metadata: None,
             execution_origin: Some("interactive".to_string()),
             created_at,

@@ -121,6 +121,7 @@ mod tests {
             top_k: None,
             seed: None,
             max_tokens: None,
+            max_total_tokens: None,
             metadata: metadata.map(ToOwned::to_owned),
             execution_origin: Some("manual".to_string()),
             created_at: "2026-06-04T00:00:00Z".to_string(),

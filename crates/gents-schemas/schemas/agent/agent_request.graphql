@@ -14,6 +14,7 @@ type AgentRequest @branchable {
     top_k: Int
     seed: Int
     max_tokens: Int
+    max_total_tokens: Int
     metadata: String
     status: String @index
     lifecycle_state: String @index

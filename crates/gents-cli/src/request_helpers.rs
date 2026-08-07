@@ -23,6 +23,7 @@ pub(crate) struct SubmittedRequest {
     pub(crate) top_k: Option<i64>,
     pub(crate) seed: Option<i64>,
     pub(crate) max_tokens: Option<i64>,
+    pub(crate) max_total_tokens: Option<i64>,
     pub(crate) metadata: Option<String>,
     pub(crate) created_at: Option<String>,
 }
@@ -34,6 +35,7 @@ pub(crate) struct RequestSubmitOptions {
     pub(crate) top_k: Option<i64>,
     pub(crate) seed: Option<i64>,
     pub(crate) max_tokens: Option<i64>,
+    pub(crate) max_total_tokens: Option<i64>,
     pub(crate) metadata: Option<String>,
     pub(crate) valid_until: Option<DateTime<Utc>>,
     pub(crate) retry_parent_request: Option<String>,
@@ -262,6 +264,7 @@ pub(crate) async fn create_agent_request(
         optional_i64_field("top_k", options.top_k),
         optional_i64_field("seed", options.seed),
         optional_i64_field("max_tokens", options.max_tokens),
+        optional_i64_field("max_total_tokens", options.max_total_tokens),
         request_metadata
             .as_ref()
             .map(|metadata| format!(r#"metadata: "{}""#, escape_graphql_string(metadata))),
@@ -334,6 +337,7 @@ pub(crate) async fn create_agent_request(
         top_k: options.top_k,
         seed: options.seed,
         max_tokens: options.max_tokens,
+        max_total_tokens: options.max_total_tokens,
         metadata: request_metadata,
         created_at: Some(created_at),
     })
@@ -723,6 +727,7 @@ pub(crate) struct StaleRequestView {
     pub(crate) top_k: Option<i64>,
     pub(crate) seed: Option<i64>,
     pub(crate) max_tokens: Option<i64>,
+    pub(crate) max_total_tokens: Option<i64>,
     pub(crate) metadata: Option<String>,
 }
 
@@ -747,6 +752,7 @@ pub(crate) async fn fetch_request_view(
                 top_k
                 seed
                 max_tokens
+                max_total_tokens
                 metadata
             }}
         }}"#,
@@ -785,6 +791,7 @@ pub(crate) async fn fetch_request_view(
         top_k: as_optional_i64("top_k"),
         seed: as_optional_i64("seed"),
         max_tokens: as_optional_i64("max_tokens"),
+        max_total_tokens: as_optional_i64("max_total_tokens"),
         metadata: as_optional("metadata"),
     })
 }

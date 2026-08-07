@@ -46,6 +46,7 @@ async fn request_submit(args: RequestSubmitArgs) -> Result<()> {
             top_k: args.top_k,
             seed: args.seed,
             max_tokens: args.max_tokens,
+            max_total_tokens: args.max_total_tokens,
             metadata: args.metadata.clone(),
             valid_until,
             retry_parent_request: None,
@@ -63,6 +64,7 @@ async fn request_submit(args: RequestSubmitArgs) -> Result<()> {
         "top_k": submitted.top_k,
         "seed": submitted.seed,
         "max_tokens": submitted.max_tokens,
+        "max_total_tokens": submitted.max_total_tokens,
         "metadata": submitted.metadata,
     });
     if args.no_wait {
@@ -403,6 +405,7 @@ fn request_show_request_query(request_id: &str, schema: &RequestShowSchema) -> S
         "top_k",
         "seed",
         "max_tokens",
+        "max_total_tokens",
         "metadata",
         "created_at",
         "claimed_at",
@@ -1319,6 +1322,7 @@ async fn request_resend(args: RequestResendArgs) -> Result<()> {
             top_k: stale.top_k,
             seed: stale.seed,
             max_tokens: stale.max_tokens,
+            max_total_tokens: stale.max_total_tokens,
             metadata: stale.metadata.clone(),
             valid_until,
             retry_parent_request: Some(stale_id.clone()),

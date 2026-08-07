@@ -149,6 +149,7 @@ async fn project_child_request(
         top_k: None,
         seed: None,
         max_tokens: None,
+        max_total_tokens: None,
         metadata: None,
         created_at: link.latest_request_created_at.clone(),
     };

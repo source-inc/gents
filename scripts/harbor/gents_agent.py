@@ -232,6 +232,19 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
                 "build this branch or use a release containing PR #988"
             )
 
+        request_help_result = await environment.exec(
+            command=f"{self._REMOTE_BINARY} request submit --help"
+        )
+        self._require_success("gents request submit --help", request_help_result)
+        request_help_text = (
+            f"{request_help_result.stdout or ''}\n{request_help_result.stderr or ''}"
+        )
+        if "--max-total-tokens" not in request_help_text:
+            raise RuntimeError(
+                "The installed Gents binary does not enforce request-wide token "
+                "budgets; build this branch or use a newer release"
+            )
+
         fs_runner_result = await environment.exec(
             command=f"{self._REMOTE_FS_RUNNER} --self-test"
         )
@@ -254,6 +267,17 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
             raise ValueError(
                 "Set GENTS_INFERENCE_URL or OPENAI_BASE_URL to the OpenAI-compatible "
                 "inference endpoint, including /v1"
+            )
+        max_total = self._env("GENTS_MAX_TOTAL")
+        if not max_total:
+            raise ValueError(
+                "Set GENTS_MAX_TOTAL to the positive request-wide token budget"
+            )
+        if not max_total.isdecimal() or int(max_total) <= 0 or (
+            len(max_total) > 1 and max_total.startswith("0")
+        ):
+            raise ValueError(
+                "GENTS_MAX_TOTAL must be a positive integer without leading zeros"
             )
 
         session_slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", self.session_id or "trial")
@@ -300,6 +324,7 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
             # agent-env names as secrets and blindly replaces their values in
             # downloaded text artifacts, which can corrupt numeric JSON fields.
             "GENTS_MAX_OUTPUT": self._env("GENTS_MAX_OUTPUT", "393216") or "393216",
+            "GENTS_MAX_TOTAL": max_total,
             # Keep 53,248 tokens of provider-tokenization headroom below D4F's
             # 512K server limit. Gents dynamically clamps each turn's 384K
             # output ceiling to the context remaining after the assembled input,
@@ -385,6 +410,13 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
                 "Gents request seed persistence mismatch: "
                 f"requested={requested_seed!r} persisted={persisted_seed!r}"
             )
+        requested_max_total = int(run_env["GENTS_MAX_TOTAL"])
+        persisted_max_total = persisted_request.get("max_total_tokens")
+        if persisted_max_total != requested_max_total:
+            raise RuntimeError(
+                "Gents aggregate token-budget persistence mismatch: "
+                f"requested={requested_max_total!r} persisted={persisted_max_total!r}"
+            )
 
         context.metadata = {
             **(context.metadata or {}),
@@ -397,6 +429,7 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
                 "reasoning_effort": run_env["GENTS_REASONING_EFFORT"],
                 "context_window": int(run_env["GENTS_CONTEXT_WINDOW"]),
                 "max_output_tokens": int(run_env["GENTS_MAX_OUTPUT"]),
+                "max_total_tokens": persisted_max_total,
                 "max_turns": int(run_env["GENTS_MAX_TURNS"]),
                 "request_timeout_secs": request_timeout,
                 "retry_max_transport": int(run_env["GENTS_RETRY_MAX_TRANSPORT"]),
@@ -421,6 +454,16 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
         response = self._read_json_object(self.logs_dir / "response.json")
         diagnostic = self._read_json_object(self.logs_dir / "gents-diagnostic.json")
         server_exit = self._read_json_object(self.logs_dir / "gents-server-exit.json")
+        final_metrics = trajectory.get("final_metrics") or {}
+        if isinstance(final_metrics, dict):
+            for attribute, key in (
+                ("n_input_tokens", "total_prompt_tokens"),
+                ("n_cache_tokens", "total_cached_tokens"),
+                ("n_output_tokens", "total_completion_tokens"),
+            ):
+                value = final_metrics.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    setattr(context, attribute, value)
         failure_origin = None
         if diagnostic.get("reason") == "server_lost_during_request":
             failure_origin = "gents_server"
@@ -434,14 +477,15 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
                 "request_id": request.get("request_id"),
                 "session_id": trajectory.get("session_id"),
                 "trajectory_id": trajectory.get("trajectory_id"),
-                "total_steps": (trajectory.get("final_metrics") or {}).get(
-                    "total_steps"
-                ),
+                "total_steps": final_metrics.get("total_steps")
+                if isinstance(final_metrics, dict)
+                else None,
                 # The runner returns control to Harbor for exhausted turn
                 # budgets so the verifier can score the workspace. Surface the
                 # distinction so budget-limited trials are identifiable.
                 "outcome": outcome.get("outcome"),
-                "budget_exhausted": outcome.get("outcome") == "max_turns_exhausted",
+                "budget_exhausted": outcome.get("outcome")
+                in {"max_turns_exhausted", "token_budget_exhausted"},
                 "terminal_error": response.get("error_message"),
                 "failure_origin": failure_origin,
                 "diagnostic_reason": diagnostic.get("reason"),

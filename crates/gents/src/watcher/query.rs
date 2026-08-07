@@ -17,6 +17,7 @@ const AGENT_REQUEST_FIELDS: &str = r#"
                     top_k
                     seed
                     max_tokens
+                    max_total_tokens
                     metadata
                     execution_origin
                     created_at
@@ -223,6 +224,7 @@ struct AgentRequestRow {
     top_k: Option<i64>,
     seed: Option<i64>,
     max_tokens: Option<i64>,
+    max_total_tokens: Option<i64>,
     metadata: Option<String>,
     execution_origin: Option<String>,
     created_at: String,
@@ -304,6 +306,7 @@ impl AgentRequestRow {
             top_k: self.top_k,
             seed: self.seed,
             max_tokens: self.max_tokens,
+            max_total_tokens: self.max_total_tokens,
             metadata: self.metadata,
             execution_origin: normalize_optional_string(self.execution_origin),
             created_at: self.created_at,

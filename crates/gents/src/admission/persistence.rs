@@ -335,11 +335,59 @@ fn optional_graphql_string(field: &str, value: Option<&str>) -> String {
 
 fn usage_fields(usage: Option<Usage>) -> (String, String, String) {
     match usage {
-        Some(usage) => (
-            format!("prompt_tokens: {},", usage.input_tokens),
-            format!("completion_tokens: {},", usage.output_tokens),
-            format!("cached_input_tokens: {},", usage.cached_input_tokens),
-        ),
+        Some(usage) => {
+            let (prompt_tokens, completion_tokens, cached_input_tokens) =
+                persisted_usage_counts(usage);
+            (
+                format!("prompt_tokens: {prompt_tokens},"),
+                format!("completion_tokens: {completion_tokens},"),
+                format!("cached_input_tokens: {cached_input_tokens},"),
+            )
+        }
         None => (String::new(), String::new(), String::new()),
+    }
+}
+
+/// Persist `prompt_tokens` with Harbor/ATIF semantics: every input token,
+/// including cache reads and cache creation. Rig providers do not all populate
+/// `Usage.input_tokens` the same way, but their normalized `total_tokens`
+/// includes those components. Taking the larger total and subtracting output
+/// also preserves an internally inconsistent provider total without silently
+/// under-reporting the amount charged by the aggregate ledger.
+fn persisted_usage_counts(usage: Usage) -> (u64, u64, u64) {
+    let charged_total = usage
+        .total_tokens
+        .max(usage.input_tokens.saturating_add(usage.output_tokens));
+    (
+        charged_total.saturating_sub(usage.output_tokens),
+        usage.output_tokens,
+        usage.cached_input_tokens,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::persisted_usage_counts;
+    use rig::completion::Usage;
+
+    #[test]
+    fn persisted_prompt_usage_includes_cache_and_cannot_underreport_total() {
+        let usage = Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            total_tokens: 200,
+            cached_input_tokens: 40,
+            cache_creation_input_tokens: 10,
+        };
+        assert_eq!(persisted_usage_counts(usage), (150, 50, 40));
+
+        let inconsistent = Usage {
+            input_tokens: 300,
+            output_tokens: 200,
+            total_tokens: 400,
+            cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+        };
+        assert_eq!(persisted_usage_counts(inconsistent), (300, 200, 0));
     }
 }

@@ -64,6 +64,8 @@ struct RequestRow {
     #[serde(default)]
     max_tokens: Option<i64>,
     #[serde(default)]
+    max_total_tokens: Option<i64>,
+    #[serde(default)]
     metadata: Option<String>,
     #[serde(default)]
     execution_origin: Option<String>,
@@ -112,6 +114,7 @@ impl RequestRow {
             top_k: self.top_k,
             seed: self.seed,
             max_tokens: self.max_tokens,
+            max_total_tokens: self.max_total_tokens,
             metadata: self.metadata,
             execution_origin: self.execution_origin,
             created_at: self.created_at,
@@ -534,7 +537,7 @@ impl GoalSource {
                     order: [{{ created_at: DESC }}, {{ request_id: DESC }}]
                 ) {{
                     _docID request_id agent_did requester_did behavior_id session_id content
-                    temperature top_p top_k seed max_tokens metadata execution_origin
+                    temperature top_p top_k seed max_tokens max_total_tokens metadata execution_origin
                     lifecycle_state created_at deadline subagent_depth
                     caused_by_parent_request_id caused_by_parent_tool_call_id
                 }}

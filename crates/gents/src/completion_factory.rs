@@ -5,7 +5,7 @@ use rig::completion::CompletionModel;
 
 use crate::admission::{AdmissionRegistry, AdmittedCompletionClient};
 use crate::agent::completion_retry::CompletionRetryPolicy;
-use crate::agent::loop_stream::LoopConfig;
+use crate::agent::loop_stream::{AggregateTokenBudget, LoopConfig};
 use crate::backend_provider::BackendProviderKind;
 use crate::config::{AgentBehavior, ReasoningEffort, SamplingConfig};
 use crate::lifecycle::ExecutionOrigin;
@@ -52,6 +52,7 @@ pub(crate) fn loop_config(
         context_message: None,
         temperature: behavior.sampling.temperature,
         max_tokens: effective_max_tokens(behavior.max_output_tokens, behavior.sampling.max_tokens),
+        aggregate_token_budget: None,
         additional_params: merge_optional_params(
             merge_optional_params(
                 reasoning_profile_params(
@@ -81,6 +82,7 @@ pub(crate) fn loop_config_for_request(
     behavior: &AgentBehavior,
     preamble: String,
     request: &AgentRequest,
+    aggregate_token_budget: Option<AggregateTokenBudget>,
     tool_count: usize,
 ) -> anyhow::Result<LoopConfig> {
     let mut config = loop_config(
@@ -93,6 +95,7 @@ pub(crate) fn loop_config_for_request(
     sampling.validate_for_provider(behavior.backend_provider_kind, behavior.openai_wire_api)?;
     config.temperature = sampling.temperature;
     config.max_tokens = effective_max_tokens(behavior.max_output_tokens, sampling.max_tokens);
+    config.aggregate_token_budget = aggregate_token_budget;
     let request_additional_params = merge_optional_params(
         sampling.additional_params(),
         request_additional_params(behavior, request),
@@ -105,6 +108,26 @@ pub(crate) fn loop_config_for_request(
     config.retry_policy = CompletionRetryPolicy::resolve(&behavior.completion_retry, origin);
     config.deadline = parse_request_deadline(request.deadline.as_deref());
     Ok(config)
+}
+
+/// Mint the single monotone provider-usage ledger for one durable request.
+/// Callers must construct it before any request-scoped provider work so
+/// session compaction and the owned inference loop cannot receive independent
+/// allowances.
+pub(crate) fn aggregate_token_budget_for_request(
+    request: &AgentRequest,
+) -> anyhow::Result<Option<AggregateTokenBudget>> {
+    request
+        .max_total_tokens
+        .map(|limit| {
+            let limit = u64::try_from(limit)
+                .map_err(|_| anyhow::anyhow!("max_total_tokens must be a positive integer"))?;
+            if limit == 0 {
+                anyhow::bail!("max_total_tokens must be a positive integer");
+            }
+            Ok(AggregateTokenBudget::new(limit))
+        })
+        .transpose()
 }
 
 fn completion_retry_origin(value: Option<&str>) -> ExecutionOrigin {

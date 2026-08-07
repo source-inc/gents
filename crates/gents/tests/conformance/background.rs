@@ -60,6 +60,7 @@ struct BackgroundTheoremChildRequestRow {
     top_k: Option<i64>,
     seed: Option<i64>,
     max_tokens: Option<i64>,
+    max_total_tokens: Option<i64>,
     metadata: Option<String>,
     execution_origin: Option<String>,
     created_at: String,
@@ -88,6 +89,7 @@ impl BackgroundTheoremChildRequestRow {
             top_k: self.top_k,
             seed: self.seed,
             max_tokens: self.max_tokens,
+            max_total_tokens: self.max_total_tokens,
             metadata: self.metadata,
             execution_origin: self
                 .execution_origin

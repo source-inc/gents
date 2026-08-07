@@ -33,6 +33,9 @@ def _stub_module(name: str, **attrs: object) -> None:
 class _AgentContext:
     def __init__(self) -> None:
         self.metadata = None
+        self.n_input_tokens = None
+        self.n_cache_tokens = None
+        self.n_output_tokens = None
 
 
 _stub_module("certifi", where=lambda: "/nonexistent/ca-bundle.pem")
@@ -52,7 +55,12 @@ from scripts.harbor.gents_agent import GentsAgent  # noqa: E402
 _TRAJECTORY = {
     "session_id": "session-1",
     "trajectory_id": "trajectory-1",
-    "final_metrics": {"total_steps": 7},
+    "final_metrics": {
+        "total_steps": 7,
+        "total_prompt_tokens": 300,
+        "total_cached_tokens": 60,
+        "total_completion_tokens": 100,
+    },
 }
 _MAX_TURN_ERROR = (
     "agent stream failed: PromptError: MaxTurnError: (reached max turn limit: 250)"
@@ -70,6 +78,7 @@ class PopulateContextPostRunTest(unittest.TestCase):
                 (agent.logs_dir / name).write_text(text)
             context = _AgentContext()
             agent.populate_context_post_run(context)
+            self.last_context = context
             return ((context.metadata or {}).get("gents")) or {}
 
     def test_max_turn_exhaustion_is_identified(self) -> None:
@@ -91,6 +100,24 @@ class PopulateContextPostRunTest(unittest.TestCase):
         self.assertEqual(gents.get("terminal_error"), _MAX_TURN_ERROR)
         self.assertEqual(gents.get("request_id"), "req-1")
         self.assertEqual(gents.get("total_steps"), 7)
+        self.assertEqual(self.last_context.n_input_tokens, 300)
+        self.assertEqual(self.last_context.n_cache_tokens, 60)
+        self.assertEqual(self.last_context.n_output_tokens, 100)
+
+    def test_token_exhaustion_is_identified(self) -> None:
+        gents = self._run(
+            {
+                "trajectory.json": _TRAJECTORY,
+                "request.json": {"request_id": "req-token"},
+                "gents-outcome.json": {"outcome": "token_budget_exhausted"},
+                "response.json": {
+                    "status": "error",
+                    "error_message": "aggregate_token_budget_exhausted: limit=100000",
+                },
+            }
+        )
+        self.assertEqual(gents.get("outcome"), "token_budget_exhausted")
+        self.assertIs(gents.get("budget_exhausted"), True)
 
     def test_completed_run_is_not_budget_exhausted(self) -> None:
         gents = self._run(
@@ -188,6 +215,7 @@ class RunnerSupervisionTest(unittest.TestCase):
                 "GENTS_INSTRUCTION_FILE": str(instruction),
                 "GENTS_INFERENCE_URL": "http://127.0.0.1:8000/v1",
                 "GENTS_MODEL": "fake-model",
+                "GENTS_MAX_TOTAL": "100000",
                 "GENTS_SEED": "1234",
                 "GENTS_TOOL_ROOT": str(root),
                 "GENTS_LOGS_DIR": str(logs),
@@ -234,6 +262,7 @@ class RunnerSupervisionTest(unittest.TestCase):
                 "GENTS_INSTRUCTION_FILE": str(instruction),
                 "GENTS_INFERENCE_URL": "http://127.0.0.1:8000/v1",
                 "GENTS_MODEL": "fake-model",
+                "GENTS_MAX_TOTAL": "100000",
                 "GENTS_SEED": "1234",
                 "GENTS_TOOL_ROOT": str(root),
                 "GENTS_LOGS_DIR": str(logs),
@@ -325,6 +354,9 @@ class RunnerSupervisionTest(unittest.TestCase):
                 args for args in invocations if args[:2] == ["request", "submit"]
             )
             self.assertEqual(submitted[submitted.index("--seed") + 1], "1234")
+            self.assertEqual(
+                submitted[submitted.index("--max-total-tokens") + 1], "100000"
+            )
 
 
 _FAKE_GENTS = r'''#!/usr/bin/env python3
@@ -397,6 +429,7 @@ elif args[:2] == ["request", "submit"]:
     request = {
         "request_id": "request-1",
         "seed": int(option("--seed")) if option("--seed") is not None else None,
+        "max_total_tokens": int(option("--max-total-tokens")),
     }
     Path(option("--output-file")).write_text(json.dumps(request, indent=2))
     print(json.dumps(request, indent=2))
@@ -411,6 +444,9 @@ elif args[:2] == ["request", "show"]:
             "request_id": option("--request-id"),
             "seed": int(submitted[submitted.index("--seed") + 1])
             if "--seed" in submitted else None,
+            "max_total_tokens": int(
+                submitted[submitted.index("--max-total-tokens") + 1]
+            ),
         }
     }, indent=2))
 elif args[:2] == ["response", "wait"]:
@@ -446,8 +482,19 @@ elif args[:2] == ["trace", "project"]:
         "trajectory_id": "partial-trajectory",
         "session_id": "partial-session",
         "steps": [{"step_id": "partial-step"}],
+        "final_metrics": {
+            "total_prompt_tokens": 300,
+            "total_completion_tokens": 100,
+            "total_cached_tokens": 60,
+            "total_steps": 1,
+            "extra": {
+                "inference_call_count": 1,
+                "inference_call_pending_count": 0,
+                "inference_call_usage_count": 1,
+            },
+        },
     }
-    Path(option("--output-file")).write_text(json.dumps(trajectory))
+    Path(option("--output-file")).write_text(json.dumps(trajectory, indent=2))
 else:
     print(f"unsupported fake gents invocation: {args}", file=sys.stderr)
     sys.exit(2)

@@ -47,6 +47,7 @@ fn status_test_request(request_id: &str) -> crate::watcher::AgentRequest {
         top_k: None,
         seed: None,
         max_tokens: None,
+        max_total_tokens: None,
         metadata: None,
         execution_origin: Some("interactive".to_string()),
         created_at: "2026-01-01T00:00:00Z".to_string(),

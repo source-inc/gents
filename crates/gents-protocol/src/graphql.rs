@@ -30,6 +30,7 @@ pub struct CreateAgentRequestInput<'a> {
     pub top_k: Option<i64>,
     pub seed: Option<i64>,
     pub max_tokens: Option<i64>,
+    pub max_total_tokens: Option<i64>,
     pub metadata: Option<&'a str>,
     pub created_at: &'a str,
     pub caused_by_trigger_id: Option<&'a str>,
@@ -285,6 +286,7 @@ pub fn create_agent_request_mutation(input: &CreateAgentRequestInput<'_>) -> Str
         optional_i64_field("top_k", input.top_k),
         optional_i64_field("seed", input.seed),
         optional_i64_field("max_tokens", input.max_tokens),
+        optional_i64_field("max_total_tokens", input.max_total_tokens),
         optional_string_field("metadata", input.metadata),
     ]
     .into_iter()
@@ -819,6 +821,7 @@ pub fn turn_state_query(request_id: &str) -> String {
                 top_p
                 top_k
                 max_tokens
+                max_total_tokens
                 metadata
                 lifecycle_state
                 interrupt_requested_at
@@ -1126,6 +1129,7 @@ mod tests {
             top_k: Some(40),
             seed: Some(1234),
             max_tokens: Some(512),
+            max_total_tokens: Some(4096),
             metadata: Some(r#"{"run_id":"run-1"}"#),
             created_at: "2026-04-13T12:00:00Z",
             caused_by_trigger_id: None,
@@ -1137,6 +1141,7 @@ mod tests {
         assert!(mutation.contains("top_k: 40"));
         assert!(mutation.contains("seed: 1234"));
         assert!(mutation.contains("max_tokens: 512"));
+        assert!(mutation.contains("max_total_tokens: 4096"));
         assert!(mutation.contains(r#"metadata: "{\"run_id\":\"run-1\"}""#));
     }
 

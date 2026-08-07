@@ -196,7 +196,7 @@ async fn inference_profile_migrations_preserve_existing_document() {
 }
 
 #[tokio::test]
-async fn agent_request_seed_migration_preserves_existing_document() {
+async fn agent_request_sampling_and_budget_migrations_preserve_existing_document() {
     let node = fresh_node().await;
     let baseline = gents_migration::DEFAULT_BASELINE
         .iter()
@@ -228,7 +228,7 @@ async fn agent_request_seed_migration_preserves_existing_document() {
     let response = node
         .execute(
             r#"{ AgentRequest(filter: {request_id: {_eq: "existing-request"}}) {
-                request_id content seed
+                request_id content seed max_total_tokens
             } }"#,
         )
         .await;
@@ -247,6 +247,7 @@ async fn agent_request_seed_migration_preserves_existing_document() {
     assert_eq!(rows[0]["request_id"], "existing-request");
     assert_eq!(rows[0]["content"], "hello");
     assert!(rows[0]["seed"].is_null());
+    assert!(rows[0]["max_total_tokens"].is_null());
 
     node.shutdown().await;
 }
