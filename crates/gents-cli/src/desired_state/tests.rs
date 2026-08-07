@@ -567,6 +567,18 @@ fn normalize_makes_read_only_command_allowlist_order_insensitive() {
 }
 
 #[test]
+fn normalize_treats_empty_reasoning_effort_as_unset() {
+    let mut manifest = empty_manifest("did:test:test");
+    let mut inference_profile = profile("default-profile");
+    inference_profile.reasoning_effort = Some("  ".to_string());
+    manifest.inference_profiles.push(inference_profile);
+
+    super::normalize::normalize_manifest(&mut manifest);
+
+    assert_eq!(manifest.inference_profiles[0].reasoning_effort, None);
+}
+
+#[test]
 fn desired_tool_service_registry_normalizes_address_storage_fields() {
     let service: DesiredToolServiceRegistry = serde_json::from_value(json!({
         "service_id": "observability-mcp",
