@@ -85,12 +85,7 @@ pub(crate) fn loop_config_for_request(
     aggregate_token_budget: Option<AggregateTokenBudget>,
     tool_count: usize,
 ) -> anyhow::Result<LoopConfig> {
-    let mut config = loop_config(
-        behavior,
-        preamble,
-        tool_count,
-        CaptureScopeKind::Inference,
-    );
+    let mut config = loop_config(behavior, preamble, tool_count, CaptureScopeKind::Inference);
     let sampling = sampling_for_request(behavior.sampling, request);
     sampling.validate_for_provider(behavior.backend_provider_kind, behavior.openai_wire_api)?;
     config.temperature = sampling.temperature;

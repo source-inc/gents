@@ -10,6 +10,7 @@ contract can be exercised without a Harbor installation.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -36,6 +37,30 @@ class _AgentContext:
         self.n_input_tokens = None
         self.n_cache_tokens = None
         self.n_output_tokens = None
+
+
+class _CommandResult:
+    def __init__(
+        self, return_code: int = 0, stdout: str = "", stderr: str = ""
+    ) -> None:
+        self.return_code = return_code
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _RunEnvironment:
+    def __init__(self, persisted_snapshot: dict[str, object]) -> None:
+        self.persisted_snapshot = persisted_snapshot
+        self.commands: list[str] = []
+
+    async def upload_file(self, _source: Path, _destination: str) -> None:
+        return None
+
+    async def exec(self, command: str, **_kwargs: object) -> _CommandResult:
+        self.commands.append(command)
+        if command == f"cat {GentsAgent._REMOTE_PERSISTED_REQUEST}":
+            return _CommandResult(stdout=json.dumps(self.persisted_snapshot))
+        return _CommandResult()
 
 
 _stub_module("certifi", where=lambda: "/nonexistent/ca-bundle.pem")
@@ -206,6 +231,84 @@ class PersistedRequestContractTest(unittest.TestCase):
             RuntimeError, "omits required persisted field: max_total_tokens"
         ):
             GentsAgent._persisted_request_value({}, "max_total_tokens")
+
+    def test_run_stays_empty_until_harbor_syncs_logs_for_post_run(self) -> None:
+        agent = GentsAgent.__new__(GentsAgent)
+        agent.logger = logging.getLogger("test_gents_agent")
+        agent.model_name = "d4f"
+        agent.session_id = "trial-1"
+        agent.extra_env = {
+            "GENTS_INFERENCE_URL": "http://127.0.0.1:8000/v1",
+            "GENTS_MAX_TOTAL": "1000000",
+            "GENTS_SEED": "1",
+        }
+        persisted_snapshot = {
+            "request": {"seed": 1, "max_total_tokens": 1000000}
+        }
+        environment = _RunEnvironment(persisted_snapshot)
+        context = _AgentContext()
+        artifacts = {
+            "trajectory.json": _TRAJECTORY,
+            "request.json": {
+                "request_id": "req-run",
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "max_tokens": 393216,
+            },
+            "request-persisted.json": persisted_snapshot,
+            "response.json": {
+                "status": "error",
+                "error_message": "aggregate_token_budget_exhausted",
+            },
+            "gents-outcome.json": {"outcome": "token_budget_exhausted"},
+            "gents-profile.json": {
+                "reasoning_effort": "max",
+                "context_window": 458752,
+                "max_turns": 1000,
+                "deadline_duration_secs": 28800,
+                "retry_max_transport": 3,
+            },
+            "gents-init.json": {
+                "init": {
+                    "model_name": "d4f",
+                    "endpoint": "http://127.0.0.1:8000/v1",
+                }
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            agent.logs_dir = Path(temp_dir)
+            asyncio.run(agent.run("finish the task", environment, context))
+            self.assertIsNone(context.metadata)
+            self.assertIsNone(context.n_input_tokens)
+            for name, payload in artifacts.items():
+                (agent.logs_dir / name).write_text(json.dumps(payload))
+            agent.populate_context_post_run(context)
+
+        self.assertEqual(context.n_input_tokens, 300)
+        self.assertEqual(context.n_cache_tokens, 60)
+        self.assertEqual(context.n_output_tokens, 100)
+        gents = ((context.metadata or {}).get("gents") or {})
+        self.assertEqual(gents.get("outcome"), "token_budget_exhausted")
+        self.assertEqual(gents.get("model"), "d4f")
+        self.assertEqual(gents.get("seed"), 1)
+        self.assertEqual(gents.get("max_total_tokens"), 1000000)
+        self.assertIn(
+            f"cat {GentsAgent._REMOTE_PERSISTED_REQUEST}", environment.commands
+        )
+
+    def test_incomplete_usage_does_not_partially_fill_context(self) -> None:
+        incomplete_trajectory = json.loads(json.dumps(_TRAJECTORY))
+        del incomplete_trajectory["final_metrics"]["total_completion_tokens"]
+        context = _AgentContext()
+
+        self.assertIs(
+            GentsAgent._populate_token_usage(context, incomplete_trajectory), False
+        )
+        self.assertIsNone(context.metadata)
+        self.assertIsNone(context.n_input_tokens)
+        self.assertIsNone(context.n_cache_tokens)
+        self.assertIsNone(context.n_output_tokens)
 
 
 class RunnerSupervisionTest(unittest.TestCase):

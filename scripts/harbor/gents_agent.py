@@ -40,6 +40,7 @@ class GentsAgent(BaseAgent):
     _REMOTE_RUNNER = "/usr/local/bin/run-gents-harbor"
     _REMOTE_RUNNER_UPLOAD = "/tmp/run-gents-harbor-upload"
     _REMOTE_CA_BUNDLE = "/tmp/gents-harbor-ca-bundle.pem"
+    _REMOTE_PERSISTED_REQUEST = "/logs/agent/request-persisted.json"
     _REMOTE_GLIBC_BUNDLE = "/tmp/gents-harbor-glibc.tar.gz"
     _REMOTE_GLIBC_DIR = "/usr/local/lib/gents-harbor-glibc"
     _RUNNER_SOURCE = Path(__file__).with_name("run_gents.sh")
@@ -95,6 +96,85 @@ class GentsAgent(BaseAgent):
                 f"{field}"
             )
         return request[field]
+
+    @staticmethod
+    def _populate_token_usage(
+        context: AgentContext, trajectory: dict[str, Any]
+    ) -> bool:
+        final_metrics = trajectory.get("final_metrics") or {}
+        if not isinstance(final_metrics, dict):
+            return False
+        values: dict[str, int] = {}
+        for attribute, key in (
+            ("n_input_tokens", "total_prompt_tokens"),
+            ("n_cache_tokens", "total_cached_tokens"),
+            ("n_output_tokens", "total_completion_tokens"),
+        ):
+            value = final_metrics.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                values[attribute] = value
+            else:
+                return False
+        for attribute, value in values.items():
+            setattr(context, attribute, value)
+        return True
+
+    def _populate_context_from_artifacts(
+        self,
+        context: AgentContext,
+        *,
+        trajectory: dict[str, Any],
+        request: dict[str, Any],
+        outcome: dict[str, Any],
+        response: dict[str, Any],
+        diagnostic: dict[str, Any],
+        server_exit: dict[str, Any],
+        persisted_snapshot: dict[str, Any],
+        profile: dict[str, Any],
+        init: dict[str, Any],
+    ) -> None:
+        self._populate_token_usage(context, trajectory)
+        final_metrics = trajectory.get("final_metrics") or {}
+        persisted_request = persisted_snapshot.get("request") or {}
+        init_contract = init.get("init") or {}
+        failure_origin = None
+        if diagnostic.get("reason") == "server_lost_during_request":
+            failure_origin = "gents_server"
+        elif outcome.get("outcome") == "compaction_provider_error":
+            failure_origin = "compaction_provider"
+
+        context.metadata = {
+            **(context.metadata or {}),
+            "gents": {
+                **((context.metadata or {}).get("gents") or {}),
+                "model": init_contract.get("model_name"),
+                "inference_url": init_contract.get("endpoint"),
+                "temperature": request.get("temperature"),
+                "top_p": request.get("top_p"),
+                "seed": persisted_request.get("seed"),
+                "reasoning_effort": profile.get("reasoning_effort"),
+                "context_window": profile.get("context_window"),
+                "max_output_tokens": request.get("max_tokens"),
+                "max_total_tokens": persisted_request.get("max_total_tokens"),
+                "max_turns": profile.get("max_turns"),
+                "request_timeout_secs": profile.get("deadline_duration_secs"),
+                "retry_max_transport": profile.get("retry_max_transport"),
+                "request_id": request.get("request_id"),
+                "session_id": trajectory.get("session_id"),
+                "trajectory_id": trajectory.get("trajectory_id"),
+                "total_steps": final_metrics.get("total_steps")
+                if isinstance(final_metrics, dict)
+                else None,
+                "outcome": outcome.get("outcome"),
+                "budget_exhausted": outcome.get("outcome")
+                in {"max_turns_exhausted", "token_budget_exhausted"},
+                "terminal_error": response.get("error_message"),
+                "failure_origin": failure_origin,
+                "diagnostic_reason": diagnostic.get("reason"),
+                "diagnostic_graphql_available": diagnostic.get("graphql_available"),
+                "server_exit": server_exit or None,
+            },
+        }
 
     async def _install_ca_bundle(self, environment: BaseEnvironment) -> None:
         """Provide TLS roots without invoking a package manager in every task."""
@@ -408,10 +488,21 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
         if runner_error is not None:
             raise runner_error
 
-        requested_seed = int(run_env["GENTS_SEED"]) if run_env["GENTS_SEED"] else None
-        persisted_snapshot = self._read_json_object(
-            self.logs_dir / "request-persisted.json"
+        # Validate the persisted request inside the environment, but leave
+        # AgentContext empty. Harbor 0.20.0 only invokes the post-run projection
+        # after syncing logs when AgentContext.is_empty(); populating even one
+        # metadata or usage field here would suppress the complete ATIF import.
+        persisted_result = await environment.exec(
+            command=f"cat {shlex.quote(self._REMOTE_PERSISTED_REQUEST)}"
         )
+        self._require_success("read persisted Gents request", persisted_result)
+        try:
+            persisted_snapshot = json.loads(persisted_result.stdout or "")
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("Gents emitted invalid persisted request JSON") from error
+        if not isinstance(persisted_snapshot, dict):
+            raise RuntimeError("Gents emitted non-object persisted request JSON")
+        requested_seed = int(run_env["GENTS_SEED"]) if run_env["GENTS_SEED"] else None
         persisted_request = persisted_snapshot.get("request") or {}
         persisted_seed = persisted_request.get("seed")
         if persisted_seed != requested_seed:
@@ -428,24 +519,6 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
                 "Gents aggregate token-budget persistence mismatch: "
                 f"requested={requested_max_total!r} persisted={persisted_max_total!r}"
             )
-
-        context.metadata = {
-            **(context.metadata or {}),
-            "gents": {
-                "model": model_name,
-                "inference_url": inference_url,
-                "temperature": float(run_env["GENTS_TEMPERATURE"]),
-                "top_p": float(run_env["GENTS_TOP_P"]),
-                "seed": persisted_seed,
-                "reasoning_effort": run_env["GENTS_REASONING_EFFORT"],
-                "context_window": int(run_env["GENTS_CONTEXT_WINDOW"]),
-                "max_output_tokens": int(run_env["GENTS_MAX_OUTPUT"]),
-                "max_total_tokens": persisted_max_total,
-                "max_turns": int(run_env["GENTS_MAX_TURNS"]),
-                "request_timeout_secs": request_timeout,
-                "retry_max_transport": int(run_env["GENTS_RETRY_MAX_TRANSPORT"]),
-            },
-        }
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         trajectory_path = self.logs_dir / "trajectory.json"
@@ -465,45 +538,23 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
         response = self._read_json_object(self.logs_dir / "response.json")
         diagnostic = self._read_json_object(self.logs_dir / "gents-diagnostic.json")
         server_exit = self._read_json_object(self.logs_dir / "gents-server-exit.json")
-        final_metrics = trajectory.get("final_metrics") or {}
-        if isinstance(final_metrics, dict):
-            for attribute, key in (
-                ("n_input_tokens", "total_prompt_tokens"),
-                ("n_cache_tokens", "total_cached_tokens"),
-                ("n_output_tokens", "total_completion_tokens"),
-            ):
-                value = final_metrics.get(key)
-                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                    setattr(context, attribute, value)
-        failure_origin = None
-        if diagnostic.get("reason") == "server_lost_during_request":
-            failure_origin = "gents_server"
-        elif outcome.get("outcome") == "compaction_provider_error":
-            failure_origin = "compaction_provider"
-
-        context.metadata = {
-            **(context.metadata or {}),
-            "gents": {
-                **((context.metadata or {}).get("gents") or {}),
-                "request_id": request.get("request_id"),
-                "session_id": trajectory.get("session_id"),
-                "trajectory_id": trajectory.get("trajectory_id"),
-                "total_steps": final_metrics.get("total_steps")
-                if isinstance(final_metrics, dict)
-                else None,
-                # The runner returns control to Harbor for exhausted turn
-                # budgets so the verifier can score the workspace. Surface the
-                # distinction so budget-limited trials are identifiable.
-                "outcome": outcome.get("outcome"),
-                "budget_exhausted": outcome.get("outcome")
-                in {"max_turns_exhausted", "token_budget_exhausted"},
-                "terminal_error": response.get("error_message"),
-                "failure_origin": failure_origin,
-                "diagnostic_reason": diagnostic.get("reason"),
-                "diagnostic_graphql_available": diagnostic.get("graphql_available"),
-                "server_exit": server_exit or None,
-            },
-        }
+        persisted_snapshot = self._read_json_object(
+            self.logs_dir / "request-persisted.json"
+        )
+        profile = self._read_json_object(self.logs_dir / "gents-profile.json")
+        init = self._read_json_object(self.logs_dir / "gents-init.json")
+        self._populate_context_from_artifacts(
+            context,
+            trajectory=trajectory,
+            request=request,
+            outcome=outcome,
+            response=response,
+            diagnostic=diagnostic,
+            server_exit=server_exit,
+            persisted_snapshot=persisted_snapshot,
+            profile=profile,
+            init=init,
+        )
 
     def _read_json_object(self, path: Path) -> dict[str, Any]:
         if not path.is_file():
