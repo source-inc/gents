@@ -44,6 +44,7 @@ async fn request_submit(args: RequestSubmitArgs) -> Result<()> {
             temperature: args.temperature,
             top_p: args.top_p,
             top_k: args.top_k,
+            seed: args.seed,
             max_tokens: args.max_tokens,
             metadata: args.metadata.clone(),
             valid_until,
@@ -60,6 +61,7 @@ async fn request_submit(args: RequestSubmitArgs) -> Result<()> {
         "temperature": submitted.temperature,
         "top_p": submitted.top_p,
         "top_k": submitted.top_k,
+        "seed": submitted.seed,
         "max_tokens": submitted.max_tokens,
         "metadata": submitted.metadata,
     });
@@ -150,6 +152,7 @@ struct RequestShowHeader {
     interrupt_requested_at: Option<String>,
     retry_count: Option<i64>,
     max_retries: Option<i64>,
+    seed: Option<i64>,
     caused_by_parent_request_id: Option<String>,
     caused_by_parent_tool_call_id: Option<String>,
     caused_by_trigger_id: Option<String>,
@@ -398,6 +401,7 @@ fn request_show_request_query(request_id: &str, schema: &RequestShowSchema) -> S
         "temperature",
         "top_p",
         "top_k",
+        "seed",
         "max_tokens",
         "metadata",
         "created_at",
@@ -524,6 +528,7 @@ fn request_header_view(
         interrupt_requested_at: string_field(row, "interrupt_requested_at"),
         retry_count: integer_field(row, "retry_count"),
         max_retries: integer_field(row, "max_retries"),
+        seed: integer_field(row, "seed"),
         caused_by_parent_request_id: string_field(row, "caused_by_parent_request_id"),
         caused_by_parent_tool_call_id: string_field(row, "caused_by_parent_tool_call_id"),
         caused_by_trigger_id: string_field(row, "caused_by_trigger_id"),
@@ -1312,6 +1317,7 @@ async fn request_resend(args: RequestResendArgs) -> Result<()> {
             temperature: stale.temperature,
             top_p: stale.top_p,
             top_k: stale.top_k,
+            seed: stale.seed,
             max_tokens: stale.max_tokens,
             metadata: stale.metadata.clone(),
             valid_until,
@@ -1359,6 +1365,23 @@ async fn request_resend(args: RequestResendArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_show_json_retains_persisted_seed() {
+        let request = json!({
+            "request_id": "request-one",
+            "agent_did": "did:key:agent",
+            "behavior_id": "default",
+            "session_id": "session-one",
+            "status": "pending",
+            "lifecycle_state": "pending",
+            "seed": 1234,
+        });
+        let header = request_header_view(&request, None, Vec::new());
+        let value = serde_json::to_value(header).unwrap();
+
+        assert_eq!(value["seed"], 1234);
+    }
 
     #[test]
     fn transition_history_does_not_emit_processing_self_loop() {

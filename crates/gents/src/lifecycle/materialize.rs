@@ -365,6 +365,7 @@ impl RequestLifecycle {
             temperature: None,
             top_p: None,
             top_k: None,
+            seed: None,
             max_tokens: None,
             metadata: None,
             execution_origin: Some(execution_origin_str.to_string()),

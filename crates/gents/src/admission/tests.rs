@@ -58,6 +58,7 @@ fn request(request_id: &str) -> AgentRequest {
         temperature: None,
         top_p: None,
         top_k: None,
+        seed: None,
         max_tokens: None,
         metadata: None,
         execution_origin: None,

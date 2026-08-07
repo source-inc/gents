@@ -10,6 +10,9 @@ type InferenceProfile {
     # a wrong/missing checkpoint default can be corrected from desired state.
     top_p: Float
     top_k: Int
+    # Requested provider sampling seed. This pins the request parameter but does
+    # not promise bitwise determinism across provider or hardware revisions.
+    seed: Int
     min_p: Float
     frequency_penalty: Float
     presence_penalty: Float

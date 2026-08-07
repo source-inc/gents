@@ -387,7 +387,7 @@ pub(crate) const EXPORT_WORKSPACE_ROOT_FIELDS: &str = "root_path display_name en
 pub(crate) const EXPORT_INFERENCE_BACKEND_FIELDS: &str =
     "backend_id name provider_kind openai_wire_api endpoint api_key api_key_env_var max_concurrent max_queue_depth enabled models last_probe probe_status";
 pub(crate) const EXPORT_INFERENCE_PROFILE_FIELDS: &str =
-    "profile_id display_name context_window max_output_tokens max_turns temperature top_p top_k min_p frequency_penalty presence_penalty repetition_penalty reasoning_effort stream_batch_ms stream_liveness_timeout_secs deadline_duration_secs retry_max_transport retry_backoff_ms retry_max_resample retry_allow_repair retry_interactive_max";
+    "profile_id display_name context_window max_output_tokens max_turns temperature top_p top_k seed min_p frequency_penalty presence_penalty repetition_penalty reasoning_effort stream_batch_ms stream_liveness_timeout_secs deadline_duration_secs retry_max_transport retry_backoff_ms retry_max_resample retry_allow_repair retry_interactive_max";
 pub(crate) const EXPORT_TOOL_SERVICE_REGISTRY_FIELDS: &str =
     "service_id display_name description hostname tailscale_ip lan_ip mcp_port mcp_path send_agent_did";
 pub(crate) const EXPORT_PROJECTION_ACP_BINDING_FIELDS: &str =

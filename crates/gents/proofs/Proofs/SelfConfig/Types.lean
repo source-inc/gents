@@ -87,7 +87,7 @@ def allFields : Target → List FieldKey
       , "self_config_no_lockout", "self_config_dry_run", "updated_at" ]
   | .inferenceProfile =>
       [ "profile_id", "display_name", "context_window", "max_output_tokens"
-      , "max_turns", "temperature", "top_p", "top_k", "min_p", "frequency_penalty", "presence_penalty", "repetition_penalty", "reasoning_effort", "stream_batch_ms"
+      , "max_turns", "temperature", "top_p", "top_k", "seed", "min_p", "frequency_penalty", "presence_penalty", "repetition_penalty", "reasoning_effort", "stream_batch_ms"
       , "stream_liveness_timeout_secs", "deadline_duration_secs"
       , "retry_max_transport", "retry_backoff_ms", "retry_max_resample"
       , "retry_allow_repair", "retry_interactive_max", "updated_at" ]
@@ -135,7 +135,7 @@ def writableFields : Target → List FieldKey
       , "self_config_dry_run" ]
   | .inferenceProfile =>
       [ "display_name", "context_window", "max_output_tokens", "max_turns"
-      , "temperature", "top_p", "top_k", "min_p", "frequency_penalty", "presence_penalty", "repetition_penalty", "reasoning_effort", "stream_batch_ms", "stream_liveness_timeout_secs"
+      , "temperature", "top_p", "top_k", "seed", "min_p", "frequency_penalty", "presence_penalty", "repetition_penalty", "reasoning_effort", "stream_batch_ms", "stream_liveness_timeout_secs"
       , "deadline_duration_secs", "retry_max_transport", "retry_backoff_ms"
       , "retry_max_resample", "retry_allow_repair", "retry_interactive_max" ]
   | .inferenceBackend =>

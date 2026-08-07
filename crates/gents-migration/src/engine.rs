@@ -271,6 +271,49 @@ async fn apply_patch_versioned(
         .map_err(Error::Node)?;
     let dest = all.iter().find(|v| v.version_id == pin);
 
+    // A later step in the same collection may already be active. In that
+    // state this destination is an inactive ancestor, not a crash-window
+    // version waiting to be reactivated. Re-activating it would roll the
+    // collection backward on every ensure before the later step rolls it
+    // forward again.
+    if let Some(dest) = dest {
+        if !dest.is_active && version_descends_from(&all, &active.version_id, pin) {
+            expected_state
+                .verify(dest)
+                .map_err(|detail| Error::StateVerification {
+                    collection: collection.to_string(),
+                    step: id.to_string(),
+                    detail,
+                })?;
+            if let Some(expected_tx) = expected_transform {
+                let source = dest
+                    .previous_version
+                    .as_ref()
+                    .map(|previous| previous.source_collection_id.as_str())
+                    .ok_or_else(|| Error::StateVerification {
+                        collection: collection.to_string(),
+                        step: id.to_string(),
+                        detail: "versioned migration destination is missing its source edge"
+                            .to_string(),
+                    })?;
+                repair_transform_if_needed(
+                    node,
+                    id,
+                    collection,
+                    source,
+                    pin,
+                    lens_spec,
+                    expected_tx,
+                    dest,
+                    report,
+                )
+                .await?;
+            }
+            report.steps_already_current += 1;
+            return Ok(());
+        }
+    }
+
     match dest {
         None => {
             // destination absent → attach (if lens), then patch inactive.
@@ -412,6 +455,31 @@ async fn apply_patch_versioned(
     }
 
     Ok(())
+}
+
+fn version_descends_from(
+    versions: &[CollectionVersion],
+    descendant_version: &str,
+    ancestor_version: &str,
+) -> bool {
+    let mut current = descendant_version;
+    let mut visited = HashSet::new();
+    while visited.insert(current) {
+        let Some(version) = versions
+            .iter()
+            .find(|version| version.version_id == current)
+        else {
+            return false;
+        };
+        let Some(previous) = version.previous_version.as_ref() else {
+            return false;
+        };
+        if previous.source_collection_id == ancestor_version {
+            return true;
+        }
+        current = &previous.source_collection_id;
+    }
+    false
 }
 
 async fn verify_active_step(

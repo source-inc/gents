@@ -12,6 +12,7 @@ type AgentRequest @branchable {
     temperature: Float
     top_p: Float
     top_k: Int
+    seed: Int
     max_tokens: Int
     metadata: String
     status: String @index

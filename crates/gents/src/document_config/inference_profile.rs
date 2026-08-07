@@ -24,6 +24,7 @@ pub struct InferenceProfile {
     /// model's `generation_config.json`; `Some` pins the value explicitly.
     pub top_p: Option<f64>,
     pub top_k: Option<i64>,
+    pub seed: Option<i64>,
     pub min_p: Option<f64>,
     pub frequency_penalty: Option<f64>,
     pub presence_penalty: Option<f64>,
@@ -58,6 +59,7 @@ pub(super) fn default_inference_profile_for_behavior(behavior_id: &str) -> Infer
         // operator never asked for.
         top_p: None,
         top_k: None,
+        seed: None,
         min_p: None,
         frequency_penalty: None,
         presence_penalty: None,
@@ -112,6 +114,7 @@ pub(crate) async fn load_inference_profile_record(
                 temperature
                 top_p
                 top_k
+                seed
                 min_p
                 frequency_penalty
                 presence_penalty
@@ -160,6 +163,7 @@ pub(crate) async fn load_inference_profile_by_doc_id(
                 temperature
                 top_p
                 top_k
+                seed
                 min_p
                 frequency_penalty
                 presence_penalty
@@ -202,6 +206,7 @@ pub async fn list_inference_profile_records(
                 temperature
                 top_p
                 top_k
+                seed
                 min_p
                 frequency_penalty
                 presence_penalty
@@ -233,6 +238,9 @@ pub async fn upsert_inference_profile(
     node: &EmbeddedNode,
     profile: &InferenceProfile,
 ) -> Result<()> {
+    if profile.seed.is_some_and(|seed| seed < 0) {
+        anyhow::bail!("seed must be non-negative");
+    }
     let mutation = upsert_inference_profile_mutation(profile);
 
     let resp =
@@ -255,6 +263,7 @@ pub(crate) fn upsert_inference_profile_mutation(profile: &InferenceProfile) -> S
         graphql_fields::graphql_optional_float_field("temperature", profile.temperature),
         graphql_fields::graphql_optional_float_field("top_p", profile.top_p),
         graphql_fields::graphql_optional_int_field("top_k", profile.top_k),
+        graphql_fields::graphql_optional_int_field("seed", profile.seed),
         graphql_fields::graphql_optional_float_field("min_p", profile.min_p),
         graphql_fields::graphql_optional_float_field(
             "frequency_penalty",
@@ -316,6 +325,7 @@ pub(crate) fn upsert_inference_profile_mutation(profile: &InferenceProfile) -> S
         graphql_fields::graphql_optional_float_field("temperature", profile.temperature),
         graphql_fields::graphql_optional_float_field("top_p", profile.top_p),
         graphql_fields::graphql_optional_int_field("top_k", profile.top_k),
+        graphql_fields::graphql_optional_int_field("seed", profile.seed),
         graphql_fields::graphql_optional_float_field("min_p", profile.min_p),
         graphql_fields::graphql_optional_float_field(
             "frequency_penalty",

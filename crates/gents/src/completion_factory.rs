@@ -82,9 +82,15 @@ pub(crate) fn loop_config_for_request(
     preamble: String,
     request: &AgentRequest,
     tool_count: usize,
-) -> LoopConfig {
-    let mut config = loop_config(behavior, preamble, tool_count, CaptureScopeKind::Inference);
+) -> anyhow::Result<LoopConfig> {
+    let mut config = loop_config(
+        behavior,
+        preamble,
+        tool_count,
+        CaptureScopeKind::Inference,
+    );
     let sampling = sampling_for_request(behavior.sampling, request);
+    sampling.validate_for_provider(behavior.backend_provider_kind, behavior.openai_wire_api)?;
     config.temperature = sampling.temperature;
     config.max_tokens = effective_max_tokens(behavior.max_output_tokens, sampling.max_tokens);
     let request_additional_params = merge_optional_params(
@@ -98,7 +104,7 @@ pub(crate) fn loop_config_for_request(
     let origin = completion_retry_origin(request.execution_origin.as_deref());
     config.retry_policy = CompletionRetryPolicy::resolve(&behavior.completion_retry, origin);
     config.deadline = parse_request_deadline(request.deadline.as_deref());
-    config
+    Ok(config)
 }
 
 fn completion_retry_origin(value: Option<&str>) -> ExecutionOrigin {
@@ -119,6 +125,7 @@ fn sampling_for_request(defaults: SamplingConfig, request: &AgentRequest) -> Sam
         temperature: request.temperature.or(defaults.temperature),
         top_p: request.top_p.or(defaults.top_p),
         top_k: request.top_k.or(defaults.top_k),
+        seed: request.seed.or(defaults.seed),
         min_p: defaults.min_p,
         frequency_penalty: defaults.frequency_penalty,
         presence_penalty: defaults.presence_penalty,

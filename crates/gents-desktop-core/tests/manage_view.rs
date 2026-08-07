@@ -65,6 +65,7 @@ async fn manage_document_saves_refresh_store() -> Result<()> {
         retry_interactive_max: None,
         top_p: Some(0.95),
         top_k: Some(40),
+        seed: Some(1234),
         min_p: None,
         frequency_penalty: None,
         presence_penalty: None,

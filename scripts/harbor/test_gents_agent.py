@@ -188,6 +188,7 @@ class RunnerSupervisionTest(unittest.TestCase):
                 "GENTS_INSTRUCTION_FILE": str(instruction),
                 "GENTS_INFERENCE_URL": "http://127.0.0.1:8000/v1",
                 "GENTS_MODEL": "fake-model",
+                "GENTS_SEED": "1234",
                 "GENTS_TOOL_ROOT": str(root),
                 "GENTS_LOGS_DIR": str(logs),
                 "GENTS_SERVER_STARTUP_TIMEOUT_SECS": "5",
@@ -212,6 +213,8 @@ class RunnerSupervisionTest(unittest.TestCase):
                 2,
             )
             self.assertTrue((logs / "trajectory.json").is_file())
+            persisted = json.loads((logs / "request-persisted.json").read_text())
+            self.assertEqual(persisted["request"]["seed"], 1234)
 
     def test_server_signal_cancels_waiter_and_preserves_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -231,6 +234,7 @@ class RunnerSupervisionTest(unittest.TestCase):
                 "GENTS_INSTRUCTION_FILE": str(instruction),
                 "GENTS_INFERENCE_URL": "http://127.0.0.1:8000/v1",
                 "GENTS_MODEL": "fake-model",
+                "GENTS_SEED": "1234",
                 "GENTS_TOOL_ROOT": str(root),
                 "GENTS_LOGS_DIR": str(logs),
                 "GENTS_SERVER_STARTUP_TIMEOUT_SECS": "5",
@@ -317,6 +321,10 @@ class RunnerSupervisionTest(unittest.TestCase):
             self.assertTrue(
                 any(args[:2] == ["tools", "explain"] for args in invocations)
             )
+            submitted = next(
+                args for args in invocations if args[:2] == ["request", "submit"]
+            )
+            self.assertEqual(submitted[submitted.index("--seed") + 1], "1234")
 
 
 _FAKE_GENTS = r'''#!/usr/bin/env python3
@@ -386,9 +394,25 @@ elif args[:1] == ["status"]:
         sys.exit(1)
     print(json.dumps({"process_state": "ready", "behavior_readiness": "ready"}, indent=2))
 elif args[:2] == ["request", "submit"]:
-    request = {"request_id": "request-1"}
+    request = {
+        "request_id": "request-1",
+        "seed": int(option("--seed")) if option("--seed") is not None else None,
+    }
     Path(option("--output-file")).write_text(json.dumps(request, indent=2))
     print(json.dumps(request, indent=2))
+elif args[:2] == ["request", "show"]:
+    submitted = next(
+        json.loads(line)
+        for line in (home / "invocations.jsonl").read_text().splitlines()
+        if json.loads(line)[:2] == ["request", "submit"]
+    )
+    print(json.dumps({
+        "request": {
+            "request_id": option("--request-id"),
+            "seed": int(submitted[submitted.index("--seed") + 1])
+            if "--seed" in submitted else None,
+        }
+    }, indent=2))
 elif args[:2] == ["response", "wait"]:
     if os.environ.get("FAKE_WAITER_TRANSIENT_ONCE"):
         count_file = home / "waiter-count"

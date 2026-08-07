@@ -32,7 +32,11 @@ fn default_baseline_matches_ordered_protocol_catalog() {
         actual.iter().zip(expected.iter())
     {
         assert_eq!(actual_name, expected_name);
-        if *actual_name == gents_protocol::schemas::INFERENCE_PROFILE_NAME {
+        if matches!(
+            *actual_name,
+            gents_protocol::schemas::INFERENCE_PROFILE_NAME
+                | gents_protocol::schemas::AGENT_REQUEST_NAME
+        ) {
             assert_ne!(actual_sdl, expected_sdl, "changed schema must be frozen");
         } else {
             assert_eq!(actual_sdl, expected_sdl, "baseline drift for {actual_name}");
@@ -42,6 +46,11 @@ fn default_baseline_matches_ordered_protocol_catalog() {
         step,
         MigrationStep::PatchVersioned { collection, .. }
             if *collection == gents_protocol::schemas::INFERENCE_PROFILE_NAME
+    )));
+    assert!(gents_migration::DEFAULT_STEPS.iter().any(|step| matches!(
+        step,
+        MigrationStep::PatchVersioned { collection, .. }
+            if *collection == gents_protocol::schemas::AGENT_REQUEST_NAME
     )));
 }
 
@@ -132,7 +141,7 @@ async fn ensure_migrations_registers_baseline_and_is_idempotent() {
 }
 
 #[tokio::test]
-async fn inference_profile_reasoning_effort_migration_preserves_existing_document() {
+async fn inference_profile_migrations_preserve_existing_document() {
     let node = fresh_node().await;
     let baseline = gents_migration::DEFAULT_BASELINE
         .iter()
@@ -162,7 +171,7 @@ async fn inference_profile_reasoning_effort_migration_preserves_existing_documen
     let response = node
         .execute(
             r#"{ InferenceProfile(filter: {profile_id: {_eq: "existing-profile"}}) {
-                profile_id display_name reasoning_effort
+                profile_id display_name reasoning_effort seed
             } }"#,
         )
         .await;
@@ -181,6 +190,63 @@ async fn inference_profile_reasoning_effort_migration_preserves_existing_documen
     assert_eq!(rows[0]["profile_id"], "existing-profile");
     assert_eq!(rows[0]["display_name"], "Existing");
     assert!(rows[0]["reasoning_effort"].is_null());
+    assert!(rows[0]["seed"].is_null());
+
+    node.shutdown().await;
+}
+
+#[tokio::test]
+async fn agent_request_seed_migration_preserves_existing_document() {
+    let node = fresh_node().await;
+    let baseline = gents_migration::DEFAULT_BASELINE
+        .iter()
+        .find(|entry| entry.name == gents_protocol::schemas::AGENT_REQUEST_NAME)
+        .expect("AgentRequest baseline");
+    node.add_schema(baseline.sdl)
+        .await
+        .expect("register frozen request baseline");
+
+    let create = r#"mutation {
+        create_AgentRequest(input: {
+            request_id: "existing-request"
+            agent_did: "did:key:existing"
+            session_id: "existing-session"
+            content: "hello"
+        }) { request_id content }
+    }"#;
+    let response = node.execute(create).await;
+    assert!(
+        !response.has_errors(),
+        "create request: {:?}",
+        response.errors
+    );
+
+    ensure_migrations(node.as_ref())
+        .await
+        .expect("apply production migrations");
+
+    let response = node
+        .execute(
+            r#"{ AgentRequest(filter: {request_id: {_eq: "existing-request"}}) {
+                request_id content seed
+            } }"#,
+        )
+        .await;
+    assert!(
+        !response.has_errors(),
+        "query request: {:?}",
+        response.errors
+    );
+    let rows = response
+        .data
+        .as_ref()
+        .and_then(|data| data.get("AgentRequest"))
+        .and_then(serde_json::Value::as_array)
+        .expect("AgentRequest rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["request_id"], "existing-request");
+    assert_eq!(rows[0]["content"], "hello");
+    assert!(rows[0]["seed"].is_null());
 
     node.shutdown().await;
 }

@@ -45,6 +45,8 @@ pub struct SubmitRequestOptions {
     pub top_p: Option<f64>,
     /// Sampling override: if set, written to the request's `top_k` field.
     pub top_k: Option<i64>,
+    /// Sampling override: if set, written to the request's `seed` field.
+    pub seed: Option<i64>,
     /// Sampling override: if set, written to the request's `max_tokens` field.
     pub max_tokens: Option<i64>,
     /// Free-form metadata attached to the request (submitter-defined JSON/string).
@@ -65,6 +67,9 @@ pub async fn submit_request(
     let agent_did = normalize_required("agent_did", agent_did)?;
     let requester_did = normalize_required("requester_did", requester_did)?;
     let content = normalize_required("content", content)?;
+    if options.seed.is_some_and(|seed| seed < 0) {
+        bail!("seed must be non-negative");
+    }
     let (content, options) = prepare_prompt_submission(content, options)?;
     let request_id = Uuid::new_v4().to_string();
     let created_at = Utc::now().to_rfc3339();
@@ -321,6 +326,7 @@ async fn retry_request_in_txn(
             temperature: parent.temperature,
             top_p: parent.top_p,
             top_k: parent.top_k,
+            seed: parent.seed,
             max_tokens: parent.max_tokens,
             metadata: parent.metadata.clone(),
             ..SubmitRequestOptions::default()
@@ -761,6 +767,9 @@ fn submit_request_extra_fields(options: &SubmitRequestOptions) -> String {
     if let Some(top_k) = options.top_k {
         override_parts.push(format!("top_k: {top_k}"));
     }
+    if let Some(seed) = options.seed {
+        override_parts.push(format!("seed: {seed}"));
+    }
     if let Some(max_tokens) = options.max_tokens {
         override_parts.push(format!("max_tokens: {max_tokens}"));
     }
@@ -879,6 +888,7 @@ pub async fn resend_request(
             temperature: stale.temperature,
             top_p: stale.top_p,
             top_k: stale.top_k,
+            seed: stale.seed,
             max_tokens: stale.max_tokens,
             metadata: stale.metadata.clone(),
         },
@@ -897,6 +907,7 @@ struct StaleRequestView {
     temperature: Option<f64>,
     top_p: Option<f64>,
     top_k: Option<i64>,
+    seed: Option<i64>,
     max_tokens: Option<i64>,
     metadata: Option<String>,
 }
@@ -928,6 +939,7 @@ async fn fetch_request_view(
                 temperature
                 top_p
                 top_k
+                seed
                 max_tokens
                 metadata
             }}
@@ -973,6 +985,7 @@ async fn fetch_request_view(
         temperature: row.get("temperature").and_then(|v| v.as_f64()),
         top_p: row.get("top_p").and_then(|v| v.as_f64()),
         top_k: row.get("top_k").and_then(|v| v.as_i64()),
+        seed: row.get("seed").and_then(|v| v.as_i64()),
         max_tokens: row.get("max_tokens").and_then(|v| v.as_i64()),
         metadata: row
             .get("metadata")
@@ -1075,6 +1088,7 @@ mod tests {
         temperature: Option<f64>,
         top_p: Option<f64>,
         top_k: Option<i64>,
+        seed: Option<i64>,
         max_tokens: Option<i64>,
         metadata: Option<String>,
         status: String,
@@ -1104,6 +1118,29 @@ mod tests {
             options.metadata.as_deref(),
             Some(r#"{"selected_skill_ids":["triage"]}"#)
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn submit_request_rejects_negative_seed_before_store_access() -> Result<()> {
+        let node = defra_node::EmbeddedNode::builder().build().await?;
+        let error = submit_request(
+            &node,
+            &ClientStore::default(),
+            "session-one",
+            "did:key:agent",
+            "did:key:requester",
+            "hello",
+            None,
+            SubmitRequestOptions {
+                seed: Some(-1),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "seed must be non-negative");
+        node.shutdown().await;
         Ok(())
     }
 
@@ -1425,6 +1462,7 @@ mod tests {
             temperature: None,
             top_p: None,
             top_k: None,
+            seed: None,
             max_tokens: None,
             metadata: None,
             status: Some(retry_parent_status_for_case(case).to_string()),
@@ -1734,6 +1772,7 @@ mod tests {
                         temperature
                         top_p
                         top_k
+                        seed
                         max_tokens
                         metadata
                         status
@@ -2086,6 +2125,7 @@ mod tests {
                     temperature: Some(0.35),
                     top_p: Some(0.92),
                     top_k: Some(32),
+                    seed: Some(1234),
                     max_tokens: Some(2048),
                     metadata: Some(metadata.clone()),
                     ..SubmitRequestOptions::default()
@@ -2107,6 +2147,7 @@ mod tests {
         assert_eq!(parent.temperature, Some(0.35));
         assert_eq!(parent.top_p, Some(0.92));
         assert_eq!(parent.top_k, Some(32));
+        assert_eq!(parent.seed, Some(1234));
         assert_eq!(parent.max_tokens, Some(2048));
         assert_eq!(parent.metadata.as_deref(), Some(metadata.as_str()));
 
@@ -2117,6 +2158,7 @@ mod tests {
         assert_eq!(retried.temperature, Some(0.35));
         assert_eq!(retried.top_p, Some(0.92));
         assert_eq!(retried.top_k, Some(32));
+        assert_eq!(retried.seed, Some(1234));
         assert_eq!(retried.max_tokens, Some(2048));
         assert_eq!(retried.metadata.as_deref(), Some(metadata.as_str()));
 

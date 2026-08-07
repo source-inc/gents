@@ -225,6 +225,7 @@ fi
 : "${GENTS_TEMPERATURE:=1.0}"
 : "${GENTS_TOP_P:=0.95}"
 : "${GENTS_TOP_K:=}"
+: "${GENTS_SEED:=}"
 : "${GENTS_REASONING_EFFORT:=max}"
 : "${GENTS_MAX_OUTPUT:=393216}"
 : "${GENTS_CONTEXT_WINDOW:=458752}"
@@ -258,6 +259,7 @@ bootstrap_server_log="${logs_dir}/gents-server-bootstrap.log"
 init_log="${logs_dir}/gents-init.json"
 request_log="${logs_dir}/request.json"
 request_stdout="${logs_dir}/request.stdout.json"
+persisted_request_log="${logs_dir}/request-persisted.json"
 response_log="${logs_dir}/response.json"
 response_wait_log="${logs_dir}/response-wait.stderr.log"
 response_wait_attempt_log="${logs_dir}/response-wait-attempt.stderr.log"
@@ -299,6 +301,15 @@ case "${GENTS_REASONING_EFFORT}" in
   *)
     echo "GENTS_REASONING_EFFORT must be one of: low, high, max" >&2
     exit 2
+    ;;
+esac
+
+case "${GENTS_SEED}" in
+  ''|*[!0-9]*)
+    if [ -n "${GENTS_SEED}" ]; then
+      echo "GENTS_SEED must be a non-negative integer" >&2
+      exit 2
+    fi
     ;;
 esac
 
@@ -636,6 +647,9 @@ set -- "$@" \
 if [ -n "${GENTS_TOP_K}" ]; then
   set -- "$@" --top-k "${GENTS_TOP_K}"
 fi
+if [ -n "${GENTS_SEED}" ]; then
+  set -- "$@" --seed "${GENTS_SEED}"
+fi
 "${GENTS_BINARY}" "$@" >"${request_stdout}"
 
 request_id=$(sed -n 's/^[[:space:]]*"request_id": "\([^"]*\)",*$/\1/p' "${request_log}" | head -1)
@@ -644,6 +658,12 @@ if [ -z "${request_id}" ]; then
   tail -200 "${request_log}" >&2 || true
   exit 1
 fi
+
+"${GENTS_BINARY}" request show \
+  --home "${GENTS_HOME}" \
+  --request-id "${request_id}" \
+  --output json \
+  >"${persisted_request_log}"
 
 : >"${response_wait_log}"
 waiter_restart_count=0

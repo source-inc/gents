@@ -20,6 +20,9 @@ pub async fn upsert_inference_profile(
     {
         anyhow::bail!("stream_liveness_timeout_secs must be positive");
     }
+    if row.seed.is_some_and(|value| value < 0) {
+        anyhow::bail!("seed must be non-negative");
+    }
     if row.reasoning_effort.as_deref().is_some_and(|value| {
         !matches!(
             value,
@@ -52,6 +55,7 @@ pub async fn upsert_inference_profile(
         Some(graphql_optional_float_field("temperature", row.temperature)),
         Some(graphql_optional_float_field("top_p", row.top_p)),
         Some(graphql_optional_int_field("top_k", row.top_k)),
+        Some(graphql_optional_int_field("seed", row.seed)),
         Some(graphql_optional_float_field("min_p", row.min_p)),
         Some(graphql_optional_float_field(
             "frequency_penalty",
@@ -119,6 +123,7 @@ pub async fn upsert_inference_profile(
         Some(graphql_optional_float_field("temperature", row.temperature)),
         Some(graphql_optional_float_field("top_p", row.top_p)),
         Some(graphql_optional_int_field("top_k", row.top_k)),
+        Some(graphql_optional_int_field("seed", row.seed)),
         Some(graphql_optional_float_field("min_p", row.min_p)),
         Some(graphql_optional_float_field(
             "frequency_penalty",

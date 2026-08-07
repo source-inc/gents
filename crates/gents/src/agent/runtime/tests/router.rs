@@ -65,6 +65,7 @@ async fn router_dispatches_first_request_after_snapshot_change_to_latest_generat
             temperature: None,
             top_p: None,
             top_k: None,
+            seed: None,
             max_tokens: None,
             metadata: None,
             execution_origin: None,

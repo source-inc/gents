@@ -135,6 +135,7 @@ Useful overrides:
 | `GENTS_TEMPERATURE` | `1.0` | Request sampling temperature |
 | `GENTS_TOP_P` | `0.95` | Request nucleus sampling |
 | `GENTS_TOP_K` | unset | Optional request top-k |
+| `GENTS_SEED` | unset | Optional non-negative sampling seed, persisted on the request and Harbor result metadata |
 | `GENTS_REASONING_EFFORT` | `max` | DeepSeek thinking effort (`low`, `high`, or `max`) |
 | `GENTS_MODEL` | Harbor `--model` | Model ID sent to the inference endpoint |
 | `GENTS_DOCKER_PLATFORM` | unset | Force task images/builds, e.g. `linux/amd64` |

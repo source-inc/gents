@@ -45,6 +45,7 @@ fn status_test_request(request_id: &str) -> crate::watcher::AgentRequest {
         temperature: None,
         top_p: None,
         top_k: None,
+        seed: None,
         max_tokens: None,
         metadata: None,
         execution_origin: Some("interactive".to_string()),

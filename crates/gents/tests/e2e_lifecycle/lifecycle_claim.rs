@@ -46,6 +46,7 @@ async fn pending_request_hydrates_sampling_fields_and_metadata() {
                 temperature: 0.0,
                 top_p: 0.95,
                 top_k: 40,
+                seed: 1234,
                 max_tokens: 512,
                 metadata: "{escaped_metadata}",
                 status: "pending",
@@ -90,6 +91,7 @@ async fn pending_request_hydrates_sampling_fields_and_metadata() {
     assert_eq!(request.temperature, Some(0.0));
     assert_eq!(request.top_p, Some(0.95));
     assert_eq!(request.top_k, Some(40));
+    assert_eq!(request.seed, Some(1234));
     assert_eq!(request.max_tokens, Some(512));
     assert_eq!(request.metadata.as_deref(), Some(metadata));
     assert_eq!(request.deadline.as_deref(), Some(deadline));
@@ -118,6 +120,7 @@ async fn claim_queues_when_earlier_processing_request_exists() {
         temperature: None,
         top_p: None,
         top_k: None,
+        seed: None,
         max_tokens: None,
         metadata: None,
         execution_origin: None,
@@ -186,6 +189,7 @@ async fn queued_request_interrupt_wins_before_queue_block() {
         temperature: None,
         top_p: None,
         top_k: None,
+        seed: None,
         max_tokens: None,
         metadata: None,
         execution_origin: None,
@@ -247,6 +251,7 @@ async fn queued_request_valid_until_wins_before_queue_block() {
         temperature: None,
         top_p: None,
         top_k: None,
+        seed: None,
         max_tokens: None,
         metadata: None,
         execution_origin: None,
@@ -309,6 +314,7 @@ async fn earliest_pending_claim_leaves_later_same_session_pending() {
         temperature: None,
         top_p: None,
         top_k: None,
+        seed: None,
         max_tokens: None,
         metadata: None,
         execution_origin: None,
@@ -358,6 +364,7 @@ async fn same_timestamp_queue_order_uses_request_id_tie_break() {
         temperature: None,
         top_p: None,
         top_k: None,
+        seed: None,
         max_tokens: None,
         metadata: None,
         execution_origin: None,
@@ -390,6 +397,7 @@ async fn same_timestamp_queue_order_uses_request_id_tie_break() {
         temperature: None,
         top_p: None,
         top_k: None,
+        seed: None,
         max_tokens: None,
         metadata: None,
         execution_origin: None,
@@ -445,6 +453,7 @@ async fn terminal_earlier_request_allows_later_same_session_claim() {
         temperature: None,
         top_p: None,
         top_k: None,
+        seed: None,
         max_tokens: None,
         metadata: None,
         execution_origin: None,
@@ -534,6 +543,7 @@ async fn claim_preserves_explicit_behavior_id() {
         temperature: None,
         top_p: None,
         top_k: None,
+        seed: None,
         max_tokens: None,
         metadata: None,
         execution_origin: None,

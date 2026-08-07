@@ -37,6 +37,7 @@ pub(super) fn request(behavior_id: Option<&str>, session_id: &str) -> AgentReque
         temperature: None,
         top_p: None,
         top_k: None,
+        seed: None,
         max_tokens: None,
         metadata: None,
         execution_origin: None,

@@ -28,6 +28,7 @@ pub struct CreateAgentRequestInput<'a> {
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
     pub top_k: Option<i64>,
+    pub seed: Option<i64>,
     pub max_tokens: Option<i64>,
     pub metadata: Option<&'a str>,
     pub created_at: &'a str,
@@ -282,6 +283,7 @@ pub fn create_agent_request_mutation(input: &CreateAgentRequestInput<'_>) -> Str
         optional_f64_field("temperature", input.temperature),
         optional_f64_field("top_p", input.top_p),
         optional_i64_field("top_k", input.top_k),
+        optional_i64_field("seed", input.seed),
         optional_i64_field("max_tokens", input.max_tokens),
         optional_string_field("metadata", input.metadata),
     ]
@@ -1122,6 +1124,7 @@ mod tests {
             temperature: Some(0.0),
             top_p: Some(0.95),
             top_k: Some(40),
+            seed: Some(1234),
             max_tokens: Some(512),
             metadata: Some(r#"{"run_id":"run-1"}"#),
             created_at: "2026-04-13T12:00:00Z",
@@ -1132,6 +1135,7 @@ mod tests {
         assert!(mutation.contains("temperature: 0"));
         assert!(mutation.contains("top_p: 0.95"));
         assert!(mutation.contains("top_k: 40"));
+        assert!(mutation.contains("seed: 1234"));
         assert!(mutation.contains("max_tokens: 512"));
         assert!(mutation.contains(r#"metadata: "{\"run_id\":\"run-1\"}""#));
     }

@@ -325,6 +325,7 @@ pub(crate) struct DesiredInferenceProfile {
     pub(crate) temperature: Option<f64>,
     pub(crate) top_p: Option<f64>,
     pub(crate) top_k: Option<i64>,
+    pub(crate) seed: Option<i64>,
     pub(crate) min_p: Option<f64>,
     pub(crate) frequency_penalty: Option<f64>,
     pub(crate) presence_penalty: Option<f64>,

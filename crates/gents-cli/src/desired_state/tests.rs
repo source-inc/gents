@@ -1459,6 +1459,23 @@ fn validate_rejects_non_positive_stream_liveness_timeout() {
 }
 
 #[test]
+fn validate_rejects_negative_sampling_seed() {
+    let mut manifest = empty_manifest("did:test:test");
+    let mut profile = profile("seeded");
+    profile.seed = Some(-1);
+    manifest.inference_profiles.push(profile);
+
+    let errors = validation_errors(&manifest);
+
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("seed must be non-negative")),
+        "expected seed validation error, got {errors:?}"
+    );
+}
+
+#[test]
 fn validate_rejects_empty_string_in_subagent_targets() {
     let mut manifest = manifest_with_default_behavior();
     let mut sel = sample_tool_selection("agent-tools");

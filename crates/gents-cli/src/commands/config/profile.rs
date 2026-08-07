@@ -35,6 +35,9 @@ pub(super) async fn inference_profile_set(args: InferenceProfileUpsertArgs) -> R
     if args.top_k.is_some_and(|value| value <= 0) {
         anyhow::bail!("top_k must be positive");
     }
+    if args.seed.is_some_and(|value| value < 0) {
+        anyhow::bail!("seed must be non-negative");
+    }
     if args.repetition_penalty.is_some_and(|value| value <= 0.0) {
         anyhow::bail!("repetition_penalty must be positive");
     }
@@ -59,6 +62,7 @@ pub(super) async fn inference_profile_set(args: InferenceProfileUpsertArgs) -> R
         optional_f64_field("temperature", args.temperature),
         optional_f64_field("top_p", args.top_p),
         optional_i64_field("top_k", args.top_k),
+        optional_i64_field("seed", args.seed),
         optional_f64_field("min_p", args.min_p),
         optional_f64_field("frequency_penalty", args.frequency_penalty),
         optional_f64_field("presence_penalty", args.presence_penalty),
@@ -92,6 +96,7 @@ pub(super) async fn inference_profile_set(args: InferenceProfileUpsertArgs) -> R
         optional_f64_field("temperature", args.temperature),
         optional_f64_field("top_p", args.top_p),
         optional_i64_field("top_k", args.top_k),
+        optional_i64_field("seed", args.seed),
         optional_f64_field("min_p", args.min_p),
         optional_f64_field("frequency_penalty", args.frequency_penalty),
         optional_f64_field("presence_penalty", args.presence_penalty),
@@ -141,6 +146,7 @@ pub(super) async fn inference_profile_set(args: InferenceProfileUpsertArgs) -> R
         "temperature": args.temperature,
         "top_p": args.top_p,
         "top_k": args.top_k,
+        "seed": args.seed,
         "min_p": args.min_p,
         "frequency_penalty": args.frequency_penalty,
         "presence_penalty": args.presence_penalty,

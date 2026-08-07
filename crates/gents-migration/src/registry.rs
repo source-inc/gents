@@ -255,8 +255,57 @@ type InferenceProfile {
 }
 "#;
 
+const AGENT_REQUEST_BASELINE_SDL: &str = r#"
+type AgentRequest @branchable {
+    request_id: String @index
+    agent_did: String @index @immutable
+    requester_did: String @index @immutable
+    behavior_id: String @index
+    session_id: String @index
+    retry_parent_request: String
+    retry_root_request: String
+    retry_key: String @index(unique: true) @immutable
+    superseded_by_request: String
+    content: String
+    temperature: Float
+    top_p: Float
+    top_k: Int
+    max_tokens: Int
+    metadata: String
+    status: String @index
+    lifecycle_state: String @index
+    backend_id: String @index
+    execution_origin: String
+    caused_by_trigger_id: String @index
+    caused_by_trigger_kind: String @index
+    failure_reason: String
+    terminalized_at: String @index
+    terminal_redrive_attempts: Int @index
+    created_at: String @index
+    claimed_at: String
+    deadline: String
+    retry_count: Int
+    max_retries: Int
+    interrupt_requested_at: String
+    valid_until: String
+    subagent_depth: Int
+    caused_by_parent_request_id: String @index
+    caused_by_parent_tool_call_id: String @index
+}
+"#;
+
 const INFERENCE_PROFILE_ADD_REASONING_EFFORT_PATCH: &str = r#"[
   {"op":"add","path":"/InferenceProfile/Fields/-","value":{"Name":"reasoning_effort","Kind":"String"}},
+  {"op":"replace","path":"/IsActive","value":false}
+]"#;
+
+const INFERENCE_PROFILE_ADD_SEED_PATCH: &str = r#"[
+  {"op":"add","path":"/InferenceProfile/Fields/-","value":{"Name":"seed","Kind":"Int"}},
+  {"op":"replace","path":"/IsActive","value":false}
+]"#;
+
+const AGENT_REQUEST_ADD_SEED_PATCH: &str = r#"[
+  {"op":"add","path":"/AgentRequest/Fields/-","value":{"Name":"seed","Kind":"Int"}},
   {"op":"replace","path":"/IsActive","value":false}
 ]"#;
 
@@ -340,7 +389,7 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
     ),
     baseline_entry!(
         gents_protocol::schemas::AGENT_REQUEST_NAME,
-        gents_protocol::schemas::AGENT_REQUEST,
+        AGENT_REQUEST_BASELINE_SDL,
         "bafyreidm25txacrwuypexjpvvxqyekewsw352ftqjohsf267cvlsklxu4y"
     ),
     baseline_entry!(
@@ -486,16 +535,36 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
 ];
 
 /// Ordered post-baseline schema evolution chain.
-pub static DEFAULT_STEPS: &[MigrationStep<'static>] = &[MigrationStep::PatchVersioned {
-    id: "inference-profile-add-reasoning-effort",
-    collection: gents_protocol::schemas::INFERENCE_PROFILE_NAME,
-    patch: INFERENCE_PROFILE_ADD_REASONING_EFFORT_PATCH,
-    lens: None,
-    // Authored by applying the inactive patch to the frozen baseline.
-    expected_version: Some("bafyreigiimbcequesxdifamoiiqio2loqn7uco7kt4slp2ws3no4prl25e"),
-    expected_transform: None,
-    expected_state: CollectionExpectation::fields(&["reasoning_effort"]),
-}];
+pub static DEFAULT_STEPS: &[MigrationStep<'static>] = &[
+    MigrationStep::PatchVersioned {
+        id: "inference-profile-add-reasoning-effort",
+        collection: gents_protocol::schemas::INFERENCE_PROFILE_NAME,
+        patch: INFERENCE_PROFILE_ADD_REASONING_EFFORT_PATCH,
+        lens: None,
+        // Authored by applying the inactive patch to the frozen baseline.
+        expected_version: Some("bafyreigiimbcequesxdifamoiiqio2loqn7uco7kt4slp2ws3no4prl25e"),
+        expected_transform: None,
+        expected_state: CollectionExpectation::fields(&["reasoning_effort"]),
+    },
+    MigrationStep::PatchVersioned {
+        id: "inference-profile-add-seed",
+        collection: gents_protocol::schemas::INFERENCE_PROFILE_NAME,
+        patch: INFERENCE_PROFILE_ADD_SEED_PATCH,
+        lens: None,
+        expected_version: Some("bafyreid4qn3axuic3fced2jp2vpsvjwrn4gisexrp3ri2zkiou3eeinyme"),
+        expected_transform: None,
+        expected_state: CollectionExpectation::fields(&["reasoning_effort", "seed"]),
+    },
+    MigrationStep::PatchVersioned {
+        id: "agent-request-add-seed",
+        collection: gents_protocol::schemas::AGENT_REQUEST_NAME,
+        patch: AGENT_REQUEST_ADD_SEED_PATCH,
+        lens: None,
+        expected_version: Some("bafyreibraouw4tfoncf3hvqvjmlauvv66l4xnupofwiw5liielbb75ofdu"),
+        expected_transform: None,
+        expected_state: CollectionExpectation::fields(&["seed"]),
+    },
+];
 
 /// Production registry: frozen baseline plus the ordered migration chain.
 pub static DEFAULT_REGISTRY: Registry<'static> = Registry {

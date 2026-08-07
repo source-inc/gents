@@ -21,6 +21,7 @@ pub(crate) struct SubmittedRequest {
     pub(crate) temperature: Option<f64>,
     pub(crate) top_p: Option<f64>,
     pub(crate) top_k: Option<i64>,
+    pub(crate) seed: Option<i64>,
     pub(crate) max_tokens: Option<i64>,
     pub(crate) metadata: Option<String>,
     pub(crate) created_at: Option<String>,
@@ -31,6 +32,7 @@ pub(crate) struct RequestSubmitOptions {
     pub(crate) temperature: Option<f64>,
     pub(crate) top_p: Option<f64>,
     pub(crate) top_k: Option<i64>,
+    pub(crate) seed: Option<i64>,
     pub(crate) max_tokens: Option<i64>,
     pub(crate) metadata: Option<String>,
     pub(crate) valid_until: Option<DateTime<Utc>>,
@@ -227,6 +229,9 @@ pub(crate) async fn create_agent_request(
     behavior_id: Option<&str>,
     options: RequestSubmitOptions,
 ) -> Result<SubmittedRequest> {
+    if options.seed.is_some_and(|seed| seed < 0) {
+        anyhow::bail!("seed must be non-negative");
+    }
     let (request_content, request_metadata) =
         content_and_metadata_with_prompt_selected_skill_ids(options.metadata.as_deref(), content);
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -255,6 +260,7 @@ pub(crate) async fn create_agent_request(
         optional_f64_field("temperature", options.temperature),
         optional_f64_field("top_p", options.top_p),
         optional_i64_field("top_k", options.top_k),
+        optional_i64_field("seed", options.seed),
         optional_i64_field("max_tokens", options.max_tokens),
         request_metadata
             .as_ref()
@@ -326,6 +332,7 @@ pub(crate) async fn create_agent_request(
         temperature: options.temperature,
         top_p: options.top_p,
         top_k: options.top_k,
+        seed: options.seed,
         max_tokens: options.max_tokens,
         metadata: request_metadata,
         created_at: Some(created_at),
@@ -714,6 +721,7 @@ pub(crate) struct StaleRequestView {
     pub(crate) temperature: Option<f64>,
     pub(crate) top_p: Option<f64>,
     pub(crate) top_k: Option<i64>,
+    pub(crate) seed: Option<i64>,
     pub(crate) max_tokens: Option<i64>,
     pub(crate) metadata: Option<String>,
 }
@@ -737,6 +745,7 @@ pub(crate) async fn fetch_request_view(
                 temperature
                 top_p
                 top_k
+                seed
                 max_tokens
                 metadata
             }}
@@ -774,6 +783,7 @@ pub(crate) async fn fetch_request_view(
         temperature: as_optional_f64("temperature"),
         top_p: as_optional_f64("top_p"),
         top_k: as_optional_i64("top_k"),
+        seed: as_optional_i64("seed"),
         max_tokens: as_optional_i64("max_tokens"),
         metadata: as_optional("metadata"),
     })
@@ -781,7 +791,28 @@ pub(crate) async fn fetch_request_view(
 
 #[cfg(test)]
 mod tests {
-    use super::{content_and_metadata_with_prompt_selected_skill_ids, materialized_message_query};
+    use super::{
+        content_and_metadata_with_prompt_selected_skill_ids, create_agent_request,
+        materialized_message_query, RequestSubmitOptions,
+    };
+
+    #[tokio::test]
+    async fn create_agent_request_rejects_negative_seed_before_network_io() {
+        let error = create_agent_request(
+            "http://127.0.0.1:1/graphql",
+            "did:key:test",
+            "hello",
+            Some("session-one"),
+            None,
+            RequestSubmitOptions {
+                seed: Some(-1),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "seed must be non-negative");
+    }
 
     #[test]
     fn materialized_message_query_loads_dedicated_reasoning() {

@@ -291,6 +291,7 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
             "GENTS_TEMPERATURE": self._env("GENTS_TEMPERATURE", "1.0") or "1.0",
             "GENTS_TOP_P": self._env("GENTS_TOP_P", "0.95") or "0.95",
             "GENTS_TOP_K": self._env("GENTS_TOP_K", "") or "",
+            "GENTS_SEED": self._env("GENTS_SEED", "") or "",
             "GENTS_REASONING_EFFORT": self._env(
                 "GENTS_REASONING_EFFORT", "max"
             )
@@ -373,6 +374,18 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
         if runner_error is not None:
             raise runner_error
 
+        requested_seed = int(run_env["GENTS_SEED"]) if run_env["GENTS_SEED"] else None
+        persisted_snapshot = self._read_json_object(
+            self.logs_dir / "request-persisted.json"
+        )
+        persisted_request = persisted_snapshot.get("request") or {}
+        persisted_seed = persisted_request.get("seed")
+        if persisted_seed != requested_seed:
+            raise RuntimeError(
+                "Gents request seed persistence mismatch: "
+                f"requested={requested_seed!r} persisted={persisted_seed!r}"
+            )
+
         context.metadata = {
             **(context.metadata or {}),
             "gents": {
@@ -380,6 +393,7 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
                 "inference_url": inference_url,
                 "temperature": float(run_env["GENTS_TEMPERATURE"]),
                 "top_p": float(run_env["GENTS_TOP_P"]),
+                "seed": persisted_seed,
                 "reasoning_effort": run_env["GENTS_REASONING_EFFORT"],
                 "context_window": int(run_env["GENTS_CONTEXT_WINDOW"]),
                 "max_output_tokens": int(run_env["GENTS_MAX_OUTPUT"]),

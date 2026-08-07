@@ -667,6 +667,24 @@ async fn inference_profile_completion_retry_fields_round_trip() {
     assert_eq!(loaded.retry_interactive_max, Some(2));
 }
 
+#[tokio::test]
+async fn inference_profile_upsert_rejects_negative_seed() {
+    let node = defra_node::EmbeddedNode::builder().build().await.unwrap();
+    let profile = InferenceProfile {
+        profile_id: "negative-seed-profile".to_string(),
+        seed: Some(-1),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        upsert_inference_profile(&node, &profile)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "seed must be non-negative"
+    );
+}
+
 #[test]
 fn inference_profile_empty_retry_backoff_serializes_null_and_resolves_defaults() {
     let fields = crate::agent::completion_retry::CompletionRetryProfileFields {

@@ -2003,6 +2003,10 @@ pub(crate) struct InferenceProfileUpsertArgs {
     pub(crate) top_p: Option<f64>,
     #[arg(long)]
     pub(crate) top_k: Option<i64>,
+    /// Requested provider sampling seed. Reproducibility still depends on the
+    /// pinned provider, model, and hardware configuration.
+    #[arg(long, value_parser = clap::value_parser!(i64).range(0..))]
+    pub(crate) seed: Option<i64>,
     #[arg(long)]
     pub(crate) min_p: Option<f64>,
     #[arg(long)]
@@ -2817,6 +2821,8 @@ pub(crate) struct RequestSubmitArgs {
     pub(crate) top_p: Option<f64>,
     #[arg(long)]
     pub(crate) top_k: Option<i64>,
+    #[arg(long, value_parser = clap::value_parser!(i64).range(0..))]
+    pub(crate) seed: Option<i64>,
     #[arg(long)]
     pub(crate) max_tokens: Option<i64>,
     #[arg(long)]

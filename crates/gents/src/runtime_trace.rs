@@ -119,6 +119,7 @@ mod tests {
             temperature: None,
             top_p: None,
             top_k: None,
+            seed: None,
             max_tokens: None,
             metadata: metadata.map(ToOwned::to_owned),
             execution_origin: Some("manual".to_string()),

@@ -225,6 +225,8 @@ pub struct AgentRequestRow {
     #[serde(default)]
     pub top_k: Option<i64>,
     #[serde(default)]
+    pub seed: Option<i64>,
+    #[serde(default)]
     pub max_tokens: Option<i64>,
     #[serde(default)]
     pub metadata: Option<String>,
@@ -768,6 +770,8 @@ pub struct InferenceProfileRow {
     pub top_p: Option<f64>,
     #[serde(default)]
     pub top_k: Option<i64>,
+    #[serde(default)]
+    pub seed: Option<i64>,
     #[serde(default)]
     pub min_p: Option<f64>,
     #[serde(default)]

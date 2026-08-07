@@ -200,7 +200,7 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                     self.preamble.clone(),
                     request,
                     self.loop_tools.len(),
-                );
+                )?;
                 loop_config.deadline = request_deadline;
                 let turn_compactor = self.compactor.clone();
                 let turn_context_window = self.behavior.context_window;
@@ -784,6 +784,7 @@ mod tests {
             temperature: None,
             top_p: None,
             top_k: None,
+            seed: None,
             max_tokens: None,
             metadata: None,
             execution_origin: Some("interactive".to_string()),
