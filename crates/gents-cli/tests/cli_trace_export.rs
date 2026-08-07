@@ -1756,6 +1756,8 @@ async fn projection_graphql_mock(
         json!({ "data": { "AgentConversation": [projection_mock_conversation()] } })
     } else if query.contains("InferenceCall(") {
         json!({ "data": { "InferenceCall": [] } })
+    } else if query.contains("RenderedRequest(") {
+        json!({ "data": { "RenderedRequest": [] } })
     } else {
         json!({
             "errors": [{

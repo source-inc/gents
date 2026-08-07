@@ -745,11 +745,14 @@ async fn apply_projection_acp_read_filter(
         tool_calls: filtered_tool_calls,
         inference_calls: filtered_inference_calls,
         responses: filtered_responses,
-        // Fail closed: `RenderedRequest` has no ACP policy yet
-        // (defradb.rs#1318), so under an *active* ACP read scope there is no
-        // per-row decision to make — captures are dropped from the filtered
-        // timeline entirely rather than passed through unjudged.
-        rendered_requests: Vec::new(),
+        // Passed through unfiltered: ACP enforcement is DefraDB's, not this
+        // filter's. Reads executed under a requester identity return only the
+        // rows that identity may see, and an unpoliced collection is public by
+        // DefraDB's own rules. When `RenderedRequest` gains its `@policy`,
+        // rows are excluded at the database read — with nothing to change
+        // here. (This per-row decider exists only for the actor-on-behalf
+        // GraphQL path the seven families above already use.)
+        rendered_requests: rows.rendered_requests,
     })
 }
 
