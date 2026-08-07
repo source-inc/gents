@@ -155,6 +155,7 @@ struct RequestShowHeader {
     retry_count: Option<i64>,
     max_retries: Option<i64>,
     seed: Option<i64>,
+    max_total_tokens: Option<i64>,
     caused_by_parent_request_id: Option<String>,
     caused_by_parent_tool_call_id: Option<String>,
     caused_by_trigger_id: Option<String>,
@@ -532,6 +533,7 @@ fn request_header_view(
         retry_count: integer_field(row, "retry_count"),
         max_retries: integer_field(row, "max_retries"),
         seed: integer_field(row, "seed"),
+        max_total_tokens: integer_field(row, "max_total_tokens"),
         caused_by_parent_request_id: string_field(row, "caused_by_parent_request_id"),
         caused_by_parent_tool_call_id: string_field(row, "caused_by_parent_tool_call_id"),
         caused_by_trigger_id: string_field(row, "caused_by_trigger_id"),
@@ -1371,7 +1373,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_show_json_retains_persisted_seed() {
+    fn request_show_json_retains_persisted_seed_and_aggregate_budget() {
         let request = json!({
             "request_id": "request-one",
             "agent_did": "did:key:agent",
@@ -1380,11 +1382,13 @@ mod tests {
             "status": "pending",
             "lifecycle_state": "pending",
             "seed": 1234,
+            "max_total_tokens": 250000,
         });
         let header = request_header_view(&request, None, Vec::new());
         let value = serde_json::to_value(header).unwrap();
 
         assert_eq!(value["seed"], 1234);
+        assert_eq!(value["max_total_tokens"], 250000);
     }
 
     #[test]
