@@ -626,7 +626,8 @@ async fn every_loop_config_arms_the_capture_scope_it_was_built_for() {
 #[test]
 fn loop_config_for_request_keeps_the_inference_capture_scope() {
     let behavior = behavior_with_retry(CompletionRetryProfileFields::default());
-    let config = loop_config_for_request(&behavior, "preamble".to_string(), &request(), 0);
+    let config =
+        loop_config_for_request(&behavior, "preamble".to_string(), &request(), None, 0).unwrap();
     assert!(
         config.on_rendered_request.is_some(),
         "the request path must arm a rendered-request capture"
