@@ -563,6 +563,8 @@ impl PendingAgentBehavior {
             }),
             &crate::template::catalog::default_catalog(),
         )?;
+        self.sampling
+            .validate_for_provider(backend_provider_kind, openai_wire_api)?;
 
         Ok(AgentBehavior {
             behavior_id: self.name,

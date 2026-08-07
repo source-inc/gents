@@ -21,7 +21,9 @@ fn request() -> AgentRequest {
         temperature: None,
         top_p: None,
         top_k: None,
+        seed: None,
         max_tokens: None,
+        max_total_tokens: None,
         metadata: None,
         execution_origin: None,
         created_at: String::new(),
@@ -284,7 +286,9 @@ fn request_sampling_overrides_behavior_defaults() {
         temperature: Some(0.0),
         top_p: None,
         top_k: Some(40),
+        seed: Some(1234),
         max_tokens: Some(512),
+        max_total_tokens: Some(4096),
         metadata: Some(r#"{"run_id":"foo"}"#.to_string()),
         execution_origin: None,
         created_at: String::new(),
@@ -299,6 +303,7 @@ fn request_sampling_overrides_behavior_defaults() {
     assert_eq!(sampling.temperature, Some(0.0));
     assert_eq!(sampling.top_p, Some(0.9));
     assert_eq!(sampling.top_k, Some(40));
+    assert_eq!(sampling.seed, Some(1234));
     assert_eq!(sampling.max_tokens, Some(512));
 }
 
@@ -339,7 +344,8 @@ fn loop_config_for_request_resolves_completion_retry_policy_and_deadline() {
     request.execution_origin = Some("interactive".to_string());
     request.deadline = Some("2030-01-01T00:00:00Z".to_string());
 
-    let config = loop_config_for_request(&behavior, "preamble".to_string(), &request, 0);
+    let config =
+        loop_config_for_request(&behavior, "preamble".to_string(), &request, None, 0).unwrap();
 
     assert_eq!(
         config.retry_policy.transport_backoff,
@@ -357,12 +363,63 @@ fn loop_config_for_request_defaults_unknown_retry_origin_to_scheduled() {
     let mut request = request();
     request.execution_origin = Some("legacy-or-missing".to_string());
 
-    let config = loop_config_for_request(&behavior, "preamble".to_string(), &request, 0);
+    let config =
+        loop_config_for_request(&behavior, "preamble".to_string(), &request, None, 0).unwrap();
 
     assert_eq!(
         config.retry_policy,
         CompletionRetryPolicy::scheduled_default()
     );
+}
+
+#[test]
+fn request_seed_rejects_provider_paths_without_seed_support() {
+    let mut behavior = behavior_with_retry(CompletionRetryProfileFields::default());
+    behavior.openai_wire_api = crate::OpenAiWireApi::Responses;
+    let mut request = request();
+    request.seed = Some(1234);
+
+    let Err(error) = loop_config_for_request(&behavior, "preamble".to_string(), &request, None, 0)
+    else {
+        panic!("Responses must reject a sampling seed");
+    };
+    assert_eq!(
+        error.to_string(),
+        "sampling seed is unsupported by provider OpenAiCompatible on the responses wire"
+    );
+}
+
+#[test]
+fn profile_seed_rejects_provider_paths_without_seed_support() {
+    let sampling = SamplingConfig {
+        seed: Some(1234),
+        ..Default::default()
+    };
+
+    sampling
+        .validate_for_provider(
+            BackendProviderKind::OpenAiCompatible,
+            crate::OpenAiWireApi::ChatCompletions,
+        )
+        .unwrap();
+    sampling
+        .validate_for_provider(
+            BackendProviderKind::OpenRouter,
+            crate::OpenAiWireApi::ChatCompletions,
+        )
+        .unwrap();
+    assert!(sampling
+        .validate_for_provider(
+            BackendProviderKind::ChatGptCodex,
+            crate::OpenAiWireApi::Responses,
+        )
+        .is_err());
+    assert!(sampling
+        .validate_for_provider(
+            BackendProviderKind::XaiGrokOAuth,
+            crate::OpenAiWireApi::ChatCompletions,
+        )
+        .is_err());
 }
 
 fn behavior_with_retry(completion_retry: CompletionRetryProfileFields) -> AgentBehavior {
@@ -410,6 +467,30 @@ fn behavior_with_retry(completion_retry: CompletionRetryProfileFields) -> AgentB
     }
 }
 
+#[test]
+fn request_budget_construction_fails_closed_on_non_positive_values() {
+    let behavior = behavior_with_retry(CompletionRetryProfileFields::default());
+    for invalid in [-1, 0] {
+        let mut request = request();
+        request.max_total_tokens = Some(invalid);
+        let error = aggregate_token_budget_for_request(&request)
+            .err()
+            .expect("non-positive aggregate budget must be rejected");
+        assert!(error.to_string().contains("must be a positive integer"));
+    }
+
+    let mut request = request();
+    request.max_total_tokens = Some(4_096);
+    let budget = aggregate_token_budget_for_request(&request).unwrap();
+    assert!(budget.is_some());
+    assert!(
+        loop_config_for_request(&behavior, "system".to_string(), &request, budget, 0)
+            .unwrap()
+            .aggregate_token_budget
+            .is_some()
+    );
+}
+
 /// #649: every sampling knob a profile can pin must reach the provider body.
 ///
 /// rig's `CompletionRequest` models only `temperature`/`max_tokens`, so the
@@ -422,6 +503,7 @@ fn every_profile_sampling_knob_reaches_the_provider_body() {
         temperature: Some(0.7),
         top_p: Some(0.95),
         top_k: Some(40),
+        seed: Some(1234),
         min_p: Some(0.05),
         frequency_penalty: Some(0.5),
         presence_penalty: Some(-0.25),
@@ -436,6 +518,7 @@ fn every_profile_sampling_knob_reaches_the_provider_body() {
 
     assert_eq!(value["top_p"], 0.95);
     assert_eq!(value["top_k"], 40);
+    assert_eq!(value["seed"], 1234);
     assert_eq!(value["min_p"], 0.05);
     assert_eq!(value["frequency_penalty"], 0.5);
     assert_eq!(value["presence_penalty"], -0.25);
@@ -543,7 +626,8 @@ async fn every_loop_config_arms_the_capture_scope_it_was_built_for() {
 #[test]
 fn loop_config_for_request_keeps_the_inference_capture_scope() {
     let behavior = behavior_with_retry(CompletionRetryProfileFields::default());
-    let config = loop_config_for_request(&behavior, "preamble".to_string(), &request(), 0);
+    let config =
+        loop_config_for_request(&behavior, "preamble".to_string(), &request(), None, 0).unwrap();
     assert!(
         config.on_rendered_request.is_some(),
         "the request path must arm a rendered-request capture"

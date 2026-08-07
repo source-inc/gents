@@ -311,17 +311,39 @@ pub(crate) fn behavior_config_from_documents(
         }),
         &crate::template::catalog::default_catalog(),
     )?;
+    let openai_wire_api = crate::OpenAiWireApi::effective_for_provider(
+        backend.provider_kind,
+        backend.openai_wire_api,
+        &backend.backend_id,
+    );
+    let sampling = SamplingConfig {
+        temperature: inference_profile.temperature,
+        top_p: inference_profile.top_p,
+        top_k: inference_profile.top_k,
+        seed: inference_profile.seed,
+        min_p: inference_profile.min_p,
+        frequency_penalty: inference_profile.frequency_penalty,
+        presence_penalty: inference_profile.presence_penalty,
+        repetition_penalty: inference_profile.repetition_penalty,
+        reasoning_effort: inference_profile
+            .reasoning_effort
+            .as_deref()
+            // Older/default Defra rows may materialize nullable strings as an
+            // empty value. That is the wire equivalent of an unset profile
+            // field, not an invalid reasoning level.
+            .filter(|value| !value.trim().is_empty())
+            .map(crate::config::ReasoningEffort::parse)
+            .transpose()?,
+        max_tokens: profile_max_tokens,
+    };
+    sampling.validate_for_provider(backend.provider_kind, openai_wire_api)?;
 
     Ok(AgentBehavior {
         behavior_id: behavior.behavior_id.clone(),
         principal,
         backend_id: Some(backend.backend_id.clone()),
         backend_provider_kind: backend.provider_kind,
-        openai_wire_api: crate::OpenAiWireApi::effective_for_provider(
-            backend.provider_kind,
-            backend.openai_wire_api,
-            &backend.backend_id,
-        ),
+        openai_wire_api,
         backend_endpoint: backend.endpoint.clone(),
         backend_api_key: backend.api_key.clone(),
         backend_api_key_env_var: backend.api_key_env_var.clone(),
@@ -357,25 +379,7 @@ pub(crate) fn behavior_config_from_documents(
         stream_liveness_timeout: Duration::from_secs(stream_liveness_timeout_secs),
         deadline_duration: Duration::from_secs(deadline_duration_secs),
         completion_retry: completion_retry_fields_from_profile(inference_profile),
-        sampling: SamplingConfig {
-            temperature: inference_profile.temperature,
-            top_p: inference_profile.top_p,
-            top_k: inference_profile.top_k,
-            min_p: inference_profile.min_p,
-            frequency_penalty: inference_profile.frequency_penalty,
-            presence_penalty: inference_profile.presence_penalty,
-            repetition_penalty: inference_profile.repetition_penalty,
-            reasoning_effort: inference_profile
-                .reasoning_effort
-                .as_deref()
-                // Older/default Defra rows may materialize nullable strings as
-                // an empty value. That is the wire equivalent of an unset
-                // profile field, not an invalid reasoning level.
-                .filter(|value| !value.trim().is_empty())
-                .map(crate::config::ReasoningEffort::parse)
-                .transpose()?,
-            max_tokens: profile_max_tokens,
-        },
+        sampling,
         skills,
     })
 }

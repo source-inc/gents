@@ -113,6 +113,7 @@ pub struct SamplingConfig {
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
     pub top_k: Option<i64>,
+    pub seed: Option<i64>,
     /// Sampling knobs the provider takes as extra body params (#649). rig's
     /// `CompletionRequest` models only `temperature`, so everything else rides
     /// `additional_params` — see [`SamplingConfig::additional_params`].
@@ -125,10 +126,38 @@ pub struct SamplingConfig {
 }
 
 impl SamplingConfig {
+    pub fn validate_for_provider(
+        self,
+        provider_kind: BackendProviderKind,
+        openai_wire_api: OpenAiWireApi,
+    ) -> Result<()> {
+        let Some(seed) = self.seed else {
+            return Ok(());
+        };
+        if seed < 0 {
+            anyhow::bail!("sampling seed must be non-negative");
+        }
+        if !matches!(
+            (provider_kind, openai_wire_api),
+            (
+                BackendProviderKind::OpenAiCompatible,
+                OpenAiWireApi::ChatCompletions
+            ) | (BackendProviderKind::OpenRouter, _)
+        ) {
+            anyhow::bail!(
+                "sampling seed is unsupported by provider {} on the {} wire",
+                provider_kind,
+                openai_wire_api
+            );
+        }
+        Ok(())
+    }
+
     pub fn is_empty(self) -> bool {
         self.temperature.is_none()
             && self.top_p.is_none()
             && self.top_k.is_none()
+            && self.seed.is_none()
             && self.min_p.is_none()
             && self.frequency_penalty.is_none()
             && self.presence_penalty.is_none()
@@ -152,6 +181,9 @@ impl SamplingConfig {
         }
         if let Some(top_k) = self.top_k {
             params.insert("top_k".to_string(), serde_json::json!(top_k));
+        }
+        if let Some(seed) = self.seed {
+            params.insert("seed".to_string(), serde_json::json!(seed));
         }
         if let Some(min_p) = self.min_p {
             params.insert("min_p".to_string(), serde_json::json!(min_p));

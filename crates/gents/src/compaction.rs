@@ -35,6 +35,9 @@ pub struct CompactionOptions {
     /// deadline fail-fast can engage (#1016); `None` leaves recovery bounded
     /// only by the ladder itself.
     pub deadline: Option<chrono::DateTime<chrono::Utc>>,
+    /// Request-scoped provider budget shared with the outer owned loop. This
+    /// is crate-private because callers cannot safely mint or replace it.
+    pub(crate) aggregate_token_budget: Option<crate::agent::loop_stream::AggregateTokenBudget>,
 }
 
 impl Default for CompactionOptions {
@@ -48,6 +51,7 @@ impl Default for CompactionOptions {
             summary_file_list_max: crate::config::DEFAULT_COMPACTION_SUMMARY_FILE_LIST_MAX,
             force_summarize: false,
             deadline: None,
+            aggregate_token_budget: None,
         }
     }
 }
@@ -210,6 +214,7 @@ impl<M: CompletionModel + 'static> Compactor for DefraCompactor<M> {
             .summary_max_output_tokens
             .clamp(1, crate::config::MAX_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS);
         summary_config.max_tokens = Some(summary_max_output_tokens as u64);
+        summary_config.aggregate_token_budget = options.aggregate_token_budget.clone();
         // Both deadlines are hard stops when present; recovery must respect
         // the earlier one.
         summary_config.deadline = match (options.deadline, summary_config.deadline) {
@@ -261,12 +266,22 @@ impl<M: CompletionModel + 'static> Compactor for DefraCompactor<M> {
                 )
                 .await
                 .map_err(|fallback_error| {
-                    anyhow::anyhow!(
-                        "compaction_provider_failure: guided structured output failed: {}; \
-                         non-guided JSON fallback failed: {}",
-                        bounded_error_diagnostic(&format!("{guided_error:#}")),
-                        bounded_error_diagnostic(&format!("{fallback_error:#}"))
+                    if crate::agent::loop_stream::aggregate_token_budget_exhaustion_message(
+                        &fallback_error,
                     )
+                    .is_some()
+                    {
+                        fallback_error.context(
+                            "non-guided compaction fallback exhausted the request token budget",
+                        )
+                    } else {
+                        anyhow::anyhow!(
+                            "compaction_provider_failure: guided structured output failed: {}; \
+                             non-guided JSON fallback failed: {}",
+                            bounded_error_diagnostic(&format!("{guided_error:#}")),
+                            bounded_error_diagnostic(&format!("{fallback_error:#}"))
+                        )
+                    }
                 })?;
                 parse_fallback_checkpoint(&raw).map_err(|fallback_error| {
                     anyhow::anyhow!(
@@ -278,6 +293,13 @@ impl<M: CompletionModel + 'static> Compactor for DefraCompactor<M> {
                 })?
             }
             Err(error) => {
+                if crate::agent::loop_stream::aggregate_token_budget_exhaustion_message(&error)
+                    .is_some()
+                {
+                    return Err(
+                        error.context("guided compaction exhausted the request token budget")
+                    );
+                }
                 let deadline_context = if deadline_elapsed(summary_config.deadline) {
                     "compaction deadline elapsed after "
                 } else {

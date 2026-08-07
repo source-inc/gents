@@ -77,6 +77,7 @@ pub(crate) fn normalize_manifest(manifest: &mut DesiredStateManifest) {
     }
     for profile in &mut manifest.inference_profiles {
         normalize_optional_string(&mut profile.display_name);
+        normalize_optional_string(&mut profile.reasoning_effort);
     }
     for task in &mut manifest.tasks {
         normalize_optional_string(&mut task.description);

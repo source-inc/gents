@@ -222,6 +222,7 @@ async fn resend_preserves_request_overrides_and_metadata() -> Result<()> {
         top_p: Some(0.95),
         top_k: Some(40),
         max_tokens: Some(1234),
+        max_total_tokens: Some(10_000),
         metadata: Some(metadata_value.clone()),
         ..SubmitRequestOptions::default()
     };
@@ -266,6 +267,7 @@ async fn resend_preserves_request_overrides_and_metadata() -> Result<()> {
                     top_p
                     top_k
                     max_tokens
+                    max_total_tokens
                     metadata
                 }}
             }}"#,
@@ -283,6 +285,7 @@ async fn resend_preserves_request_overrides_and_metadata() -> Result<()> {
     assert_eq!(new_row.top_p, Some(0.95));
     assert_eq!(new_row.top_k, Some(40));
     assert_eq!(new_row.max_tokens, Some(1234));
+    assert_eq!(new_row.max_total_tokens, Some(10_000));
     assert_eq!(new_row.metadata.as_deref(), Some(metadata_value.as_str()));
 
     core.shutdown().await?;
@@ -299,6 +302,7 @@ struct RequestWithOverridesRow {
     top_p: Option<f64>,
     top_k: Option<i64>,
     max_tokens: Option<i64>,
+    max_total_tokens: Option<i64>,
     metadata: Option<String>,
 }
 

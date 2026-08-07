@@ -363,6 +363,9 @@ async fn load_timeline_inference_calls_for_request(
                 ended_at
                 backend_id
                 call_kind
+                prompt_tokens
+                completion_tokens
+                cached_input_tokens
             }}
         }}"#,
         escape_graphql_string(request_id)

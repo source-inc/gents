@@ -151,6 +151,8 @@ pub(crate) struct LeanContractSnapshot {
     pub(crate) rendered_capture_cases: Vec<LeanRenderedCaptureCase>,
     #[serde(default)]
     pub(crate) rendered_capture_key_cases: Vec<LeanRenderedCaptureKeyCase>,
+    #[serde(default)]
+    pub(crate) aggregate_token_budget_cases: Vec<LeanAggregateTokenBudgetCase>,
     pub(crate) follow_up_hooks: Vec<String>,
     pub(crate) coverage_ledger: Vec<LeanCoverageEntry>,
     pub(crate) feature_surface_requirements: Vec<LeanFeatureSurfaceRequirement>,
@@ -882,6 +884,10 @@ pub(crate) fn lean_rendered_capture_cases() -> &'static [LeanRenderedCaptureCase
 
 pub(crate) fn lean_rendered_capture_key_cases() -> &'static [LeanRenderedCaptureKeyCase] {
     &lean_contract_snapshot().rendered_capture_key_cases
+}
+
+pub(crate) fn lean_aggregate_token_budget_cases() -> &'static [LeanAggregateTokenBudgetCase] {
+    &lean_contract_snapshot().aggregate_token_budget_cases
 }
 
 pub(crate) fn lean_compaction_reducer_case(name: &str) -> &'static LeanCompactionReducerCase {

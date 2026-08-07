@@ -312,6 +312,11 @@ pub(crate) fn validate_manifest(manifest: &DesiredStateManifest, errors: &mut Ve
                 "InferenceProfile {profile_id} stream_liveness_timeout_secs must be positive"
             ));
         }
+        if profile.seed.is_some_and(|value| value < 0) {
+            errors.push(format!(
+                "InferenceProfile {profile_id} seed must be non-negative"
+            ));
+        }
         // An empty value is not an invalid reasoning level, it is an *unset*
         // one. `document_config::graphql_string_field` writes `""` for a
         // `None` reasoning effort, so every profile `gents init` creates
@@ -1431,6 +1436,7 @@ mod tests {
                 temperature: None,
                 top_p: None,
                 top_k: None,
+                seed: None,
                 min_p: None,
                 frequency_penalty: None,
                 presence_penalty: None,

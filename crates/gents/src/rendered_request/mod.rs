@@ -1335,6 +1335,8 @@ mod tests {
             top_p: None,
             top_k: None,
             max_tokens: None,
+            seed: None,
+            max_total_tokens: None,
             metadata: None,
             execution_origin: None,
             created_at: String::new(),

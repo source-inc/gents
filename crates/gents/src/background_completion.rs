@@ -28,7 +28,7 @@ use crate::lifecycle::queue::{
 use crate::lifecycle::ExecutionOrigin;
 use crate::session;
 use crate::tool_call_lifecycle::{AwaitMode, ChildTerminal, FailureClass, ToolCallLifecycle};
-use crate::watcher::{validate_agent_request_subagent_coherence, AgentRequest};
+use crate::watcher::{validate_agent_request, AgentRequest};
 
 const AGENT_REQUEST_COLLECTION: &str = "AgentRequest";
 pub const BACKGROUND_COMPLETION_WAKE_PROMPT: &str =
@@ -1503,7 +1503,9 @@ struct AgentRequestQueueRow {
     temperature: Option<f64>,
     top_p: Option<f64>,
     top_k: Option<i64>,
+    seed: Option<i64>,
     max_tokens: Option<i64>,
+    max_total_tokens: Option<i64>,
     metadata: Option<String>,
     execution_origin: Option<String>,
     created_at: String,
@@ -1534,7 +1536,9 @@ async fn load_agent_request_for_queue(
                 temperature
                 top_p
                 top_k
+                seed
                 max_tokens
+                max_total_tokens
                 metadata
                 execution_origin
                 created_at
@@ -1568,7 +1572,9 @@ async fn load_agent_request_for_queue(
         temperature: row.temperature,
         top_p: row.top_p,
         top_k: row.top_k,
+        seed: row.seed,
         max_tokens: row.max_tokens,
+        max_total_tokens: row.max_total_tokens,
         metadata: row.metadata,
         execution_origin: normalize_optional_string(row.execution_origin),
         created_at: row.created_at,
@@ -1577,7 +1583,7 @@ async fn load_agent_request_for_queue(
         caused_by_parent_request_id: normalize_optional_string(row.caused_by_parent_request_id),
         caused_by_parent_tool_call_id: normalize_optional_string(row.caused_by_parent_tool_call_id),
     };
-    validate_agent_request_subagent_coherence(&request)?;
+    validate_agent_request(&request)?;
     Ok(Some(request))
 }
 

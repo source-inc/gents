@@ -149,6 +149,89 @@ impl CompletionModel for ScriptedModel {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct UsageResponse {
+    usage: Option<Usage>,
+}
+
+impl GetTokenUsage for UsageResponse {
+    fn token_usage(&self) -> Option<Usage> {
+        self.usage
+    }
+}
+
+fn usage_response(input_tokens: u64, output_tokens: u64, total_tokens: u64) -> UsageResponse {
+    UsageResponse {
+        usage: Some(Usage {
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+        }),
+    }
+}
+
+/// A usage-reporting provider double for request-wide budget behavior. It
+/// records the fully rendered input estimate and effective output ceiling at
+/// the same boundary where a real provider receives them.
+#[derive(Clone)]
+struct UsageScriptedModel {
+    turns: Arc<Mutex<VecDeque<Vec<RawStreamingChoice<UsageResponse>>>>>,
+    seen_dispatches: Arc<Mutex<Vec<(u64, Option<u64>)>>>,
+}
+
+impl UsageScriptedModel {
+    fn new(turns: Vec<Vec<RawStreamingChoice<UsageResponse>>>) -> Self {
+        Self {
+            turns: Arc::new(Mutex::new(turns.into())),
+            seen_dispatches: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    async fn seen_dispatches(&self) -> Vec<(u64, Option<u64>)> {
+        self.seen_dispatches.lock().await.clone()
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl CompletionModel for UsageScriptedModel {
+    type Response = ();
+    type StreamingResponse = UsageResponse;
+    type Client = ();
+
+    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+        Self::new(Vec::new())
+    }
+
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
+        Err(CompletionError::ProviderError(
+            "completion is unused in loop_stream tests".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
+        self.seen_dispatches.lock().await.push((
+            u64::try_from(completion_request_input_estimate(&request)).unwrap_or(u64::MAX),
+            request.max_tokens,
+        ));
+        let turn = self.turns.lock().await.pop_front().unwrap_or_else(|| {
+            vec![RawStreamingChoice::FinalResponse(UsageResponse {
+                usage: None,
+            })]
+        });
+        let inner: rig::streaming::StreamingResult<UsageResponse> =
+            Box::pin(stream::iter(turn.into_iter().map(Ok)));
+        Ok(StreamingCompletionResponse::stream(inner))
+    }
+}
+
 /// A trivial tool that echoes a fixed output, for dispatch tests.
 struct EchoTool {
     name: String,
@@ -279,6 +362,17 @@ fn echo_tool_turn() -> Vec<RawStreamingChoice<()>> {
     ]
 }
 
+fn usage_echo_tool_turn(response: UsageResponse) -> Vec<RawStreamingChoice<UsageResponse>> {
+    vec![
+        RawStreamingChoice::ToolCall(RawStreamingToolCall::new(
+            "call-1".to_string(),
+            "echo".to_string(),
+            serde_json::json!({}),
+        )),
+        RawStreamingChoice::FinalResponse(response),
+    ]
+}
+
 /// Set the request context that on_tool_call/on_tool_result require. The
 /// session itself is created by the generator's per-turn on_completion_call.
 async fn ready_hook_for(hook: &DefraSessionHook) {
@@ -301,6 +395,7 @@ fn config(max_turns: usize) -> LoopConfig {
         context_message: None,
         temperature: None,
         max_tokens: None,
+        aggregate_token_budget: None,
         additional_params: None,
         structured_output: None,
         tool_choice: None,
@@ -332,9 +427,9 @@ struct CollectedScriptedStream {
     error: Option<String>,
 }
 
-async fn collect_scripted_stream<S>(stream: S) -> CollectedScriptedStream
+async fn collect_scripted_stream<S, R>(stream: S) -> CollectedScriptedStream
 where
-    S: Stream<Item = Result<LoopStreamItem<()>, StreamingError>>,
+    S: Stream<Item = Result<LoopStreamItem<R>, StreamingError>>,
 {
     futures::pin_mut!(stream);
     let mut collected = CollectedScriptedStream::default();
@@ -378,7 +473,7 @@ where
             }
             Ok(Some(Ok(_))) => {}
             Ok(Some(Err(error))) => {
-                collected.error = Some(format!("{error:?}"));
+                collected.error = Some(error.to_string());
                 break;
             }
             Ok(None) => break,
@@ -776,6 +871,357 @@ fn generated_turn_budget_cases_drive_every_completion_dispatch() {
             case.name
         );
     }
+}
+
+#[test]
+fn generated_aggregate_token_budget_cases_drive_the_owned_loop_ledger() {
+    let cases = crate::lean_vocab_test::lean_aggregate_token_budget_cases();
+    assert_eq!(
+        cases.len(),
+        10,
+        "Lean should emit the aggregate token-budget witness set"
+    );
+
+    for case in cases {
+        let mut ledger = AggregateTokenLedger {
+            limit: case.limit,
+            used: case.used,
+        };
+        assert_eq!(
+            ledger.effective_output_tokens(case.input_tokens, case.configured_max_output_tokens,),
+            case.effective_output_tokens,
+            "{}: dispatch clamp drifted from Lean",
+            case.name
+        );
+        assert_eq!(
+            ledger.can_dispatch(case.input_tokens, case.configured_max_output_tokens),
+            case.can_dispatch,
+            "{}: dispatch decision drifted from Lean",
+            case.name
+        );
+
+        let usage = case.usage_present.then_some(Usage {
+            input_tokens: case.reported_input_tokens,
+            output_tokens: case.reported_output_tokens,
+            total_tokens: case.reported_total_tokens,
+            cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+        });
+        assert_eq!(
+            usage.map(charged_usage_total).unwrap_or_default(),
+            case.charged_tokens,
+            "{}: charged total drifted from Lean",
+            case.name
+        );
+        let actual = ledger.charge_reported(usage);
+        let actual_name = match actual {
+            AggregateTokenCharge::Missing => "missing",
+            AggregateTokenCharge::Within => "within",
+            AggregateTokenCharge::Exhausted => "exhausted",
+            AggregateTokenCharge::Overrun => "overrun",
+        };
+        assert_eq!(
+            actual_name, case.charge_result,
+            "{}: charge classification drifted from Lean",
+            case.name
+        );
+        assert_eq!(
+            (actual != AggregateTokenCharge::Missing).then_some(ledger.used),
+            case.next_used,
+            "{}: post-charge ledger drifted from Lean",
+            case.name
+        );
+        let actual_action = match aggregate_post_charge_action(actual, case.terminal_valid) {
+            AggregatePostChargeAction::Continue => "continue",
+            AggregatePostChargeAction::Succeed => "succeed",
+            AggregatePostChargeAction::Fail => "fail",
+        };
+        assert_eq!(
+            actual_action, case.post_charge_action,
+            "{}: post-charge terminal legality drifted from Lean",
+            case.name
+        );
+    }
+}
+
+#[tokio::test]
+async fn aggregate_budget_charges_tool_turn_before_clamping_later_dispatch() {
+    let model = UsageScriptedModel::new(vec![
+        usage_echo_tool_turn(usage_response(100, 100, 20_000)),
+        vec![
+            RawStreamingChoice::Message("done".to_string()),
+            RawStreamingChoice::FinalResponse(usage_response(100, 100, 1_000)),
+        ],
+    ]);
+    let mut loop_config = config(2);
+    loop_config.max_tokens = Some(40_000);
+    loop_config.aggregate_token_budget = Some(AggregateTokenBudget::new(50_000));
+
+    let stream = run_loop_stream(
+        model.clone(),
+        None,
+        Message::user("use the tool"),
+        Vec::new(),
+        Arc::new(vec![echo_tool()]),
+        loop_config,
+    );
+    let collected = collect_scripted_stream(stream).await;
+
+    assert_eq!(collected.error, None);
+    assert_eq!(collected.final_text.as_deref(), Some("done"));
+    let dispatches = model.seen_dispatches().await;
+    assert_eq!(dispatches.len(), 2);
+    assert_eq!(dispatches[0].1, Some(40_000));
+    assert_eq!(dispatches[1].1, Some(30_000 - dispatches[1].0));
+}
+
+#[tokio::test]
+async fn nested_compaction_charges_the_same_request_budget() {
+    let outer_model = UsageScriptedModel::new(vec![vec![
+        RawStreamingChoice::Message("done".to_string()),
+        RawStreamingChoice::FinalResponse(usage_response(400, 600, 1_000)),
+    ]]);
+    let compaction_model = UsageScriptedModel::new(vec![vec![
+        RawStreamingChoice::Message("summary".to_string()),
+        RawStreamingChoice::FinalResponse(usage_response(4_000, 1_000, 5_000)),
+    ]]);
+    let budget = AggregateTokenBudget::new(10_000);
+    let mut compaction_config = config(0);
+    compaction_config.max_tokens = Some(1_000);
+    compaction_config.aggregate_token_budget = Some(budget.clone());
+
+    let mut loop_config = config(0);
+    loop_config.max_tokens = Some(6_000);
+    loop_config.context_window = 6_500;
+    loop_config.compaction_threshold = 0.25;
+    loop_config.aggregate_token_budget = Some(budget.clone());
+    loop_config.turn_compactor = Some(Arc::new(move |_messages, _target| {
+        let model = compaction_model.clone();
+        let config = compaction_config.clone();
+        Box::pin(async move {
+            run_loop_to_text(
+                model,
+                None,
+                Message::user("summarize"),
+                Vec::new(),
+                Arc::new(Vec::new()),
+                config,
+            )
+            .await?;
+            Ok(vec![Message::user("compacted prompt")])
+        })
+    }));
+
+    let collected = collect_scripted_stream(run_loop_stream(
+        outer_model.clone(),
+        None,
+        Message::user("x".repeat(8_000)),
+        Vec::new(),
+        Arc::new(Vec::new()),
+        loop_config,
+    ))
+    .await;
+
+    assert_eq!(collected.error, None);
+    assert_eq!(collected.final_text.as_deref(), Some("done"));
+    assert_eq!(budget.snapshot().unwrap().used, 6_000);
+    let dispatches = outer_model.seen_dispatches().await;
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches[0].1, Some(5_000 - dispatches[0].0));
+}
+
+#[tokio::test]
+async fn per_turn_compaction_preserves_canonical_budget_exhaustion() {
+    let model = UsageScriptedModel::new(Vec::new());
+    let mut loop_config = config(0);
+    loop_config.max_tokens = Some(6_000);
+    loop_config.context_window = 6_500;
+    loop_config.compaction_threshold = 0.25;
+    loop_config.turn_compactor = Some(Arc::new(move |_messages, _target| {
+        Box::pin(async move {
+            Err(
+                anyhow::Error::new(StreamingError::Completion(CompletionError::ProviderError(
+                    format!(
+                        "{AGGREGATE_TOKEN_BUDGET_EXHAUSTED_PREFIX}limit=10000, used=9000, \
+                     estimated_input_tokens=2000, remaining=1000"
+                    ),
+                )))
+                .context("guided compaction exhausted the request token budget"),
+            )
+        })
+    }));
+
+    let collected = collect_scripted_stream(run_loop_stream(
+        model.clone(),
+        None,
+        Message::user("x".repeat(8_000)),
+        Vec::new(),
+        Arc::new(Vec::new()),
+        loop_config,
+    ))
+    .await;
+
+    assert!(
+        collected.error.as_deref().is_some_and(|error| error
+            .starts_with("CompletionError: ProviderError: aggregate_token_budget_exhausted: ")),
+        "unexpected terminal state: {collected:?}"
+    );
+    assert!(model.seen_dispatches().await.is_empty());
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct BudgetedStructuredResponse {
+    #[allow(dead_code)]
+    answer: String,
+}
+
+#[tokio::test(start_paused = true)]
+async fn aggregate_budget_charges_retracted_structured_output_attempt() {
+    let model = UsageScriptedModel::new(vec![
+        vec![
+            RawStreamingChoice::Message("not json".to_string()),
+            RawStreamingChoice::FinalResponse(usage_response(100, 100, 20_000)),
+        ],
+        vec![
+            RawStreamingChoice::Message(r#"{"answer":"ok"}"#.to_string()),
+            RawStreamingChoice::FinalResponse(usage_response(100, 100, 1_000)),
+        ],
+    ]);
+    let mut loop_config = config(0);
+    loop_config.max_tokens = Some(40_000);
+    loop_config.aggregate_token_budget = Some(AggregateTokenBudget::new(50_000));
+    loop_config.structured_output =
+        Some(StructuredOutputConfig::for_type::<BudgetedStructuredResponse>());
+
+    let stream = run_loop_stream(
+        model.clone(),
+        None,
+        Message::user("return json"),
+        Vec::new(),
+        Arc::new(Vec::new()),
+        loop_config,
+    );
+    let collected = collect_scripted_stream(stream).await;
+
+    assert_eq!(collected.error, None);
+    assert_eq!(collected.retractions, vec![(0, 0)]);
+    let dispatches = model.seen_dispatches().await;
+    assert_eq!(dispatches.len(), 2);
+    assert_eq!(dispatches[0].1, Some(40_000));
+    assert_eq!(dispatches[1].1, Some(30_000 - dispatches[1].0));
+}
+
+#[tokio::test]
+async fn exact_aggregate_exhaustion_allows_a_valid_terminal_response() {
+    let model = UsageScriptedModel::new(vec![vec![
+        RawStreamingChoice::Message("done".to_string()),
+        RawStreamingChoice::FinalResponse(usage_response(1_000, 1_000, 2_000)),
+    ]]);
+    let mut loop_config = config(0);
+    loop_config.max_tokens = Some(1_000);
+    loop_config.aggregate_token_budget = Some(AggregateTokenBudget::new(2_000));
+
+    let collected = collect_scripted_stream(run_loop_stream(
+        model,
+        None,
+        Message::user("finish"),
+        Vec::new(),
+        Arc::new(Vec::new()),
+        loop_config,
+    ))
+    .await;
+
+    assert_eq!(collected.error, None);
+    assert_eq!(collected.final_text.as_deref(), Some("done"));
+}
+
+#[tokio::test]
+async fn exact_aggregate_exhaustion_after_tool_effect_is_terminal_and_preserved() {
+    let model = UsageScriptedModel::new(vec![usage_echo_tool_turn(usage_response(
+        1_000, 1_000, 2_000,
+    ))]);
+    let mut loop_config = config(2);
+    loop_config.max_tokens = Some(1_000);
+    loop_config.aggregate_token_budget = Some(AggregateTokenBudget::new(2_000));
+
+    let collected = collect_scripted_stream(run_loop_stream(
+        model,
+        None,
+        Message::user("use the tool"),
+        Vec::new(),
+        Arc::new(vec![echo_tool()]),
+        loop_config,
+    ))
+    .await;
+
+    assert_eq!(collected.tool_results, vec!["ECHOED"]);
+    assert!(
+        collected.error.as_deref().is_some_and(|error| error
+            .starts_with("CompletionError: ProviderError: aggregate_token_budget_exhausted: ")),
+        "unexpected terminal state: {collected:?}"
+    );
+}
+
+#[tokio::test]
+async fn aggregate_budget_fails_closed_on_missing_or_zero_usage() {
+    for response in [UsageResponse { usage: None }, usage_response(0, 0, 0)] {
+        let model = UsageScriptedModel::new(vec![vec![
+            RawStreamingChoice::Message("unscored".to_string()),
+            RawStreamingChoice::FinalResponse(response),
+        ]]);
+        let mut loop_config = config(0);
+        loop_config.max_tokens = Some(1_000);
+        loop_config.aggregate_token_budget = Some(AggregateTokenBudget::new(2_000));
+
+        let collected = collect_scripted_stream(run_loop_stream(
+            model,
+            None,
+            Message::user("finish"),
+            Vec::new(),
+            Arc::new(Vec::new()),
+            loop_config,
+        ))
+        .await;
+
+        assert!(
+            collected
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("aggregate_token_usage_missing")),
+            "unexpected terminal state: {collected:?}"
+        );
+        assert_eq!(collected.final_text, None);
+    }
+}
+
+#[tokio::test]
+async fn aggregate_budget_fails_closed_on_provider_reported_overrun() {
+    let model = UsageScriptedModel::new(vec![vec![
+        RawStreamingChoice::Message("unscored".to_string()),
+        RawStreamingChoice::FinalResponse(usage_response(1_000, 1_001, 2_001)),
+    ]]);
+    let mut loop_config = config(0);
+    loop_config.max_tokens = Some(1_000);
+    loop_config.aggregate_token_budget = Some(AggregateTokenBudget::new(2_000));
+
+    let collected = collect_scripted_stream(run_loop_stream(
+        model,
+        None,
+        Message::user("finish"),
+        Vec::new(),
+        Arc::new(Vec::new()),
+        loop_config,
+    ))
+    .await;
+
+    assert!(
+        collected
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("aggregate_token_budget_overrun")),
+        "unexpected terminal state: {collected:?}"
+    );
+    assert_eq!(collected.final_text, None);
 }
 
 #[tokio::test]
@@ -1671,6 +2117,40 @@ async fn mid_stream_decode_error_without_effects_retracts_and_resamples() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn aggregate_budget_fails_closed_on_mid_stream_error_before_retry() {
+    let model = ScriptedModel::new_calls(vec![
+        ScriptedCall::TurnWithMidStreamError(
+            vec![RawStreamingChoice::Message("partial".to_string())],
+            transient_provider_error("decode"),
+        ),
+        ScriptedCall::Turn(vec![
+            RawStreamingChoice::Message("must not run".to_string()),
+            RawStreamingChoice::FinalResponse(()),
+        ]),
+    ]);
+    let mut loop_config = config(0);
+    loop_config.aggregate_token_budget = Some(AggregateTokenBudget::new(10_000));
+
+    let collected = collect_scripted_stream(run_loop_stream(
+        model.clone(),
+        None,
+        Message::user("hi"),
+        Vec::new(),
+        Arc::new(Vec::new()),
+        loop_config,
+    ))
+    .await;
+
+    assert!(
+        collected.error.as_deref().is_some_and(|error| error
+            .starts_with("CompletionError: ProviderError: aggregate_token_usage_missing: ")),
+        "unexpected terminal state: {collected:?}"
+    );
+    assert!(collected.retractions.is_empty());
+    assert_eq!(model.seen_histories().await.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
 async fn reasoning_only_completion_retracts_and_resamples() {
     let model = ScriptedModel::new_calls(vec![
         ScriptedCall::Turn(vec![
@@ -1765,6 +2245,45 @@ async fn mid_stream_failure_after_tool_ran_closes_turn_and_continues() {
         "continued request must include the tool result: {:?}",
         histories[1]
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn aggregate_budget_fails_closed_after_mid_stream_tool_effect() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let model = ScriptedModel::new_calls(vec![ScriptedCall::TurnWithMidStreamError(
+        vec![RawStreamingChoice::ToolCall(RawStreamingToolCall::new(
+            "call-1".to_string(),
+            "echo".to_string(),
+            serde_json::json!({}),
+        ))],
+        transient_provider_error("decode after tool"),
+    )]);
+    let tools: Vec<Box<dyn ToolDyn>> = vec![Box::new(CountingTool {
+        name: "echo".to_string(),
+        output: "ECHOED".to_string(),
+        calls: calls.clone(),
+    })];
+    let mut loop_config = config(4);
+    loop_config.aggregate_token_budget = Some(AggregateTokenBudget::new(10_000));
+
+    let collected = collect_scripted_stream(run_loop_stream(
+        model.clone(),
+        None,
+        Message::user("use the echo tool"),
+        Vec::new(),
+        Arc::new(tools),
+        loop_config,
+    ))
+    .await;
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(collected.tool_results, vec!["ECHOED"]);
+    assert!(
+        collected.error.as_deref().is_some_and(|error| error
+            .starts_with("CompletionError: ProviderError: aggregate_token_usage_missing: ")),
+        "unexpected terminal state: {collected:?}"
+    );
+    assert_eq!(model.seen_histories().await.len(), 1);
 }
 
 #[tokio::test(start_paused = true)]

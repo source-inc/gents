@@ -335,6 +335,7 @@ pub async fn save_inference_profile_config(
             retry_interactive_max: None,
             top_p: None,
             top_k: None,
+            seed: None,
             min_p: None,
             frequency_penalty: None,
             presence_penalty: None,

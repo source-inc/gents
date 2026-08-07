@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use serde::Deserialize;
 
-use super::{validate_agent_request_subagent_coherence, AgentRequest, DefraWatcher};
+use super::{validate_agent_request, AgentRequest, DefraWatcher};
 
 const AGENT_REQUEST_FIELDS: &str = r#"
                     _docID
@@ -15,7 +15,9 @@ const AGENT_REQUEST_FIELDS: &str = r#"
                     temperature
                     top_p
                     top_k
+                    seed
                     max_tokens
+                    max_total_tokens
                     metadata
                     execution_origin
                     created_at
@@ -220,7 +222,9 @@ struct AgentRequestRow {
     temperature: Option<f64>,
     top_p: Option<f64>,
     top_k: Option<i64>,
+    seed: Option<i64>,
     max_tokens: Option<i64>,
+    max_total_tokens: Option<i64>,
     metadata: Option<String>,
     execution_origin: Option<String>,
     created_at: String,
@@ -300,7 +304,9 @@ impl AgentRequestRow {
             temperature: self.temperature,
             top_p: self.top_p,
             top_k: self.top_k,
+            seed: self.seed,
             max_tokens: self.max_tokens,
+            max_total_tokens: self.max_total_tokens,
             metadata: self.metadata,
             execution_origin: normalize_optional_string(self.execution_origin),
             created_at: self.created_at,
@@ -309,7 +315,7 @@ impl AgentRequestRow {
             caused_by_parent_request_id: self.caused_by_parent_request_id,
             caused_by_parent_tool_call_id: self.caused_by_parent_tool_call_id,
         };
-        validate_agent_request_subagent_coherence(&req)?;
+        validate_agent_request(&req)?;
         Ok(req)
     }
 }

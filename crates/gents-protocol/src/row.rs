@@ -225,7 +225,11 @@ pub struct AgentRequestRow {
     #[serde(default)]
     pub top_k: Option<i64>,
     #[serde(default)]
+    pub seed: Option<i64>,
+    #[serde(default)]
     pub max_tokens: Option<i64>,
+    #[serde(default)]
+    pub max_total_tokens: Option<i64>,
     #[serde(default)]
     pub metadata: Option<String>,
     #[serde(default)]
@@ -769,6 +773,8 @@ pub struct InferenceProfileRow {
     #[serde(default)]
     pub top_k: Option<i64>,
     #[serde(default)]
+    pub seed: Option<i64>,
+    #[serde(default)]
     pub min_p: Option<f64>,
     #[serde(default)]
     pub frequency_penalty: Option<f64>,
@@ -889,6 +895,7 @@ mod tests {
             "top_p": 0.95,
             "top_k": 40,
             "max_tokens": 512,
+            "max_total_tokens": 4096,
             "metadata": "{\"run_id\":\"run-1\"}",
             "status": "pending",
             "lifecycle_state": "pending",
@@ -906,6 +913,7 @@ mod tests {
         assert_eq!(row.top_p, Some(0.95));
         assert_eq!(row.top_k, Some(40));
         assert_eq!(row.max_tokens, Some(512));
+        assert_eq!(row.max_total_tokens, Some(4096));
         assert_eq!(row.metadata.as_deref(), Some(r#"{"run_id":"run-1"}"#));
         let re: String = serde_json::to_string(&row).expect("serialize");
         let round: AgentRequestRow = serde_json::from_str(&re).expect("reparse");

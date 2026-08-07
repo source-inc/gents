@@ -142,6 +142,7 @@ async fn profile_sampling_knobs_reach_the_behavior_and_provider_body() {
         temperature: profile.temperature,
         top_p: profile.top_p,
         top_k: profile.top_k,
+        seed: profile.seed,
         min_p: profile.min_p,
         frequency_penalty: profile.frequency_penalty,
         presence_penalty: profile.presence_penalty,
@@ -160,6 +161,7 @@ async fn profile_sampling_knobs_reach_the_behavior_and_provider_body() {
 
     assert_eq!(params["top_p"], 0.95);
     assert_eq!(params["top_k"], 40);
+    assert_eq!(params["seed"], 1234);
     assert_eq!(params["min_p"], 0.05);
     assert_eq!(params["frequency_penalty"], 0.5);
     assert_eq!(params["presence_penalty"], -0.25);
@@ -304,6 +306,7 @@ async fn insert_inference_profile(node: &gents::defra_node::EmbeddedNode, profil
                 temperature: 0.2,
                 top_p: 0.95,
                 top_k: 40,
+                seed: 1234,
                 min_p: 0.05,
                 frequency_penalty: 0.5,
                 presence_penalty: -0.25,

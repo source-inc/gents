@@ -86,3 +86,25 @@ pub(crate) struct LeanPromptAssemblyTurnBudgetCase {
     pub(crate) turn_output_tokens: Vec<usize>,
     pub(crate) turn_should_compact: Vec<bool>,
 }
+
+/// A request-wide token-ledger witness computed by
+/// `PromptAssembly.AggregateBudget`.
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct LeanAggregateTokenBudgetCase {
+    pub(crate) name: String,
+    pub(crate) limit: u64,
+    pub(crate) used: u64,
+    pub(crate) input_tokens: u64,
+    pub(crate) configured_max_output_tokens: u64,
+    pub(crate) reported_input_tokens: u64,
+    pub(crate) reported_output_tokens: u64,
+    pub(crate) reported_total_tokens: u64,
+    pub(crate) usage_present: bool,
+    pub(crate) terminal_valid: bool,
+    pub(crate) effective_output_tokens: u64,
+    pub(crate) can_dispatch: bool,
+    pub(crate) charged_tokens: u64,
+    pub(crate) charge_result: String,
+    pub(crate) next_used: Option<u64>,
+    pub(crate) post_charge_action: String,
+}

@@ -11,10 +11,12 @@ Harbor verifier inspects.
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
 import re
 import shlex
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -25,6 +27,8 @@ import certifi
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+
+from . import jack_bench_attestation
 
 
 class GentsAgent(BaseAgent):
@@ -40,9 +44,16 @@ class GentsAgent(BaseAgent):
     _REMOTE_RUNNER = "/usr/local/bin/run-gents-harbor"
     _REMOTE_RUNNER_UPLOAD = "/tmp/run-gents-harbor-upload"
     _REMOTE_CA_BUNDLE = "/tmp/gents-harbor-ca-bundle.pem"
+    _REMOTE_PERSISTED_REQUEST = "/logs/agent/request-persisted.json"
     _REMOTE_GLIBC_BUNDLE = "/tmp/gents-harbor-glibc.tar.gz"
     _REMOTE_GLIBC_DIR = "/usr/local/lib/gents-harbor-glibc"
     _RUNNER_SOURCE = Path(__file__).with_name("run_gents.sh")
+    _JACK_BENCH_RUNTIME_ATTESTATION_SCHEMA = (
+        jack_bench_attestation.RUNTIME_ATTESTATION_SCHEMA
+    )
+    _JACK_BENCH_RUNTIME_ATTESTATION_FILE = (
+        jack_bench_attestation.RUNTIME_ATTESTATION_FILE
+    )
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -86,6 +97,110 @@ class GentsAgent(BaseAgent):
             f"Gents Harbor command failed with exit {result.return_code}: {command}\n"
             f"stdout:\n{stdout}\nstderr:\n{stderr}"
         )
+
+    @staticmethod
+    def _persisted_request_value(request: dict[str, Any], field: str) -> Any:
+        if field not in request:
+            raise RuntimeError(
+                "Gents request-show contract omits required persisted field: "
+                f"{field}"
+            )
+        return request[field]
+
+    def _write_jack_bench_runtime_attestation(
+        self, detected_gents_version: str
+    ) -> None:
+        if self._env("GENTS_JACK_BENCH_ATTESTATION") != "1":
+            return
+        jack_bench_attestation.write_runtime_attestation(
+            binary_path=self._env("GENTS_BINARY_PATH"),
+            controller_binary_sha256=self._env(
+                "GENTS_HARBOR_CONTROLLER_BINARY_SHA256"
+            ),
+            controller_entrypoint=Path(sys.argv[0]),
+            detected_gents_version=detected_gents_version,
+            harbor_version=importlib.metadata.version("harbor"),
+            logs_dir=self.logs_dir,
+        )
+
+    @staticmethod
+    def _populate_token_usage(
+        context: AgentContext, trajectory: dict[str, Any]
+    ) -> bool:
+        final_metrics = trajectory.get("final_metrics") or {}
+        if not isinstance(final_metrics, dict):
+            return False
+        values: dict[str, int] = {}
+        for attribute, key in (
+            ("n_input_tokens", "total_prompt_tokens"),
+            ("n_cache_tokens", "total_cached_tokens"),
+            ("n_output_tokens", "total_completion_tokens"),
+        ):
+            value = final_metrics.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                values[attribute] = value
+            else:
+                return False
+        for attribute, value in values.items():
+            setattr(context, attribute, value)
+        return True
+
+    def _populate_context_from_artifacts(
+        self,
+        context: AgentContext,
+        *,
+        trajectory: dict[str, Any],
+        request: dict[str, Any],
+        outcome: dict[str, Any],
+        response: dict[str, Any],
+        diagnostic: dict[str, Any],
+        server_exit: dict[str, Any],
+        persisted_snapshot: dict[str, Any],
+        profile: dict[str, Any],
+        init: dict[str, Any],
+    ) -> None:
+        self._populate_token_usage(context, trajectory)
+        final_metrics = trajectory.get("final_metrics") or {}
+        persisted_request = persisted_snapshot.get("request") or {}
+        init_contract = init.get("init") or {}
+        failure_origin = None
+        if diagnostic.get("reason") == "server_lost_during_request":
+            failure_origin = "gents_server"
+        elif outcome.get("outcome") == "compaction_provider_error":
+            failure_origin = "compaction_provider"
+
+        context.metadata = {
+            **(context.metadata or {}),
+            "gents": {
+                **((context.metadata or {}).get("gents") or {}),
+                "model": init_contract.get("model_name"),
+                "inference_url": init_contract.get("endpoint"),
+                "temperature": request.get("temperature"),
+                "top_p": request.get("top_p"),
+                "seed": persisted_request.get("seed"),
+                "reasoning_effort": profile.get("reasoning_effort"),
+                "context_window": profile.get("context_window"),
+                "max_output_tokens": request.get("max_tokens"),
+                "max_total_tokens": persisted_request.get("max_total_tokens"),
+                "max_turns": profile.get("max_turns"),
+                "request_timeout_secs": profile.get("deadline_duration_secs"),
+                "retry_max_transport": profile.get("retry_max_transport"),
+                "request_id": request.get("request_id"),
+                "session_id": trajectory.get("session_id"),
+                "trajectory_id": trajectory.get("trajectory_id"),
+                "total_steps": final_metrics.get("total_steps")
+                if isinstance(final_metrics, dict)
+                else None,
+                "outcome": outcome.get("outcome"),
+                "budget_exhausted": outcome.get("outcome")
+                in {"max_turns_exhausted", "token_budget_exhausted"},
+                "terminal_error": response.get("error_message"),
+                "failure_origin": failure_origin,
+                "diagnostic_reason": diagnostic.get("reason"),
+                "diagnostic_graphql_available": diagnostic.get("graphql_available"),
+                "server_exit": server_exit or None,
+            },
+        }
 
     async def _install_ca_bundle(self, environment: BaseEnvironment) -> None:
         """Provide TLS roots without invoking a package manager in every task."""
@@ -232,10 +347,24 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
                 "build this branch or use a release containing PR #988"
             )
 
+        request_help_result = await environment.exec(
+            command=f"{self._REMOTE_BINARY} request submit --help"
+        )
+        self._require_success("gents request submit --help", request_help_result)
+        request_help_text = (
+            f"{request_help_result.stdout or ''}\n{request_help_result.stderr or ''}"
+        )
+        if "--max-total-tokens" not in request_help_text:
+            raise RuntimeError(
+                "The installed Gents binary does not enforce request-wide token "
+                "budgets; build this branch or use a newer release"
+            )
+
         fs_runner_result = await environment.exec(
             command=f"{self._REMOTE_FS_RUNNER} --self-test"
         )
         self._require_success("gents native filesystem runner self-test", fs_runner_result)
+        self._write_jack_bench_runtime_attestation(detected_version)
 
     async def run(
         self,
@@ -254,6 +383,17 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
             raise ValueError(
                 "Set GENTS_INFERENCE_URL or OPENAI_BASE_URL to the OpenAI-compatible "
                 "inference endpoint, including /v1"
+            )
+        max_total = self._env("GENTS_MAX_TOTAL")
+        if not max_total:
+            raise ValueError(
+                "Set GENTS_MAX_TOTAL to the positive request-wide token budget"
+            )
+        if not max_total.isdecimal() or int(max_total) <= 0 or (
+            len(max_total) > 1 and max_total.startswith("0")
+        ):
+            raise ValueError(
+                "GENTS_MAX_TOTAL must be a positive integer without leading zeros"
             )
 
         session_slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", self.session_id or "trial")
@@ -291,6 +431,7 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
             "GENTS_TEMPERATURE": self._env("GENTS_TEMPERATURE", "1.0") or "1.0",
             "GENTS_TOP_P": self._env("GENTS_TOP_P", "0.95") or "0.95",
             "GENTS_TOP_K": self._env("GENTS_TOP_K", "") or "",
+            "GENTS_SEED": self._env("GENTS_SEED", "") or "",
             "GENTS_REASONING_EFFORT": self._env(
                 "GENTS_REASONING_EFFORT", "max"
             )
@@ -299,6 +440,7 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
             # agent-env names as secrets and blindly replaces their values in
             # downloaded text artifacts, which can corrupt numeric JSON fields.
             "GENTS_MAX_OUTPUT": self._env("GENTS_MAX_OUTPUT", "393216") or "393216",
+            "GENTS_MAX_TOTAL": max_total,
             # Keep 53,248 tokens of provider-tokenization headroom below D4F's
             # 512K server limit. Gents dynamically clamps each turn's 384K
             # output ceiling to the context remaining after the assembled input,
@@ -373,21 +515,37 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
         if runner_error is not None:
             raise runner_error
 
-        context.metadata = {
-            **(context.metadata or {}),
-            "gents": {
-                "model": model_name,
-                "inference_url": inference_url,
-                "temperature": float(run_env["GENTS_TEMPERATURE"]),
-                "top_p": float(run_env["GENTS_TOP_P"]),
-                "reasoning_effort": run_env["GENTS_REASONING_EFFORT"],
-                "context_window": int(run_env["GENTS_CONTEXT_WINDOW"]),
-                "max_output_tokens": int(run_env["GENTS_MAX_OUTPUT"]),
-                "max_turns": int(run_env["GENTS_MAX_TURNS"]),
-                "request_timeout_secs": request_timeout,
-                "retry_max_transport": int(run_env["GENTS_RETRY_MAX_TRANSPORT"]),
-            },
-        }
+        # Validate the persisted request inside the environment, but leave
+        # AgentContext empty. Harbor 0.20.0 only invokes the post-run projection
+        # after syncing logs when AgentContext.is_empty(); populating even one
+        # metadata or usage field here would suppress the complete ATIF import.
+        persisted_result = await environment.exec(
+            command=f"cat {shlex.quote(self._REMOTE_PERSISTED_REQUEST)}"
+        )
+        self._require_success("read persisted Gents request", persisted_result)
+        try:
+            persisted_snapshot = json.loads(persisted_result.stdout or "")
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("Gents emitted invalid persisted request JSON") from error
+        if not isinstance(persisted_snapshot, dict):
+            raise RuntimeError("Gents emitted non-object persisted request JSON")
+        requested_seed = int(run_env["GENTS_SEED"]) if run_env["GENTS_SEED"] else None
+        persisted_request = persisted_snapshot.get("request") or {}
+        persisted_seed = persisted_request.get("seed")
+        if persisted_seed != requested_seed:
+            raise RuntimeError(
+                "Gents request seed persistence mismatch: "
+                f"requested={requested_seed!r} persisted={persisted_seed!r}"
+            )
+        requested_max_total = int(run_env["GENTS_MAX_TOTAL"])
+        persisted_max_total = self._persisted_request_value(
+            persisted_request, "max_total_tokens"
+        )
+        if persisted_max_total != requested_max_total:
+            raise RuntimeError(
+                "Gents aggregate token-budget persistence mismatch: "
+                f"requested={requested_max_total!r} persisted={persisted_max_total!r}"
+            )
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         trajectory_path = self.logs_dir / "trajectory.json"
@@ -407,34 +565,23 @@ install -m 0755 "$binary" {shlex.quote(self._REMOTE_BINARY)}
         response = self._read_json_object(self.logs_dir / "response.json")
         diagnostic = self._read_json_object(self.logs_dir / "gents-diagnostic.json")
         server_exit = self._read_json_object(self.logs_dir / "gents-server-exit.json")
-        failure_origin = None
-        if diagnostic.get("reason") == "server_lost_during_request":
-            failure_origin = "gents_server"
-        elif outcome.get("outcome") == "compaction_provider_error":
-            failure_origin = "compaction_provider"
-
-        context.metadata = {
-            **(context.metadata or {}),
-            "gents": {
-                **((context.metadata or {}).get("gents") or {}),
-                "request_id": request.get("request_id"),
-                "session_id": trajectory.get("session_id"),
-                "trajectory_id": trajectory.get("trajectory_id"),
-                "total_steps": (trajectory.get("final_metrics") or {}).get(
-                    "total_steps"
-                ),
-                # The runner returns control to Harbor for exhausted turn
-                # budgets so the verifier can score the workspace. Surface the
-                # distinction so budget-limited trials are identifiable.
-                "outcome": outcome.get("outcome"),
-                "budget_exhausted": outcome.get("outcome") == "max_turns_exhausted",
-                "terminal_error": response.get("error_message"),
-                "failure_origin": failure_origin,
-                "diagnostic_reason": diagnostic.get("reason"),
-                "diagnostic_graphql_available": diagnostic.get("graphql_available"),
-                "server_exit": server_exit or None,
-            },
-        }
+        persisted_snapshot = self._read_json_object(
+            self.logs_dir / "request-persisted.json"
+        )
+        profile = self._read_json_object(self.logs_dir / "gents-profile.json")
+        init = self._read_json_object(self.logs_dir / "gents-init.json")
+        self._populate_context_from_artifacts(
+            context,
+            trajectory=trajectory,
+            request=request,
+            outcome=outcome,
+            response=response,
+            diagnostic=diagnostic,
+            server_exit=server_exit,
+            persisted_snapshot=persisted_snapshot,
+            profile=profile,
+            init=init,
+        )
 
     def _read_json_object(self, path: Path) -> dict[str, Any]:
         if not path.is_file():
