@@ -477,6 +477,15 @@ async fn every_loop_config_arms_the_capture_scope_it_was_built_for() {
     let behavior = behavior_with_retry(CompletionRetryProfileFields::default());
     let context = RenderedRequestContext {
         request_doc_id: "doc-1".to_string(),
+        request_provenance: Some(crate::document_version::test_request_execution_provenance(
+            "doc-1",
+            "did:key:agent",
+        )),
+        inference_call_provenance_scope:
+            crate::rendered_request::InferenceCallProvenanceScope::StaticOrTest,
+        transcript_snapshot: Vec::new(),
+        config_provenance_scope: crate::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+        config_provenance: None,
         request_id: "req-1".to_string(),
         agent_did: "did:key:agent".to_string(),
         requester_did: String::new(),
@@ -484,7 +493,9 @@ async fn every_loop_config_arms_the_capture_scope_it_was_built_for() {
         session_id: "session-1".to_string(),
         model_name: "model".to_string(),
     };
-    let sink: RenderedRequestCaptureSink = Arc::new(|_| Box::pin(async { Ok(()) }));
+    let sink: RenderedRequestCaptureSink = Arc::new(|_| {
+        Box::pin(async { Ok(crate::rendered_request::test_static_rendered_request_version()) })
+    });
     let scope = test_scope(context, sink);
 
     scope_request(scope, async {

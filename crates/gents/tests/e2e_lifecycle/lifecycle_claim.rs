@@ -130,7 +130,10 @@ async fn claim_queues_when_earlier_processing_request_exists() {
 
     let mut lifecycle =
         RequestLifecycle::new_with_agent_did(db.node.clone(), AGENT_NAME, AGENT_DID, request, 300);
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Queued);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Queued
+    );
 
     let resp = db
         .node
@@ -198,7 +201,10 @@ async fn queued_request_interrupt_wins_before_queue_block() {
 
     let mut lifecycle =
         RequestLifecycle::new_with_agent_did(db.node.clone(), AGENT_NAME, AGENT_DID, request, 300);
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Interrupted);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Interrupted
+    );
 
     let resp = db
         .node
@@ -259,7 +265,10 @@ async fn queued_request_valid_until_wins_before_queue_block() {
 
     let mut lifecycle =
         RequestLifecycle::new_with_agent_did(db.node.clone(), AGENT_NAME, AGENT_DID, request, 300);
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Expired);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Expired
+    );
 
     let resp = db
         .node
@@ -321,7 +330,10 @@ async fn earliest_pending_claim_leaves_later_same_session_pending() {
 
     let mut lifecycle =
         RequestLifecycle::new_with_agent_did(db.node.clone(), AGENT_NAME, AGENT_DID, request, 300);
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
 
     let resp = db
         .node
@@ -375,7 +387,10 @@ async fn same_timestamp_queue_order_uses_request_id_tie_break() {
         300,
     );
     assert_eq!(
-        second_lifecycle.claim().await.unwrap(),
+        second_lifecycle
+            .claim_without_identity_for_test()
+            .await
+            .unwrap(),
         ClaimOutcome::Queued
     );
 
@@ -407,7 +422,10 @@ async fn same_timestamp_queue_order_uses_request_id_tie_break() {
         300,
     );
     assert_eq!(
-        first_lifecycle.claim().await.unwrap(),
+        first_lifecycle
+            .claim_without_identity_for_test()
+            .await
+            .unwrap(),
         ClaimOutcome::Claimed
     );
 }
@@ -457,7 +475,10 @@ async fn terminal_earlier_request_allows_later_same_session_claim() {
 
     let mut lifecycle =
         RequestLifecycle::new_with_agent_did(db.node.clone(), AGENT_NAME, AGENT_DID, request, 300);
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
 
     let resp = db
         .node
@@ -547,7 +568,10 @@ async fn claim_preserves_explicit_behavior_id() {
     let mut lifecycle =
         RequestLifecycle::new_with_agent_did(db.node.clone(), AGENT_NAME, AGENT_DID, request, 300);
     assert_eq!(lifecycle.behavior_id(), "code");
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
 
     let resp = db
         .node
@@ -628,7 +652,10 @@ async fn claim_preserves_explicit_request_deadline() {
 
     let mut lifecycle =
         RequestLifecycle::new_with_agent_did(db.node.clone(), AGENT_NAME, AGENT_DID, request, 3600);
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
 
     let resp = db
         .node
@@ -711,7 +738,10 @@ async fn claim_synthesizes_deadline_when_request_deadline_is_invalid() {
     let before_claim = chrono::Utc::now();
     let mut lifecycle =
         RequestLifecycle::new_with_agent_did(db.node.clone(), AGENT_NAME, AGENT_DID, request, 120);
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     let after_claim = chrono::Utc::now();
 
     let resp = db

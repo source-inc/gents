@@ -1,10 +1,17 @@
 type AgentResponse @branchable {
     response_key: String @index(unique: true)
     request_id: String @index
+    # Exact, signed execution source. These fields make this mutable row a
+    # recoverable live projection; terminal truth is AgentResponseOutcome.
+    request_doc_id: String @index @immutable
+    request_source_composite_commit_cid: String @immutable
+    request_source_signer_did: String @immutable
+    request_claim_composite_commit_cid: String @immutable
+    request_claim_signer_did: String @immutable
     agent_did: String @index @immutable
     requester_did: String @index @immutable
-    behavior_id: String @index
-    session_id: String @index
+    behavior_id: String @index @immutable
+    session_id: String @index @immutable
     content: String
     reasoning: String
     status: String @index
@@ -14,6 +21,15 @@ type AgentResponse @branchable {
     reasoning_progress_seq: Int
     materialized_message_sequence: Int
     materialized_at: String
+    # Null until a finalized AgentMessage has been verified. The writer binds
+    # the tuple once and AgentResponseOutcome copies it exactly.
+    final_message_doc_id: String
+    final_message_composite_commit_cid: String
+    final_message_signer_did: String
+    final_message_sequence: Int
+    # Stable, once-bound timestamp used to make outcome publication replayable
+    # across a crash between outcome creation and live/request terminalization.
+    outcome_terminalized_at: DateTime
     created_at: String @index
     completed_at: String
     interrupted_at: String               # NEW: RFC3339; null for complete, non-null ⇒ interrupted

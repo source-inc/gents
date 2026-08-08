@@ -161,13 +161,13 @@ impl<'a> StreamProcessor<'a> {
                 let _ = self.stream_writer.flush_pending(self.doc_id).await?;
                 self.lifecycle.advance().await?;
                 if let Some(message) = self.assistant_turn.take_message() {
-                    let sequence = self.persistence_hook.persist_message(&message).await?;
-                    self.persistence_hook.apply_persistence_policy(
-                        self.persistence_hook
-                            .mark_current_response_materialized(sequence)
-                            .await,
-                        "mark final assistant turn materialized",
-                    )?;
+                    let fact_ref = self
+                        .persistence_hook
+                        .persist_message_with_fact_ref(&message)
+                        .await?;
+                    self.stream_writer
+                        .bind_final_message_fact(self.doc_id, &fact_ref)
+                        .await?;
                     self.committed_text_len = self.streamed_text.len();
                     self.stream_writer.reset_tail(self.doc_id).await?;
                 }
@@ -202,21 +202,22 @@ impl<'a> StreamProcessor<'a> {
             return Ok(false);
         };
 
-        let sequence = match self.persistence_hook.persist_message(&message).await {
-            Ok(sequence) => Some(sequence),
+        let fact_ref = match self
+            .persistence_hook
+            .persist_message_with_fact_ref(&message)
+            .await
+        {
+            Ok(fact_ref) => Some(fact_ref),
             Err(error) => {
                 self.persistence_hook
                     .apply_persistence_policy(Err(error), context)?;
                 None
             }
         };
-        if let Some(sequence) = sequence {
-            self.persistence_hook.apply_persistence_policy(
-                self.persistence_hook
-                    .mark_current_response_materialized(sequence)
-                    .await,
-                "mark interrupted assistant turn materialized",
-            )?;
+        if let Some(fact_ref) = fact_ref {
+            self.stream_writer
+                .bind_final_message_fact(self.doc_id, &fact_ref)
+                .await?;
         }
         self.stream_writer.reset_tail(self.doc_id).await?;
 

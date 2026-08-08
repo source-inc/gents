@@ -19,6 +19,12 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
     ) -> Result<HandleRequestOutcome> {
         let request_token = tokio_util::sync::CancellationToken::new();
         let request = lifecycle.request().clone();
+        let request_provenance = lifecycle.execution_provenance().cloned().ok_or_else(|| {
+            anyhow::anyhow!(
+                "claimed AgentRequest {} has no verified source/claim provenance",
+                request.doc_id
+            )
+        })?;
         let trace_attrs = RequestTraceAttrs::from_request(&request);
         let behavior_name = self.behavior.behavior_id.clone();
         let admission_context = AdmissionCallContext::for_request(
@@ -27,6 +33,33 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
             lifecycle.backend_id(),
         );
         let title_admission_context = admission_context.clone();
+        let loaded_history = session::load_history_with_refs(&self.node, &request.session_id)
+            .instrument(tracing::info_span!(
+                "request.load_history",
+                request_id = %request.request_id,
+                session_id = %request.session_id,
+                behavior_id = %behavior_name,
+                history_message_count = tracing::field::Empty,
+            ))
+            .await?;
+        let session::LoadedHistory {
+            messages: full_history,
+            fact_refs: transcript_snapshot,
+        } = loaded_history;
+        let compaction_transcript_snapshot = transcript_snapshot.clone();
+        let compaction_config_provenance = self.config_provenance.exact.as_deref().cloned();
+        let capture_context = crate::rendered_request::RenderedRequestContext::for_request(
+            &request,
+            request_provenance,
+            transcript_snapshot,
+            self.config_provenance.scope,
+            self.config_provenance.exact.as_deref().cloned(),
+            self.behavior.model_name.clone(),
+        );
+        // Title generation receives `Vec::new()` rather than the session
+        // transcript, so its independently spawned capture must not claim the
+        // request assembly's transcript snapshot as an input.
+        let title_capture_context = capture_context.clone().without_transcript_snapshot();
         // One capture scope for the whole request, installed here rather than
         // around `run_inference`.
         //
@@ -46,14 +79,15 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
         // keeps the inference loop, the summarizer, and the summarizer's JSON
         // fallback from colliding on `(turn 0, attempt 0)` lives in the scope.
         let capture_scope = crate::rendered_request::scope::scope_from_factory(
-            crate::rendered_request::RenderedRequestContext::for_request(
-                &request,
-                self.behavior.model_name.clone(),
-            ),
+            capture_context,
             self.rendered_request_capture_factory.as_ref(),
         );
         let handled = admission::scope_request(admission_context, async {
-            self.spawn_conversation_title_generation(&request, title_admission_context);
+            self.spawn_conversation_title_generation(
+                &request,
+                title_capture_context,
+                title_admission_context,
+            );
 
             let selected_skill_ids = selected_skill_ids(request.metadata.as_deref());
             let skill_reminders = self
@@ -62,15 +96,6 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
             let skill_reminder_tokens = crate::prompt::estimate_message_tokens(&skill_reminders);
 
             let mut built = async {
-                let full_history = session::load_history(&self.node, &request.session_id)
-                    .instrument(tracing::info_span!(
-                        "request.load_history",
-                        request_id = %request.request_id,
-                        session_id = %request.session_id,
-                        behavior_id = %behavior_name,
-                        history_message_count = tracing::field::Empty,
-                    ))
-                    .await?;
                 // One canonical reduction, shared with the compaction writer:
                 // `messages_compacted` is measured against this list, so the
                 // prefix drop below must index the same one (#993).
@@ -86,8 +111,13 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                     );
                 }
 
-                let compaction_entries =
-                    session::load_compaction_entries(&self.node, &request.session_id)
+                let provider_view_message_count = provider_history.len();
+                let loaded_compactions =
+                    session::load_compaction_entries_for_agent(
+                        &self.node,
+                        &request.session_id,
+                        &request.agent_did,
+                    )
                         .instrument(tracing::info_span!(
                         "request.load_compaction_entries",
                         request_id = %request.request_id,
@@ -97,6 +127,9 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                         compacted_message_count = tracing::field::Empty,
                     ))
                     .await?;
+                let prior_compacted_message_count =
+                    total_compacted_messages(&loaded_compactions.entries);
+                let prior_compaction_fact_refs = loaded_compactions.fact_refs;
                 // Drop in the space the count was measured in.
                 //
                 // Re-narrowing afterwards is provably free for counts this
@@ -113,9 +146,11 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                 // that predate it.
                 let mut history = compaction::sanitize_history_for_provider(drop_compacted_prefix(
                     provider_history,
-                    total_compacted_messages(&compaction_entries),
+                    prior_compacted_message_count,
                 ));
-                let mut summaries = compaction_entries
+                let compactor_input_message_count = history.len();
+                let mut summaries = loaded_compactions
+                    .entries
                     .into_iter()
                     .map(|entry| compaction::bounded_summary(entry.summary))
                     .collect::<Vec<_>>();
@@ -186,6 +221,21 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                     false
                 };
                 if may_reduce {
+                    let source_manifest = session::CompactionSourceManifest::new(
+                        &request.session_id,
+                        &behavior_name,
+                        compaction_transcript_snapshot.clone(),
+                        compaction_config_provenance.clone().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "compaction requires exact resolved behavior config provenance"
+                            )
+                        })?,
+                        prior_compaction_fact_refs.clone(),
+                        provider_view_message_count,
+                        prior_compacted_message_count,
+                        compactor_input_message_count,
+                    );
+                    source_manifest.validate(&request.session_id, &request.agent_did)?;
                     let result = admission::scope_call(
                         CallKind::Compaction,
                         1,
@@ -210,6 +260,7 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                             result.messages_compacted,
                             result.original_token_estimate,
                             result.compacted_token_estimate,
+                            source_manifest,
                         )
                         .await?;
                         summaries.push(compaction::bounded_summary(entry.summary));
@@ -258,13 +309,23 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
             lifecycle.begin_execution().await?;
 
             let response_behavior_id = lifecycle.behavior_id().to_string();
+            let response_provenance = lifecycle
+                .execution_provenance()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "request {} entered execution without verified provenance",
+                        request.request_id
+                    )
+                })?
+                .clone();
             let doc_id = self
                 .stream_writer
-                .begin_with_requester_did(
+                .begin_document_response(
                     &request.session_id,
                     &request.request_id,
                     lifecycle.behavior_id(),
                     request.requester_did.as_deref(),
+                    &response_provenance,
                 )
                 .instrument(tracing::info_span!(
                     "request.begin_response",
@@ -276,7 +337,7 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                     is_subagent = trace_attrs.is_subagent,
                 ))
                 .await?;
-            lifecycle.set_response_doc_id(&doc_id);
+            lifecycle.set_response_doc_id(&doc_id)?;
             lifecycle.advance().await?;
 
             let inference_behavior_id = lifecycle.behavior_id().to_string();

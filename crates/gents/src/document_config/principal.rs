@@ -19,6 +19,16 @@ pub struct AgentPrincipal {
     pub created_by: Option<String>,
 }
 
+const AGENT_PRINCIPAL_FIELDS: &str = r#"
+                _docID
+                agent_did
+                display_name
+                default_behavior_id
+                enabled
+                created_at
+                created_by
+"#;
+
 pub async fn load_agent_principal(
     node: &EmbeddedNode,
     agent_did: &str,
@@ -38,15 +48,7 @@ pub(crate) async fn load_agent_principal_record(
             AgentPrincipal(
                 filter: {{ agent_did: {{ _eq: "{escaped_agent_did}" }} }},
                 limit: 1
-            ) {{
-                _docID
-                agent_did
-                display_name
-                default_behavior_id
-                enabled
-                created_at
-                created_by
-            }}
+            ) {{{AGENT_PRINCIPAL_FIELDS}}}
         }}"#
     );
 
@@ -68,15 +70,7 @@ pub(crate) async fn load_agent_principal_by_doc_id(
             AgentPrincipal(
                 filter: {{ _docID: {{ _eq: "{escaped_doc_id}" }} }},
                 limit: 1
-            ) {{
-                _docID
-                agent_did
-                display_name
-                default_behavior_id
-                enabled
-                created_at
-                created_by
-            }}
+            ) {{{AGENT_PRINCIPAL_FIELDS}}}
         }}"#
     );
 
@@ -85,6 +79,23 @@ pub(crate) async fn load_agent_principal_by_doc_id(
         anyhow::bail!("query AgentPrincipal by _docID failed: {:?}", resp.errors);
     }
 
+    Ok(first_row_with_doc_id(resp.data.as_ref(), "AgentPrincipal"))
+}
+
+pub(crate) async fn load_agent_principal_at_cid(
+    node: &EmbeddedNode,
+    composite_commit_cid: &str,
+) -> Result<Option<(String, AgentPrincipal)>> {
+    let escaped_cid = escape_graphql_string(composite_commit_cid);
+    let query = format!(
+        r#"{{
+            AgentPrincipal(cid: ["{escaped_cid}"]) {{{AGENT_PRINCIPAL_FIELDS}}}
+        }}"#
+    );
+    let resp = node.execute(&query).await;
+    if resp.has_errors() {
+        anyhow::bail!("query AgentPrincipal at CID failed: {:?}", resp.errors);
+    }
     Ok(first_row_with_doc_id(resp.data.as_ref(), "AgentPrincipal"))
 }
 

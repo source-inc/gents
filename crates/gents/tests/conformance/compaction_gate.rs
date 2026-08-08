@@ -14,10 +14,8 @@
 
 use super::*;
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use super::support::fixtures::test_identity;
 use super::support::interrupt::{create_runtime_request, BootedAgent};
 use super::support::streaming_backend::{MockStreamingBackend, StreamScript};
 
@@ -37,7 +35,7 @@ const GATE_CONTEXT_WINDOW: usize = 30_000;
 const GATE_COMPACTION_THRESHOLD: f64 = 0.5;
 
 pub(super) async fn compaction_gate_blocks_reduction_while_a_response_streams() {
-    let db = test_db("compaction-gate").await;
+    let db = signed_materializer_test_db("compaction-gate").await;
 
     // The compaction plan must come first: the compactor's body carries both the
     // prompt and the seeded history, and the backend picks the first plan whose
@@ -220,7 +218,9 @@ async fn seed_reused_call_id_turn(node: &EmbeddedNode, agent_did: &str, session_
 }
 
 async fn boot_compaction_gate_agent(db: &support::TestDb, endpoint: &str) -> BootedAgent {
-    let identity: Arc<dyn gents::AgentIdentity> = Arc::new(test_identity("compaction-gate"));
+    let identity = db
+        .node_identity()
+        .expect("compaction gate fixture must use the node signing identity");
     upsert_gate_backend(db.node.as_ref(), endpoint).await;
 
     let agent = gents::Gents::builder()

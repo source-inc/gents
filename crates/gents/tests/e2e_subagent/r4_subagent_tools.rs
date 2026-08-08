@@ -8,8 +8,8 @@ use gents::llm::message::{
 };
 use gents::llm::ToolCallHookAction;
 use gents::tool_call_lifecycle::{
-    create_subagent_request_with_request_id, AwaitMode, CancelCause, CancelPolicy, CascadeDispatch,
-    ToolCallLifecycle, MAX_SUBAGENT_DEPTH,
+    create_subagent_request_with_request_id_for_test, AwaitMode, CancelCause, CancelPolicy,
+    CascadeDispatch, ToolCallLifecycle, MAX_SUBAGENT_DEPTH,
 };
 use gents::{
     fetch_interrupt_requested_at, interrupt_request, load_history, upsert_agent_behavior,

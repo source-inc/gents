@@ -18,7 +18,7 @@ use crate::document_config::{
 };
 use crate::ensure_runtime_schemas;
 use crate::graphql::escape_graphql_string;
-use crate::identity::{AgentPrincipal, KeyIdentity};
+use crate::identity::{AgentIdentity, AgentPrincipal, KeyIdentity};
 use crate::lean_vocab_test::{
     assert_lean_to_defradb_vocabulary_matches, lean_trigger_dispatch_case_count,
     lean_trigger_dispatch_cases, LeanTriggerDispatchCase, LeanTriggerKeyContract, LeanVocabulary,
@@ -62,6 +62,21 @@ fn stub_principal() -> Arc<crate::identity::AgentPrincipal> {
         display_name: None,
         enabled: true,
     })
+}
+
+async fn signed_test_node(name: &str) -> Arc<defra_node::EmbeddedNode> {
+    let identity = KeyIdentity::load_or_create(
+        std::env::temp_dir().join(format!("{name}-{}.key", uuid::Uuid::new_v4())),
+        None,
+    )
+    .unwrap();
+    Arc::new(
+        defra_node::EmbeddedNode::builder()
+            .with_node_identity_did(identity.did())
+            .build()
+            .await
+            .unwrap(),
+    )
 }
 
 const LEAN_TRIGGER_TYPES_MODEL: &str = include_str!("../../../proofs/Proofs/Triggers/Types.lean");

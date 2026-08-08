@@ -3,7 +3,7 @@
 //! ([`ConfigAccess::Graphql`] or [`ConfigAccess::Local`]). Lifted from the
 //! CLI `trace` command so the desktop client shares one fetcher.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
@@ -14,7 +14,7 @@ use crate::graphql::escape_graphql_string;
 use crate::run_timeline::{
     build_run_timeline, RunTimeline, RunTimelineRows, TimelineConversationRow,
     TimelineInferenceCallRow, TimelineMessageRow, TimelineRequestRow, TimelineResponseRow,
-    TimelineSessionRow, TimelineToolCallRow,
+    TimelineSessionRow, TimelineToolApprovalFact, TimelineToolCallRow, TimelineToolResultFact,
 };
 use gents_protocol::graphql::graphql_rows_from_response;
 
@@ -46,7 +46,10 @@ pub async fn load_run_timeline_rows(
     let mut responses = Vec::new();
     for session_id in &session_ids {
         messages.extend(load_timeline_messages_for_session(access, session_id).await?);
-        tool_calls.extend(load_timeline_tool_calls_for_session(access, session_id).await?);
+        let mut session_tool_calls =
+            load_timeline_tool_calls_for_session(access, session_id).await?;
+        attach_exact_tool_facts(access, session_id, &mut session_tool_calls).await?;
+        tool_calls.extend(session_tool_calls);
         responses.extend(load_timeline_responses_for_session(access, session_id).await?);
     }
     if session_ids.is_empty() || root_session_id.is_none() {
@@ -247,6 +250,12 @@ async fn load_timeline_tool_calls_for_session(
                 tool_call_id
                 args
                 result
+                result_doc_id
+                result_composite_commit_cid
+                result_signer_did
+                approval_doc_id
+                approval_composite_commit_cid
+                approval_signer_did
                 status
                 lifecycle_state
                 started_at
@@ -273,6 +282,300 @@ async fn load_timeline_tool_calls_for_session(
         escape_graphql_string(session_id)
     );
     load_rows(access, "AgentToolCall", &query).await
+}
+
+#[derive(serde::Deserialize)]
+struct TimelineResultFactRow {
+    #[serde(rename = "_docID")]
+    doc_id: String,
+    tool_call_doc_id: String,
+    tool_call_composite_commit_cid: String,
+    tool_call_signer_did: String,
+    output_text: String,
+}
+
+#[derive(serde::Deserialize)]
+struct TimelineApprovalFactRow {
+    #[serde(rename = "_docID")]
+    doc_id: String,
+    tool_call_doc_id: String,
+    tool_call_composite_commit_cid: String,
+    tool_call_signer_did: String,
+    approver_did: String,
+    decision: String,
+    reason: Option<String>,
+}
+
+async fn exact_current_ref(
+    access: &ConfigAccess,
+    collection: &str,
+    doc_id: &str,
+) -> Result<crate::SignedDocumentVersionRef> {
+    if let ConfigAccess::Local(node) = access {
+        return crate::document_version::verified_current_signed_document_version(
+            node, collection, doc_id,
+        )
+        .await;
+    }
+    #[derive(serde::Deserialize)]
+    struct Parent {
+        cid: String,
+        #[serde(rename = "fieldName")]
+        field_name: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Signature {
+        identity: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Commit {
+        cid: String,
+        heads: Vec<Parent>,
+        signature: Option<Signature>,
+    }
+    let query = format!(
+        r#"{{ _commits(docID: ["{}"], filter: {{ fieldName: {{ _eq: "_C" }} }}) {{ cid heads {{ cid fieldName }} signature {{ identity }} }} }}"#,
+        escape_graphql_string(doc_id)
+    );
+    let rows: Vec<Commit> = serde_json::from_value(
+        access
+            .execute(&query)
+            .await?
+            .get("data")
+            .and_then(|data| data.get("_commits"))
+            .cloned()
+            .unwrap_or_default(),
+    )?;
+    let nested = rows
+        .iter()
+        .flat_map(|row| row.heads.iter())
+        .filter(|head| head.field_name.as_deref() == Some("_C"))
+        .map(|head| head.cid.as_str())
+        .collect::<HashSet<_>>();
+    let current = rows
+        .iter()
+        .filter(|row| !nested.contains(row.cid.as_str()))
+        .collect::<Vec<_>>();
+    let [current] = current.as_slice() else {
+        anyhow::bail!("{collection} {doc_id} has {} current heads", current.len());
+    };
+    let signer = current
+        .signature
+        .as_ref()
+        .map(|signature| signature.identity.trim())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("{collection} {doc_id} has no commit signer"))?;
+    Ok(crate::SignedDocumentVersionRef::new(
+        crate::DocumentVersionRef::new(doc_id, &current.cid),
+        signer,
+    ))
+}
+
+fn complete_edge_doc_id<'a>(
+    doc_id: Option<&'a str>,
+    composite_commit_cid: Option<&str>,
+    signer_did: Option<&str>,
+    label: &str,
+) -> Result<Option<&'a str>> {
+    match (doc_id, composite_commit_cid, signer_did) {
+        (None, None, None) => Ok(None),
+        (Some(doc_id), Some(cid), Some(signer))
+            if !doc_id.trim().is_empty() && !cid.trim().is_empty() && !signer.trim().is_empty() =>
+        {
+            Ok(Some(doc_id))
+        }
+        _ => anyhow::bail!("{label} exact reference is partial or empty"),
+    }
+}
+
+async fn verify_historical_tool_call_ref(
+    access: &ConfigAccess,
+    source: &crate::SignedDocumentVersionRef,
+) -> Result<()> {
+    let escaped_cid = escape_graphql_string(&source.version.composite_commit_cid);
+    let response = access
+        .execute(&format!(
+            r#"{{ AgentToolCall(cid: ["{escaped_cid}"]) {{ _docID }} }}"#
+        ))
+        .await?;
+    let rows = response
+        .get("data")
+        .and_then(|data| data.get("AgentToolCall"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("exact AgentToolCall snapshot returned no rows"))?;
+    match rows.as_slice() {
+        [row]
+            if row.get("_docID").and_then(Value::as_str)
+                == Some(source.version.doc_id.as_str()) => {}
+        rows => anyhow::bail!(
+            "exact AgentToolCall commit reconstructed {} rows or a different physical document",
+            rows.len()
+        ),
+    }
+
+    let signer = match access {
+        ConfigAccess::Local(node) => node
+            .verified_block_signer_did(&source.version.composite_commit_cid)
+            .await
+            .context("cryptographically verify historical AgentToolCall commit")?,
+        ConfigAccess::Graphql(_) => {
+            let evidence = access
+                .execute(&format!(
+                    r#"{{ _commits(cid: ["{escaped_cid}"]) {{ cid signature {{ identity }} }} }}"#
+                ))
+                .await?;
+            let rows = evidence
+                .get("data")
+                .and_then(|data| data.get("_commits"))
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("exact AgentToolCall commit returned no evidence")
+                })?;
+            let [row] = rows.as_slice() else {
+                anyhow::bail!(
+                    "exact AgentToolCall commit resolved to {} evidence rows",
+                    rows.len()
+                );
+            };
+            if row.get("cid").and_then(Value::as_str)
+                != Some(source.version.composite_commit_cid.as_str())
+            {
+                anyhow::bail!("AgentToolCall commit evidence returned a different CID");
+            }
+            row.get("signature")
+                .and_then(|signature| signature.get("identity"))
+                .and_then(Value::as_str)
+                .filter(|identity| !identity.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("AgentToolCall commit evidence has no signer"))?
+                .to_string()
+        }
+    };
+    if signer != source.signer_did {
+        anyhow::bail!("historical AgentToolCall signer does not match the pinned fact edge");
+    }
+    Ok(())
+}
+
+async fn attach_exact_tool_facts(
+    access: &ConfigAccess,
+    session_id: &str,
+    calls: &mut [TimelineToolCallRow],
+) -> Result<()> {
+    let result_query = format!(
+        r#"{{ AgentToolResult(filter: {{ session_id: {{ _eq: "{}" }} }}) {{ _docID tool_call_doc_id tool_call_composite_commit_cid tool_call_signer_did output_text }} }}"#,
+        escape_graphql_string(session_id)
+    );
+    let results: Vec<TimelineResultFactRow> =
+        load_rows(access, "AgentToolResult", &result_query).await?;
+    let approval_query = format!(
+        r#"{{ AgentToolApproval(filter: {{ session_id: {{ _eq: "{}" }} }}) {{ _docID tool_call_doc_id tool_call_composite_commit_cid tool_call_signer_did approver_did decision reason }} }}"#,
+        escape_graphql_string(session_id)
+    );
+    let approvals: Vec<TimelineApprovalFactRow> =
+        load_rows(access, "AgentToolApproval", &approval_query).await?;
+
+    for call in calls {
+        if let Some(result_doc_id) = complete_edge_doc_id(
+            call.result_doc_id.as_deref(),
+            call.result_composite_commit_cid.as_deref(),
+            call.result_signer_did.as_deref(),
+            "AgentToolCall result",
+        )? {
+            let matching = results
+                .iter()
+                .filter(|row| row.doc_id == result_doc_id)
+                .collect::<Vec<_>>();
+            let [row] = matching.as_slice() else {
+                anyhow::bail!(
+                    "exact result ref resolved to {} physical rows",
+                    matching.len()
+                );
+            };
+            let call_doc_id = call.doc_id.as_deref().unwrap_or_default();
+            if row.tool_call_doc_id != call_doc_id {
+                anyhow::bail!("result fact points to a different physical AgentToolCall");
+            }
+            let exact = exact_current_ref(access, "AgentToolResult", result_doc_id).await?;
+            if call.result_composite_commit_cid.as_deref()
+                != Some(exact.version.composite_commit_cid.as_str())
+                || call.result_signer_did.as_deref() != Some(exact.signer_did.as_str())
+            {
+                anyhow::bail!("AgentToolCall result edge does not match exact signed result fact");
+            }
+            verify_historical_tool_call_ref(
+                access,
+                &crate::SignedDocumentVersionRef::new(
+                    crate::DocumentVersionRef::new(
+                        &row.tool_call_doc_id,
+                        &row.tool_call_composite_commit_cid,
+                    ),
+                    &row.tool_call_signer_did,
+                ),
+            )
+            .await?;
+            call.result_fact = Some(TimelineToolResultFact {
+                doc_id: exact.version.doc_id,
+                composite_commit_cid: exact.version.composite_commit_cid,
+                signer_did: exact.signer_did,
+                tool_call_doc_id: row.tool_call_doc_id.clone(),
+                tool_call_composite_commit_cid: row.tool_call_composite_commit_cid.clone(),
+                tool_call_signer_did: row.tool_call_signer_did.clone(),
+                output_text: row.output_text.clone(),
+            });
+        }
+        if let Some(approval_doc_id) = complete_edge_doc_id(
+            call.approval_doc_id.as_deref(),
+            call.approval_composite_commit_cid.as_deref(),
+            call.approval_signer_did.as_deref(),
+            "AgentToolCall approval",
+        )? {
+            let matching = approvals
+                .iter()
+                .filter(|row| row.doc_id == approval_doc_id)
+                .collect::<Vec<_>>();
+            let [row] = matching.as_slice() else {
+                anyhow::bail!(
+                    "exact approval ref resolved to {} physical rows",
+                    matching.len()
+                );
+            };
+            if row.tool_call_doc_id != call.doc_id.as_deref().unwrap_or_default() {
+                anyhow::bail!("approval fact points to a different physical AgentToolCall");
+            }
+            let exact = exact_current_ref(access, "AgentToolApproval", approval_doc_id).await?;
+            if call.approval_composite_commit_cid.as_deref()
+                != Some(exact.version.composite_commit_cid.as_str())
+                || call.approval_signer_did.as_deref() != Some(exact.signer_did.as_str())
+                || row.approver_did != exact.signer_did
+            {
+                anyhow::bail!(
+                    "AgentToolCall approval edge does not match exact signed approval fact"
+                );
+            }
+            verify_historical_tool_call_ref(
+                access,
+                &crate::SignedDocumentVersionRef::new(
+                    crate::DocumentVersionRef::new(
+                        &row.tool_call_doc_id,
+                        &row.tool_call_composite_commit_cid,
+                    ),
+                    &row.tool_call_signer_did,
+                ),
+            )
+            .await?;
+            call.approval_fact = Some(TimelineToolApprovalFact {
+                doc_id: exact.version.doc_id,
+                composite_commit_cid: exact.version.composite_commit_cid,
+                signer_did: exact.signer_did,
+                tool_call_doc_id: row.tool_call_doc_id.clone(),
+                tool_call_composite_commit_cid: row.tool_call_composite_commit_cid.clone(),
+                tool_call_signer_did: row.tool_call_signer_did.clone(),
+                decision: row.decision.clone(),
+                reason: row.reason.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 async fn load_timeline_responses_for_session(

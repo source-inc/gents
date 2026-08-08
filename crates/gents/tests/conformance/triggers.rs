@@ -68,7 +68,11 @@ use serde_json::Value;
 use crate::support::fixtures::{bind_default_behavior_backend, test_identity};
 use crate::support::mock_endpoint::MockModelEndpoint;
 use crate::support::snapshots::{fetch_runtime_snapshot, RuntimeSnapshot};
-use crate::support::{test_db, AGENT_DID, AGENT_NAME, BACKEND_ID, DEADLINE_SECS};
+use crate::support::{AGENT_NAME, BACKEND_ID, DEADLINE_SECS};
+use crate::{
+    signed_materializer_agent_did, signed_materializer_test_db,
+    signed_materializer_test_db as test_db,
+};
 
 const RUNTIME_SNAPSHOT_WAIT: Duration = Duration::from_secs(60);
 

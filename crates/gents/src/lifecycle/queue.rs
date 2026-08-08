@@ -157,6 +157,7 @@ pub(crate) async fn enqueue_session_request(
     execution_origin: ExecutionOrigin,
     queue_hints: QueueHints,
 ) -> Result<EnqueuedAgentRequest> {
+    let source_author_did = require_node_signer_did(node, "enqueue_session_request")?;
     let behavior_id = parent_behavior_id(node, parent).await?;
 
     if let Some(key) = coalesce_key(&queue_hints) {
@@ -180,6 +181,7 @@ pub(crate) async fn enqueue_session_request(
 
     let escaped_request_id = escape_graphql_string(&request_id);
     let escaped_agent_did = escape_graphql_string(&parent.agent_did);
+    let escaped_source_author_did = escape_graphql_string(&source_author_did);
     let requester_did_field = session::requester_did_create_field(parent.requester_did.as_deref());
     let escaped_behavior_id = escape_graphql_string(&behavior_id);
     let escaped_session_id = escape_graphql_string(&parent.session_id);
@@ -192,6 +194,7 @@ pub(crate) async fn enqueue_session_request(
             create_AgentRequest(input: {{
                 request_id: "{escaped_request_id}",
                 agent_did: "{escaped_agent_did}",
+                source_author_did: "{escaped_source_author_did}",
                 {requester_did_field}
                 behavior_id: "{escaped_behavior_id}",
                 session_id: "{escaped_session_id}",
@@ -278,6 +281,7 @@ pub(crate) async fn enqueue_goal_continuation(
 ) -> Result<EnqueuedAgentRequest> {
     use sha2::{Digest, Sha256};
 
+    let source_author_did = require_node_signer_did(node, "enqueue_goal_continuation")?;
     let behavior_id = parent_behavior_id(node, parent).await?;
     let digest = Sha256::digest(format!("{goal_id}\0{}", parent.request_id).as_bytes());
     let request_id = format!(
@@ -316,6 +320,7 @@ pub(crate) async fn enqueue_goal_continuation(
 
     let escaped_request_id = escape_graphql_string(&request_id);
     let escaped_agent_did = escape_graphql_string(&parent.agent_did);
+    let escaped_source_author_did = escape_graphql_string(&source_author_did);
     let requester_did_field = session::requester_did_create_field(parent.requester_did.as_deref());
     let escaped_behavior_id = escape_graphql_string(&behavior_id);
     let escaped_session_id = escape_graphql_string(&parent.session_id);
@@ -329,6 +334,7 @@ pub(crate) async fn enqueue_goal_continuation(
             create_AgentRequest(input: {{
                 request_id: "{escaped_request_id}",
                 agent_did: "{escaped_agent_did}",
+                source_author_did: "{escaped_source_author_did}",
                 {requester_did_field}
                 behavior_id: "{escaped_behavior_id}",
                 session_id: "{escaped_session_id}",
@@ -385,6 +391,16 @@ pub(crate) async fn enqueue_goal_continuation(
         request_id,
         session_id: parent.session_id.clone(),
     })
+}
+
+fn require_node_signer_did(node: &EmbeddedNode, operation: &str) -> Result<String> {
+    node.node_identity_did()
+        .map(str::trim)
+        .filter(|did| !did.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            anyhow::anyhow!("{operation} requires a configured DefraDB node signing identity")
+        })
 }
 
 // SAFETY (#664): `agent_did` scopes the candidate query AND the supersede
@@ -738,6 +754,7 @@ async fn drain_pending_session_requests_where(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AgentIdentity;
     use tempfile::TempDir;
 
     const TEST_AGENT_DID: &str = "did:test:queue-test";
@@ -745,6 +762,7 @@ mod tests {
 
     struct TestDb {
         node: EmbeddedNode,
+        signer_did: Option<String>,
         _tempdir: TempDir,
     }
 
@@ -753,6 +771,9 @@ mod tests {
         #[serde(rename = "_docID")]
         doc_id: String,
         request_id: String,
+        agent_did: String,
+        source_author_did: String,
+        requester_did: Option<String>,
         session_id: String,
         behavior_id: String,
         content: String,
@@ -804,6 +825,33 @@ mod tests {
             .prefix(&format!("gents-queue-{name}-"))
             .tempdir()
             .expect("tempdir");
+        let identity = crate::identity::KeyIdentity::load_or_create(
+            tempdir.path().join("node-identity.key"),
+            None,
+        )
+        .expect("node identity");
+        let signer_did = identity.did().to_string();
+        let node = EmbeddedNode::builder()
+            .data_path(tempdir.path())
+            .with_node_identity_did(&signer_did)
+            .build()
+            .await
+            .expect("embedded node");
+        crate::schema::ensure_runtime_schemas(&node)
+            .await
+            .expect("runtime schemas");
+        TestDb {
+            node,
+            signer_did: Some(signer_did),
+            _tempdir: tempdir,
+        }
+    }
+
+    async fn unsigned_test_db(name: &str) -> TestDb {
+        let tempdir = tempfile::Builder::new()
+            .prefix(&format!("gents-queue-{name}-"))
+            .tempdir()
+            .expect("tempdir");
         let node = EmbeddedNode::builder()
             .data_path(tempdir.path())
             .build()
@@ -814,6 +862,7 @@ mod tests {
             .expect("runtime schemas");
         TestDb {
             node,
+            signer_did: None,
             _tempdir: tempdir,
         }
     }
@@ -828,6 +877,9 @@ mod tests {
                 ) {{
                     _docID
                     request_id
+                    agent_did
+                    source_author_did
+                    requester_did
                     session_id
                     behavior_id
                     content
@@ -865,12 +917,17 @@ mod tests {
         let escaped_request_id = escape_graphql_string(request_id);
         let escaped_session_id = escape_graphql_string(session_id);
         let escaped_metadata = escape_graphql_string(metadata);
+        let escaped_source_author_did = escape_graphql_string(
+            node.node_identity_did()
+                .expect("raw queue fixtures use a signed node"),
+        );
         let created_at = chrono::Utc::now().to_rfc3339();
         let mutation = format!(
             r#"mutation {{
                 create_AgentRequest(input: {{
                     request_id: "{escaped_request_id}",
                     agent_did: "{TEST_AGENT_DID}",
+                    source_author_did: "{escaped_source_author_did}",
                     behavior_id: "{TEST_BEHAVIOR_ID}",
                     session_id: "{escaped_session_id}",
                     retry_parent_request: "",
@@ -1056,7 +1113,8 @@ mod tests {
     async fn enqueue_session_request_coalesces_keyed_subagent_wakeups() {
         let db = test_db("coalesce").await;
         let session_id = "session-coalesced-wakeup";
-        let parent = parent_request(session_id);
+        let mut parent = parent_request(session_id);
+        parent.agent_did = db.signer_did.clone().unwrap();
         let hints = QueueHints {
             source: QueueSource::BackgroundCompletion,
             policy: QueuePolicy::Coalesce,
@@ -1092,6 +1150,7 @@ mod tests {
         assert_eq!(rows.len(), 1, "coalescing should leave one wake-up row");
         let row = &rows[0];
         assert_eq!(row.doc_id, first.doc_id);
+        assert_eq!(row.source_author_did, db.signer_did.as_deref().unwrap());
         assert_eq!(row.session_id, session_id);
         assert_eq!(row.behavior_id, TEST_BEHAVIOR_ID);
         assert_eq!(
@@ -1109,6 +1168,78 @@ mod tests {
             Some("root-parent-tool-call")
         );
         assert!(is_automated_wakeup(row.metadata.as_deref()));
+    }
+
+    #[tokio::test]
+    async fn queue_request_creation_requires_a_configured_node_signer() {
+        let db = unsigned_test_db("unsigned-creator-rejection").await;
+        let session_id = "session-unsigned-creator-rejection";
+        let parent = parent_request(session_id);
+        let error = enqueue_session_request(
+            &db.node,
+            &parent,
+            "must not create an unsigned queue row",
+            ExecutionOrigin::Scheduled,
+            hints(QueueSource::User, QueuePolicy::Append),
+        )
+        .await
+        .expect_err("unsigned session queue creation must fail closed");
+        assert!(
+            error.to_string().contains("node signing identity"),
+            "unexpected error: {error:#}"
+        );
+
+        let error = enqueue_goal_continuation(
+            &db.node,
+            &parent,
+            "goal-unsigned",
+            "must not create an unsigned goal row",
+            1,
+            false,
+        )
+        .await
+        .expect_err("unsigned goal continuation creation must fail closed");
+        assert!(
+            error.to_string().contains("node signing identity"),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            queue_rows(&db.node, session_id).await.is_empty(),
+            "fail-closed creators must not persist poison rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn signed_queue_request_preserves_requester_attribution() {
+        let db = test_db("signed-requester-attribution").await;
+        let session_id = "session-signed-requester-attribution";
+        let mut parent = parent_request(session_id);
+        parent.agent_did = db.signer_did.clone().unwrap();
+        parent.requester_did = Some("did:key:z6MkInitiatingRequester".to_string());
+
+        enqueue_session_request(
+            &db.node,
+            &parent,
+            "signed queue request",
+            ExecutionOrigin::Interactive,
+            hints(QueueSource::User, QueuePolicy::Append),
+        )
+        .await
+        .expect("signed queue request");
+
+        let rows = queue_rows(&db.node, session_id).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source_author_did, db.signer_did.as_deref().unwrap());
+        assert_eq!(
+            rows[0].requester_did.as_deref(),
+            parent.requester_did.as_deref(),
+            "the signer must not replace initiating-requester attribution"
+        );
+        assert_eq!(rows[0].source_author_did, rows[0].agent_did);
+        assert_ne!(
+            rows[0].source_author_did,
+            rows[0].requester_did.as_deref().unwrap()
+        );
     }
 
     #[tokio::test]

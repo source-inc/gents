@@ -458,6 +458,16 @@ pub struct AgentToolCallRow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentToolResultRow {
     #[serde(default)]
+    pub result_key: Option<String>,
+    #[serde(default)]
+    pub tool_call_key: Option<String>,
+    #[serde(default)]
+    pub tool_call_doc_id: Option<String>,
+    #[serde(default)]
+    pub tool_call_composite_commit_cid: Option<String>,
+    #[serde(default)]
+    pub tool_call_signer_did: Option<String>,
+    #[serde(default)]
     pub agent_did: Option<String>,
     #[serde(default)]
     pub requester_did: Option<String>,
@@ -470,6 +480,7 @@ pub struct AgentToolResultRow {
     #[serde(default)]
     pub output_text: Option<String>,
     #[serde(default)]
+    #[serde(rename = "model_output_truncated", alias = "truncated")]
     pub truncated: Option<bool>,
     #[serde(default)]
     pub truncation_metadata: Option<String>,

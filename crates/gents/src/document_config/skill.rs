@@ -46,6 +46,7 @@ const SKILL_FIELDS: &str = r#"
 /// List all `Skill` documents owned by `agent_did`. Returns `(doc_id, doc)`
 /// pairs. Tolerates a missing `Skill` collection (older nodes) by surfacing the
 /// query error to the caller, who treats absence as an empty set.
+#[allow(dead_code)]
 pub(crate) async fn list_skill_records(
     node: &EmbeddedNode,
     agent_did: &str,
@@ -82,6 +83,23 @@ pub(crate) async fn load_skill_by_doc_id(
     let resp = node.execute(&query).await;
     if resp.has_errors() {
         anyhow::bail!("query Skill by _docID failed: {:?}", resp.errors);
+    }
+    Ok(first_row_with_doc_id(resp.data.as_ref(), "Skill"))
+}
+
+pub(crate) async fn load_skill_at_cid(
+    node: &EmbeddedNode,
+    composite_commit_cid: &str,
+) -> Result<Option<(String, SkillDocument)>> {
+    let escaped_cid = escape_graphql_string(composite_commit_cid);
+    let query = format!(
+        r#"{{
+            Skill(cid: ["{escaped_cid}"]) {{{SKILL_FIELDS}}}
+        }}"#
+    );
+    let resp = node.execute(&query).await;
+    if resp.has_errors() {
+        anyhow::bail!("query Skill at CID failed: {:?}", resp.errors);
     }
     Ok(first_row_with_doc_id(resp.data.as_ref(), "Skill"))
 }

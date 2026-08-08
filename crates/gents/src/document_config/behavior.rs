@@ -39,6 +39,27 @@ pub struct AgentBehavior {
     pub created_at: Option<String>,
 }
 
+const AGENT_BEHAVIOR_FIELDS: &str = r#"
+                _docID
+                behavior_id
+                agent_did
+                display_name
+                description
+                summary
+                system_prompt
+                request_context_template
+                backend_id
+                model_name
+                tool_selection_id
+                inference_profile_id
+                compaction_strategy
+                compaction_threshold
+                enabled
+                skill_refs
+                skill_excludes
+                created_at
+"#;
+
 pub async fn load_agent_behavior(
     node: &EmbeddedNode,
     behavior_id: &str,
@@ -58,26 +79,7 @@ pub(crate) async fn load_agent_behavior_record(
             AgentBehavior(
                 filter: {{ behavior_id: {{ _eq: "{escaped_behavior_id}" }} }},
                 limit: 1
-            ) {{
-                _docID
-                behavior_id
-                agent_did
-                display_name
-                description
-                summary
-                system_prompt
-                request_context_template
-                backend_id
-                model_name
-                tool_selection_id
-                inference_profile_id
-                compaction_strategy
-                compaction_threshold
-                enabled
-                skill_refs
-                skill_excludes
-                created_at
-            }}
+            ) {{{AGENT_BEHAVIOR_FIELDS}}}
         }}"#
     );
 
@@ -99,26 +101,7 @@ pub(crate) async fn load_agent_behavior_by_doc_id(
             AgentBehavior(
                 filter: {{ _docID: {{ _eq: "{escaped_doc_id}" }} }},
                 limit: 1
-            ) {{
-                _docID
-                behavior_id
-                agent_did
-                display_name
-                description
-                summary
-                system_prompt
-                request_context_template
-                backend_id
-                model_name
-                tool_selection_id
-                inference_profile_id
-                compaction_strategy
-                compaction_threshold
-                enabled
-                skill_refs
-                skill_excludes
-                created_at
-            }}
+            ) {{{AGENT_BEHAVIOR_FIELDS}}}
         }}"#
     );
 
@@ -127,6 +110,23 @@ pub(crate) async fn load_agent_behavior_by_doc_id(
         anyhow::bail!("query AgentBehavior by _docID failed: {:?}", resp.errors);
     }
 
+    Ok(first_row_with_doc_id(resp.data.as_ref(), "AgentBehavior"))
+}
+
+pub(crate) async fn load_agent_behavior_at_cid(
+    node: &EmbeddedNode,
+    composite_commit_cid: &str,
+) -> Result<Option<(String, AgentBehavior)>> {
+    let escaped_cid = escape_graphql_string(composite_commit_cid);
+    let query = format!(
+        r#"{{
+            AgentBehavior(cid: ["{escaped_cid}"]) {{{AGENT_BEHAVIOR_FIELDS}}}
+        }}"#
+    );
+    let resp = node.execute(&query).await;
+    if resp.has_errors() {
+        anyhow::bail!("query AgentBehavior at CID failed: {:?}", resp.errors);
+    }
     Ok(first_row_with_doc_id(resp.data.as_ref(), "AgentBehavior"))
 }
 
@@ -151,26 +151,7 @@ pub(crate) async fn list_agent_behavior_records(
             AgentBehavior(
                 filter: {{ agent_did: {{ _eq: "{escaped_agent_did}" }} }},
                 order: {{ created_at: ASC }}
-            ) {{
-                _docID
-                behavior_id
-                agent_did
-                display_name
-                description
-                summary
-                system_prompt
-                request_context_template
-                backend_id
-                model_name
-                tool_selection_id
-                inference_profile_id
-                compaction_strategy
-                compaction_threshold
-                enabled
-                skill_refs
-                skill_excludes
-                created_at
-            }}
+            ) {{{AGENT_BEHAVIOR_FIELDS}}}
         }}"#
     );
 

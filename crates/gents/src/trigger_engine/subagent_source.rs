@@ -1,7 +1,7 @@
 //! Subagent-backed `TriggerSource`.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -19,13 +19,16 @@ use crate::event_delivery_contract::{EventDeliveryRuntimeContract, EventDelivery
 use crate::graphql::escape_graphql_string;
 use crate::runtime_snapshot::{ActiveRuntimeSnapshot, ConcurrencyMode, ResolvedTask};
 use crate::tool_call_lifecycle::subagent_request::{
-    create_subagent_request_with_request_id, create_subagent_request_with_trusted_parent_request_id,
+    create_subagent_request_with_request_id,
+    create_subagent_request_with_trusted_parent_request_id, verify_current_bridge_admission,
+    BridgeAdmissionSnapshot,
 };
 use crate::tool_call_lifecycle::{
     AwaitMode, CancelPolicy, FailureClass, IllegalToolCallTransition, ToolCallState,
 };
 use crate::UpdateSubscriptionSource;
 
+use super::subscription_source::UPDATE_SUBSCRIPTION_REOPEN_DELAY;
 use super::{FireIntent, FireResult, TriggerKind, TriggerSource};
 
 const TOOL_CALL_COLLECTION: &str = "AgentToolCall";
@@ -39,6 +42,7 @@ pub struct SubagentSource {
     cancel: CancellationToken,
     collection_id_to_name: HashMap<String, String>,
     processed_tool_calls: HashSet<String>,
+    pending_intents: Arc<Mutex<VecDeque<FireIntent>>>,
     rescan_tick: tokio::time::Interval,
 }
 
@@ -71,6 +75,8 @@ struct ToolCallRow {
     child_request_id: Option<String>,
     #[serde(default)]
     spawn_target_did: Option<String>,
+    #[serde(default)]
+    unclaimed_deadline_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +91,23 @@ impl ToolCallRow {
             .as_deref()
             .and_then(CancelPolicy::from_persisted)
             .unwrap_or(CancelPolicy::Cascade)
+    }
+
+    fn admission_snapshot(&self) -> BridgeAdmissionSnapshot {
+        BridgeAdmissionSnapshot {
+            request_id: self.request_id.clone(),
+            agent_did: self.agent_did.clone(),
+            tool_call_id: self.tool_call_id.clone(),
+            tool_name: self.tool_name.clone(),
+            args: self.args.clone(),
+            lifecycle_state: self.lifecycle_state.clone(),
+            deadline_at: self.deadline_at.clone(),
+            await_mode: self.await_mode.clone(),
+            cancel_policy: self.cancel_policy.clone(),
+            child_request_id: self.child_request_id.clone(),
+            spawn_target_did: self.spawn_target_did.clone(),
+            unclaimed_deadline_at: self.unclaimed_deadline_at.clone(),
+        }
     }
 }
 
@@ -164,14 +187,20 @@ impl SubagentSource {
         node: Arc<EmbeddedNode>,
         cancel: CancellationToken,
     ) -> Self {
+        // Subscribe during construction, before the engine can be polled or a
+        // producer can publish. Delivery remains a lossy wake-up hint and the
+        // immediate/periodic durable scans remain the correctness path, but
+        // there is no reason to manufacture a startup subscription gap.
+        let subscription = Some(subs.subscribe_updates());
         Self {
             snapshot_rx,
             node,
             subscription_source: subs,
-            subscription: None,
+            subscription,
             cancel,
             collection_id_to_name: HashMap::new(),
             processed_tool_calls: HashSet::new(),
+            pending_intents: Arc::new(Mutex::new(VecDeque::new())),
             rescan_tick: subagent_source_rescan_tick(SUBAGENT_SOURCE_RESCAN_INTERVAL),
         }
     }
@@ -248,6 +277,7 @@ impl SubagentSource {
                     cancel_policy
                     child_request_id
                     spawn_target_did
+                    unclaimed_deadline_at
                 }}
             }}"#
         );
@@ -382,6 +412,14 @@ impl SubagentSource {
     }
 
     async fn rescan_running_bridge_rows(&mut self) -> Option<FireIntent> {
+        if let Some(intent) = self
+            .pending_intents
+            .lock()
+            .expect("subagent pending_intents mutex poisoned")
+            .pop_front()
+        {
+            return Some(intent);
+        }
         let doc_ids = match self.load_running_bridge_doc_ids().await {
             Ok(doc_ids) => doc_ids,
             Err(error) => {
@@ -398,9 +436,12 @@ impl SubagentSource {
                 Ok(Some(intent)) => {
                     tracing::info!(
                         doc_id = %doc_id,
-                        "subagent source periodic rescan emitted fire intent",
+                        "subagent source periodic rescan queued fire intent",
                     );
-                    return Some(intent);
+                    self.pending_intents
+                        .lock()
+                        .expect("subagent pending_intents mutex poisoned")
+                        .push_back(intent);
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -412,7 +453,10 @@ impl SubagentSource {
                 }
             }
         }
-        None
+        self.pending_intents
+            .lock()
+            .expect("subagent pending_intents mutex poisoned")
+            .pop_front()
     }
 
     async fn fail_unauthorized_tool_call(
@@ -469,6 +513,9 @@ impl SubagentSource {
             Some(value) => value.to_string(),
             None => return Ok(None),
         };
+        let bridge_admission =
+            verify_current_bridge_admission(&self.node, &row.doc_id, &row.admission_snapshot())
+                .await?;
         let spawn_args: SpawnArgs = serde_json::from_str(&row.args)?;
         let row_spawn_target_did =
             non_empty(row.spawn_target_did.as_deref()).map(ToOwned::to_owned);
@@ -484,7 +531,9 @@ impl SubagentSource {
                         &[],
                     )
                     .await?;
-                self.processed_tool_calls.insert(processed_key);
+                if failed {
+                    self.processed_tool_calls.insert(processed_key);
+                }
                 tracing::warn!(
                     parent_request_id = %parent_request_id,
                     parent_tool_call_id = %parent_tool_call_id,
@@ -505,32 +554,18 @@ impl SubagentSource {
 
         let parent = self.load_parent_request(&parent_request_id).await?;
         let snapshot = self.snapshot_rx.borrow().clone();
-        // SECURITY (#377): under the current replication-trust posture this
-        // self-declared bridge DID is trusted once it names a configured paired
-        // peer; ACP signing must eventually bind it to the actual remote author.
-        let bridge_authoring_did = non_empty(row.agent_did.as_deref()).map(ToOwned::to_owned);
-        if let (Some(bridge_did), Some(parent_did)) = (
-            bridge_authoring_did.as_deref(),
-            parent.as_ref().map(|parent| parent.agent_did.as_str()),
-        ) {
-            // A paired-peer bridge is a remote authority boundary, so its DID
-            // must agree with any legacy parent replica still present. Local
-            // legacy rows predate that invariant and keep using the parent row
-            // as their authority.
-            if bridge_did != parent_did
-                && (snapshot.paired_peer_dids.contains(bridge_did)
-                    || snapshot.paired_peer_dids.contains(parent_did))
-            {
-                anyhow::bail!(IllegalToolCallTransition::ParentLinkageIncoherent);
-            }
-        }
-        let parent_authoring_did = parent
+        if parent
             .as_ref()
-            .map(|parent| parent.agent_did.clone())
-            .or(bridge_authoring_did)
-            .ok_or(IllegalToolCallTransition::ParentLinkageIncoherent)?;
+            .is_some_and(|parent| parent.agent_did != bridge_admission.signer_did)
+        {
+            anyhow::bail!(IllegalToolCallTransition::ParentLinkageIncoherent);
+        }
+        let parent_authoring_did = bridge_admission.signer_did;
         let trusted_paired_peer = snapshot.paired_peer_dids.contains(&parent_authoring_did);
         if parent.is_none() && !trusted_paired_peer {
+            anyhow::bail!(IllegalToolCallTransition::ParentLinkageIncoherent);
+        }
+        if !trusted_paired_peer && snapshot.local_did.trim() != parent_authoring_did {
             anyhow::bail!(IllegalToolCallTransition::ParentLinkageIncoherent);
         }
         let tool_name = non_empty(Some(&row.tool_name)).unwrap_or("spawn_subagent");
@@ -608,7 +643,9 @@ impl SubagentSource {
                             &[],
                         )
                         .await?;
-                    self.processed_tool_calls.insert(processed_key);
+                    if failed {
+                        self.processed_tool_calls.insert(processed_key);
+                    }
                     tracing::warn!(
                         parent_request_id = %parent_request_id,
                         parent_tool_call_id = %parent_tool_call_id,
@@ -636,7 +673,9 @@ impl SubagentSource {
                         &authorization.allowed_target_names(),
                     )
                     .await?;
-                self.processed_tool_calls.insert(processed_key);
+                if failed {
+                    self.processed_tool_calls.insert(processed_key);
+                }
                 tracing::warn!(
                     parent_request_id = %parent_request_id,
                     parent_behavior_id = %authorization.behavior_id,
@@ -860,6 +899,7 @@ impl SubagentSource {
             doc_vars: None,
             args_vars: None,
             pre_materialized_request_id: Some(request_id),
+            materialization_request_id: None,
             on_result: Box::new(move |result| match result {
                 FireResult::Fired { request_id } => {
                     tracing::debug!(
@@ -894,8 +934,17 @@ impl TriggerSource for SubagentSource {
         Box::pin(async move {
             self.ensure_subscription();
             loop {
+                if let Some(intent) = self
+                    .pending_intents
+                    .lock()
+                    .expect("subagent pending_intents mutex poisoned")
+                    .pop_front()
+                {
+                    return Some(intent);
+                }
                 let mut message = None;
                 let mut dropped = 0;
+                let mut subscription_closed = false;
                 let rescan_due = {
                     let subscription = self
                         .subscription
@@ -904,13 +953,13 @@ impl TriggerSource for SubagentSource {
                     let rescan_due = tokio::select! {
                         biased;
                         _ = self.cancel.cancelled() => return None,
+                        _ = self.rescan_tick.tick() => true,
                         res = self.snapshot_rx.changed() => {
                             if res.is_err() {
                                 return None;
                             }
                             continue;
                         }
-                        _ = self.rescan_tick.tick() => true,
                         msg = subscription.recv() => {
                             match msg {
                                 Some(received) => {
@@ -918,10 +967,8 @@ impl TriggerSource for SubagentSource {
                                     false
                                 }
                                 None => {
-                                    tracing::warn!(
-                                        "subagent source subscription channel closed; source exiting",
-                                    );
-                                    return None;
+                                    subscription_closed = true;
+                                    false
                                 }
                             }
                         }
@@ -931,6 +978,22 @@ impl TriggerSource for SubagentSource {
                     }
                     rescan_due
                 };
+                if subscription_closed {
+                    self.subscription = None;
+                    tracing::warn!(
+                        "subagent source subscription channel closed; reopening after durable rescan",
+                    );
+                    if let Some(intent) = self.rescan_running_bridge_rows().await {
+                        return Some(intent);
+                    }
+                    tokio::select! {
+                        biased;
+                        _ = self.cancel.cancelled() => return None,
+                        _ = tokio::time::sleep(UPDATE_SUBSCRIPTION_REOPEN_DELAY) => {}
+                    }
+                    self.ensure_subscription();
+                    continue;
+                }
                 if rescan_due {
                     if let Some(intent) = self.rescan_running_bridge_rows().await {
                         return Some(intent);

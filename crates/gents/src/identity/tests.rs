@@ -23,6 +23,11 @@ async fn key_identity_round_trip() {
         .verify(identity.did(), payload, &signature)
         .await
         .unwrap());
+
+    let signing_config = defra_core::signing::get_identity(identity.did())
+        .expect("file identity should register as a DefraDB signer");
+    assert!(signing_config.has_local_private_key());
+    assert_eq!(signing_config.key_type, SigningKeyType::Ed25519);
 }
 
 #[tokio::test]

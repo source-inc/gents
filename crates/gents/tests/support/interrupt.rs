@@ -89,6 +89,8 @@ pub async fn create_runtime_request(
 
     let escaped_request_id = escape_graphql_string(request_id);
     let escaped_agent_did = escape_graphql_string(agent_did);
+    let escaped_source_author_did =
+        escape_graphql_string(node.node_identity_did().unwrap_or(agent_did));
     let escaped_behavior_id = escape_graphql_string(behavior_id);
     let escaped_session_id = escape_graphql_string(session_id);
     let escaped_content = escape_graphql_string(content);
@@ -98,6 +100,7 @@ pub async fn create_runtime_request(
             create_AgentRequest(input: {{
                 request_id: "{escaped_request_id}",
                 agent_did: "{escaped_agent_did}",
+                source_author_did: "{escaped_source_author_did}",
                 behavior_id: "{escaped_behavior_id}",
                 session_id: "{escaped_session_id}",
                 retry_parent_request: "",

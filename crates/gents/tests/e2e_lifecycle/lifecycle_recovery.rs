@@ -687,7 +687,10 @@ async fn live_request_path_survives_a_duplicated_session() {
         ExecutionOrigin::Interactive,
         BACKEND_ID,
     );
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
 
     lifecycle
         .prepare_session_with_identity()

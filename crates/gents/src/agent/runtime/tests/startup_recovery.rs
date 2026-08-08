@@ -246,9 +246,9 @@ async fn run_agent_fails_when_all_behaviors_are_unavailable_due_to_invalid_confi
 
 #[tokio::test]
 async fn run_agent_starts_with_all_behaviors_unavailable_and_rejects_requests_at_runtime() {
-    let node = test_node().await;
-    ensure_runtime_schemas(node.as_ref()).await.unwrap();
     let identity = Arc::new(test_identity("startup-all-unavailable"));
+    let node = test_node_with_identity(identity.as_ref()).await;
+    ensure_runtime_schemas(node.as_ref()).await.unwrap();
     bind_default_behavior_backend_with_capacity_and_probe_status(
         node.as_ref(),
         identity.did(),
@@ -398,9 +398,9 @@ async fn run_agent_recovers_backend_availability_without_restart() {
 
 #[tokio::test]
 async fn run_agent_shutdown_is_prompt_while_request_waits_for_backend_capacity() {
-    let node = test_node().await;
-    ensure_runtime_schemas(node.as_ref()).await.unwrap();
     let identity = Arc::new(test_identity("shutdown-waiting-request"));
+    let node = test_node_with_identity(identity.as_ref()).await;
+    ensure_runtime_schemas(node.as_ref()).await.unwrap();
     let mock_endpoint = MockModelEndpoint::start_blocking_chat("default").unwrap();
     bind_default_behavior_backend_with_capacity(
         node.as_ref(),

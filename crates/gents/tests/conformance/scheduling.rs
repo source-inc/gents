@@ -66,6 +66,7 @@ use std::time::Duration;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use gents::graphql::escape_graphql_string;
 use gents::lifecycle::{ExecutionOrigin, RequestLifecycle, TriggerLineage};
+use gents::retry::execute_graphql_with_conflict_retry;
 use gents::{AgentIdentity, DocumentRuntimeOptions, Gents, KeyIdentity, ToolCeiling};
 use serde_json::Value;
 
@@ -73,6 +74,7 @@ use crate::support::fixtures::bind_default_behavior_backend;
 use crate::support::mock_endpoint::MockModelEndpoint;
 use crate::support::snapshots::fetch_runtime_snapshot;
 use crate::support::{test_db, AGENT_DID, AGENT_NAME, BACKEND_ID, DEADLINE_SECS};
+use crate::{signed_materializer_agent_did, signed_materializer_test_db};
 
 fn test_identity(name: &str) -> KeyIdentity {
     let path = std::env::temp_dir().join(format!("{name}-{}.key", uuid::Uuid::new_v4()));
@@ -154,12 +156,85 @@ async fn set_schedule_enabled(
             ) {{ _docID }}
         }}"#
     );
-    let resp = node.execute(&mutation).await;
+    // The live schedule reconciler may read/write the same row between the
+    // fixture's read and update. A DefraDB transaction conflict is therefore a
+    // normal optimistic-concurrency result, not evidence that reconfiguration
+    // failed; exercise the same bounded retry boundary as production writers.
+    let resp =
+        execute_graphql_with_conflict_retry(node, &mutation, "set conformance Schedule.enabled")
+            .await;
     assert!(
         !resp.has_errors(),
         "update Schedule.enabled failed: {:?}",
         resp.errors
     );
+    assert!(
+        resp.data
+            .as_ref()
+            .and_then(|data| data.get("update_Schedule"))
+            .is_some_and(gents::graphql::response_has_documents),
+        "update Schedule.enabled matched no row for {schedule_id}: {:?}",
+        resp.data
+    );
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PersistedScheduleState {
+    doc_id: String,
+    enabled: bool,
+    next_run_at: Option<String>,
+}
+
+async fn fetch_persisted_schedule_state(
+    node: &gents::defra_node::EmbeddedNode,
+    schedule_id: &str,
+) -> PersistedScheduleState {
+    let escaped_schedule_id = escape_graphql_string(schedule_id);
+    let query = format!(
+        r#"{{
+            Schedule(
+                filter: {{ schedule_id: {{ _eq: "{escaped_schedule_id}" }} }},
+                limit: 2
+            ) {{
+                _docID
+                enabled
+                next_run_at
+            }}
+        }}"#
+    );
+    let resp = node.execute(&query).await;
+    assert!(
+        !resp.has_errors(),
+        "fetch Schedule persistence state failed: {:?}",
+        resp.errors
+    );
+    let rows = resp
+        .data
+        .as_ref()
+        .and_then(|data| data.get("Schedule"))
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("Schedule query returned no row array: {:?}", resp.data));
+    assert_eq!(
+        rows.len(),
+        1,
+        "expected exactly one persisted Schedule for {schedule_id}, got {rows:?}"
+    );
+    let row = &rows[0];
+    PersistedScheduleState {
+        doc_id: row
+            .get("_docID")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("Schedule row missing _docID: {row:?}"))
+            .to_string(),
+        enabled: row
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| panic!("Schedule row missing enabled: {row:?}")),
+        next_run_at: row
+            .get("next_run_at")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    }
 }
 
 async fn schedule_writeback_fired(
@@ -594,7 +669,8 @@ async fn boot_agent(db: &crate::support::TestDb, test_name: &str, backend_id: &s
 
 #[tokio::test]
 async fn fires_at_next_run_at() {
-    let db = test_db("schedule-conformance-fires").await;
+    let db = signed_materializer_test_db("schedule-conformance-fires").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
     let lineage = TriggerLineage {
         trigger_id: Some("sched-fires".to_string()),
         trigger_kind: Some("schedule".to_string()),
@@ -602,7 +678,7 @@ async fn fires_at_next_run_at() {
     let lifecycle = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "template fires",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -833,7 +909,8 @@ async fn template_render_failure_records_error_status() {
 ///    no second AgentRequest is created.
 #[tokio::test]
 async fn serial_skips_when_prior_active_runtime() {
-    let db = test_db("schedule-conformance-serial-skip").await;
+    let db = signed_materializer_test_db("schedule-conformance-serial-skip").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
 
     let lineage = TriggerLineage {
         trigger_id: Some("sched-serial-skip".to_string()),
@@ -842,7 +919,7 @@ async fn serial_skips_when_prior_active_runtime() {
     RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "seed in-flight",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -859,7 +936,7 @@ async fn serial_skips_when_prior_active_runtime() {
     assert!(
         has_active_runtime_request_for_trigger(
             db.node.as_ref(),
-            AGENT_DID,
+            &agent_did,
             "sched-serial-skip",
             "schedule"
         )
@@ -963,7 +1040,8 @@ async fn serial_advances_next_run_at_on_skip() {
 
 #[tokio::test]
 async fn latest_only_supersedes_prior_fire() {
-    let db = test_db("schedule-conformance-latest-only").await;
+    let db = signed_materializer_test_db("schedule-conformance-latest-only").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
 
     let lineage = TriggerLineage {
         trigger_id: Some("sched-latest-only".to_string()),
@@ -972,7 +1050,7 @@ async fn latest_only_supersedes_prior_fire() {
     let prior = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "seed prior",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -985,7 +1063,7 @@ async fn latest_only_supersedes_prior_fire() {
 
     let superseded_count = supersede_active_runtime_requests_for_trigger(
         db.node.as_ref(),
-        AGENT_DID,
+        &agent_did,
         "sched-latest-only",
         "schedule",
     )
@@ -1010,7 +1088,7 @@ async fn latest_only_supersedes_prior_fire() {
     let new_fire = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "latest fire",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -1032,7 +1110,7 @@ async fn latest_only_supersedes_prior_fire() {
     assert!(
         has_active_runtime_request_for_trigger(
             db.node.as_ref(),
-            AGENT_DID,
+            &agent_did,
             "sched-latest-only",
             "schedule"
         )
@@ -1068,6 +1146,22 @@ async fn generation_bump_reconfigures_active_schedules() {
         true,
     )
     .await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let post_task_gen = loop {
+        let snap = fetch_runtime_snapshot(db.node.as_ref(), &agent.agent_did)
+            .await
+            .unwrap();
+        if snap.active_generation > startup_gen && snap.last_reconcile_result == "applied" {
+            break snap.active_generation;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "snapshot never re-resolved after Task insert; stuck at {startup_gen}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
     create_schedule(
         db.node.as_ref(),
         "sched-genbump",
@@ -1078,27 +1172,45 @@ async fn generation_bump_reconfigures_active_schedules() {
         None,
     )
     .await;
+    let inserted_schedule = fetch_persisted_schedule_state(db.node.as_ref(), "sched-genbump").await;
+    assert!(inserted_schedule.enabled);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let post_insert_gen = loop {
         let snap = fetch_runtime_snapshot(db.node.as_ref(), &agent.agent_did)
             .await
             .unwrap();
-        if snap.active_generation > startup_gen && snap.last_reconcile_result == "applied" {
+        if snap.active_generation > post_task_gen && snap.last_reconcile_result == "applied" {
             break snap.active_generation;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "snapshot never re-resolved after Schedule insert; stuck at {startup_gen}"
+            "snapshot never re-resolved after Schedule insert; stuck at {post_task_gen}"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     assert!(
-        post_insert_gen > startup_gen,
-        "post-insert active_generation must exceed startup generation"
+        post_insert_gen > post_task_gen,
+        "post-insert active_generation must exceed post-task generation"
     );
 
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let persisted = fetch_persisted_schedule_state(db.node.as_ref(), "sched-genbump").await;
+        if persisted.next_run_at.is_some() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "ScheduleSource never seeded next_run_at, so gen {post_insert_gen} did not prove sched-genbump was active: {persisted:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
     set_schedule_enabled(db.node.as_ref(), "sched-genbump", false).await;
+    let disabled_schedule = fetch_persisted_schedule_state(db.node.as_ref(), "sched-genbump").await;
+    assert_eq!(disabled_schedule.doc_id, inserted_schedule.doc_id);
+    assert!(!disabled_schedule.enabled);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let post_disable_gen = loop {
@@ -1110,7 +1222,8 @@ async fn generation_bump_reconfigures_active_schedules() {
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "snapshot never re-resolved after Schedule disable; stuck at {post_insert_gen}"
+            "snapshot never re-resolved after Schedule disable; stuck at {post_insert_gen}: {snap:?}; persisted Schedule state: {:?}",
+            fetch_persisted_schedule_state(db.node.as_ref(), "sched-genbump").await,
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
@@ -1124,8 +1237,8 @@ async fn generation_bump_reconfigures_active_schedules() {
 
 #[tokio::test]
 async fn serial_gate_is_scoped_by_agent_did() {
-    let db = test_db("schedule-conformance-serial-did-scope").await;
-    const FOREIGN_DID: &str = "did:test:conformance-foreign-steward";
+    let db = signed_materializer_test_db("schedule-conformance-serial-did-scope").await;
+    let foreign_did = signed_materializer_agent_did(&db).to_string();
 
     let lineage = TriggerLineage {
         trigger_id: Some("host-check".to_string()),
@@ -1134,7 +1247,7 @@ async fn serial_gate_is_scoped_by_agent_did() {
     RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         "foreign-steward",
-        FOREIGN_DID,
+        &foreign_did,
         "foreign in-flight",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -1157,7 +1270,7 @@ async fn serial_gate_is_scoped_by_agent_did() {
     assert!(
         has_active_runtime_request_for_trigger(
             db.node.as_ref(),
-            FOREIGN_DID,
+            &foreign_did,
             "host-check",
             "schedule"
         )
@@ -1168,7 +1281,8 @@ async fn serial_gate_is_scoped_by_agent_did() {
 
 #[tokio::test]
 async fn serial_gate_ignores_expired_claims() {
-    let db = test_db("schedule-conformance-serial-expired-claim").await;
+    let db = signed_materializer_test_db("schedule-conformance-serial-expired-claim").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
 
     let lineage = TriggerLineage {
         trigger_id: Some("sched-expired".to_string()),
@@ -1177,7 +1291,7 @@ async fn serial_gate_ignores_expired_claims() {
     let orphan = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "wedged orphan",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -1191,7 +1305,7 @@ async fn serial_gate_ignores_expired_claims() {
     assert!(
         has_active_runtime_request_for_trigger(
             db.node.as_ref(),
-            AGENT_DID,
+            &agent_did,
             "sched-expired",
             "schedule"
         )
@@ -1220,7 +1334,7 @@ async fn serial_gate_ignores_expired_claims() {
     assert!(
         !has_active_runtime_request_for_trigger(
             db.node.as_ref(),
-            AGENT_DID,
+            &agent_did,
             "sched-expired",
             "schedule"
         )
@@ -1231,34 +1345,64 @@ async fn serial_gate_ignores_expired_claims() {
 
 #[tokio::test]
 async fn supersede_only_touches_own_agent_requests() {
-    let db = test_db("schedule-conformance-supersede-did-scope").await;
+    let db = signed_materializer_test_db("schedule-conformance-supersede-did-scope").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
     const FOREIGN_DID: &str = "did:test:conformance-foreign-steward";
 
-    for (name, did, content) in [
-        (AGENT_NAME, AGENT_DID, "own in-flight"),
-        ("foreign-steward", FOREIGN_DID, "foreign in-flight"),
-    ] {
-        let lineage = TriggerLineage {
+    RequestLifecycle::materialize_claimed_with_execution_binding(
+        db.node.clone(),
+        AGENT_NAME,
+        &agent_did,
+        "own in-flight",
+        DEADLINE_SECS,
+        ExecutionOrigin::Scheduled,
+        BACKEND_ID,
+        TriggerLineage {
             trigger_id: Some("host-check".to_string()),
             trigger_kind: Some("schedule".to_string()),
-        };
-        RequestLifecycle::materialize_claimed_with_execution_binding(
-            db.node.clone(),
-            name,
-            did,
-            content,
-            DEADLINE_SECS,
-            ExecutionOrigin::Scheduled,
-            BACKEND_ID,
-            lineage,
-        )
-        .await
-        .unwrap();
-    }
+        },
+    )
+    .await
+    .unwrap();
+
+    let foreign_request_id = uuid::Uuid::new_v4().to_string();
+    let foreign_session_id = uuid::Uuid::new_v4().to_string();
+    let created_at = Utc::now().to_rfc3339();
+    let mutation = format!(
+        r#"mutation {{
+            create_AgentRequest(input: {{
+                request_id: "{foreign_request_id}",
+                agent_did: "{FOREIGN_DID}",
+                behavior_id: "foreign-steward",
+                session_id: "{foreign_session_id}",
+                retry_parent_request: "",
+                retry_root_request: "{foreign_request_id}",
+                superseded_by_request: "",
+                content: "foreign in-flight",
+                status: "processing",
+                lifecycle_state: "claimed",
+                backend_id: "{BACKEND_ID}",
+                execution_origin: "scheduled",
+                caused_by_trigger_id: "host-check",
+                caused_by_trigger_kind: "schedule",
+                failure_reason: "",
+                created_at: "{created_at}",
+                claimed_at: "{created_at}",
+                retry_count: 0,
+                max_retries: 3
+            }}) {{ _docID }}
+        }}"#
+    );
+    let response = db.node.execute(&mutation).await;
+    assert!(
+        !response.has_errors(),
+        "foreign seed failed: {:?}",
+        response.errors
+    );
 
     let superseded = supersede_active_runtime_requests_for_trigger(
         db.node.as_ref(),
-        AGENT_DID,
+        &agent_did,
         "host-check",
         "schedule",
     )

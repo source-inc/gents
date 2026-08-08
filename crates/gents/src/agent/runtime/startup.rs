@@ -181,11 +181,17 @@ pub(in crate::agent) async fn run_agent(
         resolved_snapshot,
         admission_registry.clone(),
         agent.retry_policy.clone(),
-        move |behavior, tool_surface, request_rx, shutdown| {
+        move |behavior, tool_surface, config_provenance, request_rx, shutdown| {
             let runtime = runtime_for_runner.clone();
             async move {
                 runtime
-                    .run_behavior(behavior, tool_surface, request_rx, shutdown)
+                    .run_behavior(
+                        behavior,
+                        tool_surface,
+                        config_provenance,
+                        request_rx,
+                        shutdown,
+                    )
                     .await
             }
         },

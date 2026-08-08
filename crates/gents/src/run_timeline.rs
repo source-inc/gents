@@ -194,6 +194,22 @@ pub struct TimelineToolCallRow {
     pub args: String,
     #[serde(default)]
     pub result: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_doc_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_composite_commit_cid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_signer_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_doc_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_composite_commit_cid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_signer_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_fact: Option<TimelineToolResultFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_fact: Option<TimelineToolApprovalFact>,
     #[serde(default)]
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -236,6 +252,30 @@ pub struct TimelineToolCallRow {
     pub cancel_cause: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimelineToolResultFact {
+    pub doc_id: String,
+    pub composite_commit_cid: String,
+    pub signer_did: String,
+    pub tool_call_doc_id: String,
+    pub tool_call_composite_commit_cid: String,
+    pub tool_call_signer_did: String,
+    pub output_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimelineToolApprovalFact {
+    pub doc_id: String,
+    pub composite_commit_cid: String,
+    pub signer_did: String,
+    pub tool_call_doc_id: String,
+    pub tool_call_composite_commit_cid: String,
+    pub tool_call_signer_did: String,
+    pub decision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,6 +406,10 @@ pub struct TimelineToolCallEvent {
     pub tool_call_id: String,
     pub args: String,
     pub result: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_fact: Option<TimelineToolResultFact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_fact: Option<TimelineToolApprovalFact>,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lifecycle_state: Option<String>,
@@ -515,6 +559,8 @@ pub fn build_run_timeline(mut rows: RunTimelineRows) -> RunTimeline {
                 tool_call_id: tool_call.tool_call_id.clone(),
                 args: tool_call.args.clone(),
                 result: tool_call.result.clone(),
+                result_fact: tool_call.result_fact.clone(),
+                approval_fact: tool_call.approval_fact.clone(),
                 status: tool_call.status.clone(),
                 lifecycle_state: tool_call.lifecycle_state.clone(),
                 selected_service_id: tool_call.selected_service_id.clone(),

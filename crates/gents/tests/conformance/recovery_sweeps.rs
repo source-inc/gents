@@ -270,7 +270,7 @@ async fn drive_recovery_sweep_case(case: &lean_vocab_test::LeanRecoverySweepCase
 }
 
 async fn drive_expired_child_recovery_case(case: &lean_vocab_test::LeanRecoverySweepCase) {
-    let db = test_db(&format!("recovery-sweep-{}", case.name)).await;
+    let db = signed_materializer_test_db(&format!("recovery-sweep-{}", case.name)).await;
     let parent_request_id = format!("{}-parent", case.name);
     let parent_session_id = format!("{}-parent-session", case.name);
     create_request(
@@ -886,7 +886,7 @@ async fn drive_response_recovery_case(case: &lean_vocab_test::LeanRecoverySweepC
 }
 
 async fn drive_tool_call_recovery_case(case: &lean_vocab_test::LeanRecoverySweepCase) {
-    let db = test_db(&format!("recovery-sweep-{}", case.name)).await;
+    let db = signed_materializer_test_db(&format!("recovery-sweep-{}", case.name)).await;
     let parent_request_id = format!("{}-parent", case.name);
     let parent_session_id = format!("{}-parent-session", case.name);
     let tool_call_id = format!("{}-tool", case.name);
@@ -1825,7 +1825,7 @@ pub(super) async fn generated_restart_disposition_cases_drive_recover_all() {
 }
 
 async fn drive_restart_disposition_case(case: &lean_vocab_test::LeanRestartDispositionCase) {
-    let db = test_db(&format!("restart-disposition-{}", case.name)).await;
+    let db = signed_materializer_test_db(&format!("restart-disposition-{}", case.name)).await;
     let parent_request_id = format!("{}-parent", case.name);
     let parent_session_id = format!("{}-parent-session", case.name);
     let tool_call_id = format!("{}-tool", case.name);

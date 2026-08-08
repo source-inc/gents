@@ -9,7 +9,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::admission::BackendAdmissionConfig;
 use crate::config::AgentBehavior;
 use crate::retry::RetryPolicy;
-use crate::runtime_snapshot::ResolvedRuntimeSnapshot;
+use crate::runtime_snapshot::{ResolvedRuntimeSnapshot, ScopedBehaviorConfigProvenance};
 use crate::startup_readiness::{BuildOutcome, BuildStanding};
 use crate::tool_surface::ToolSurface;
 use crate::watcher::AgentRequest;
@@ -30,6 +30,7 @@ pub(super) struct BehaviorSlot {
     pub(super) handle: JoinHandle<()>,
     pub(super) behavior_fingerprint: String,
     pub(super) tool_surface_fingerprint: String,
+    pub(super) config_provenance: ScopedBehaviorConfigProvenance,
     pub(super) executor_capacity: usize,
     pub(super) queue_capacity: usize,
 }
@@ -39,10 +40,12 @@ impl BehaviorSlot {
         &self,
         behavior: &Arc<AgentBehavior>,
         tool_surface: &Arc<ToolSurface>,
+        config_provenance: &ScopedBehaviorConfigProvenance,
         executor_capacity: usize,
     ) -> bool {
         self.behavior_fingerprint == format!("{behavior:?}")
             && self.tool_surface_fingerprint == format!("{tool_surface:?}")
+            && &self.config_provenance == config_provenance
             && self.executor_capacity == executor_capacity
     }
 }
@@ -144,6 +147,7 @@ where
     F: Fn(
             Arc<AgentBehavior>,
             Arc<ToolSurface>,
+            ScopedBehaviorConfigProvenance,
             Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
             watch::Receiver<bool>,
         ) -> Fut
@@ -160,11 +164,13 @@ where
             .get(behavior_id)
             .cloned()
             .expect("resolved snapshot should include tool surfaces for runnable behaviors");
+        let config_provenance = resolved_snapshot.scoped_config_provenance_for(behavior_id);
         slots.insert(
             behavior_id.clone(),
             spawn_slot_with_capacity(
                 behavior.clone(),
                 tool_surface,
+                config_provenance,
                 behavior_executor_capacity(behavior, &resolved_snapshot.backend_admission_configs),
                 retry_policy.clone(),
                 runner.clone(),
@@ -188,6 +194,7 @@ where
     F: Fn(
             Arc<AgentBehavior>,
             Arc<ToolSurface>,
+            ScopedBehaviorConfigProvenance,
             Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
             watch::Receiver<bool>,
         ) -> Fut
@@ -200,6 +207,10 @@ where
     spawn_slot_with_capacity(
         behavior,
         tool_surface,
+        ScopedBehaviorConfigProvenance {
+            scope: crate::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+            exact: None,
+        },
         1,
         retry_policy,
         runner,
@@ -211,6 +222,7 @@ where
 pub(super) fn spawn_slot_with_capacity<F, Fut>(
     behavior: Arc<AgentBehavior>,
     tool_surface: Arc<ToolSurface>,
+    config_provenance: ScopedBehaviorConfigProvenance,
     executor_capacity: usize,
     retry_policy: RetryPolicy,
     runner: F,
@@ -221,6 +233,7 @@ where
     F: Fn(
             Arc<AgentBehavior>,
             Arc<ToolSurface>,
+            ScopedBehaviorConfigProvenance,
             Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
             watch::Receiver<bool>,
         ) -> Fut
@@ -241,6 +254,7 @@ where
     let handle = tokio::spawn(run_slot_workers(
         behavior,
         tool_surface,
+        config_provenance.clone(),
         request_rx,
         executor_capacity,
         retry_policy,
@@ -257,6 +271,7 @@ where
         handle,
         behavior_fingerprint,
         tool_surface_fingerprint,
+        config_provenance,
         executor_capacity,
         queue_capacity: BEHAVIOR_EXECUTOR_QUEUE_CAPACITY,
     }
@@ -297,6 +312,7 @@ pub(super) fn retire_slot(slot: BehaviorSlot) {
 async fn run_slot_loop<F, Fut>(
     behavior: Arc<AgentBehavior>,
     tool_surface: Arc<ToolSurface>,
+    config_provenance: ScopedBehaviorConfigProvenance,
     request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
     retry_policy: RetryPolicy,
     runner: F,
@@ -308,6 +324,7 @@ async fn run_slot_loop<F, Fut>(
     F: Fn(
             Arc<AgentBehavior>,
             Arc<ToolSurface>,
+            ScopedBehaviorConfigProvenance,
             Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
             watch::Receiver<bool>,
         ) -> Fut
@@ -336,6 +353,7 @@ async fn run_slot_loop<F, Fut>(
         let outcome = AssertUnwindSafe(runner(
             behavior.clone(),
             tool_surface.clone(),
+            config_provenance.clone(),
             request_rx.clone(),
             shutdown.clone(),
         ))
@@ -419,6 +437,7 @@ async fn run_slot_loop<F, Fut>(
 async fn run_slot_workers<F, Fut>(
     behavior: Arc<AgentBehavior>,
     tool_surface: Arc<ToolSurface>,
+    config_provenance: ScopedBehaviorConfigProvenance,
     request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
     executor_capacity: usize,
     retry_policy: RetryPolicy,
@@ -431,6 +450,7 @@ async fn run_slot_workers<F, Fut>(
     F: Fn(
             Arc<AgentBehavior>,
             Arc<ToolSurface>,
+            ScopedBehaviorConfigProvenance,
             Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
             watch::Receiver<bool>,
         ) -> Fut
@@ -451,6 +471,7 @@ async fn run_slot_workers<F, Fut>(
         workers.spawn(run_slot_loop(
             behavior.clone(),
             tool_surface.clone(),
+            config_provenance.clone(),
             request_rx.clone(),
             retry_policy.clone(),
             runner.clone(),

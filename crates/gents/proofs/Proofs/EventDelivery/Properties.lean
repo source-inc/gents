@@ -102,6 +102,42 @@ theorem D2_fair_delivery_latency
     intro h
     simp at h
 
+/-- A lossy subscription wake is never the correctness boundary. If the
+document remains durable and unprocessed, dropping its queued wake followed by
+one complete durable rescan makes it handleable again. -/
+theorem D3_dropped_wake_recovered_by_rescan
+    (w₀ : World) (d : DocId)
+    (h_persisted : d ∈ w₀.persistentSet)
+    (h_queued : d ∈ w₀.subscriptionQueue)
+    (h_unprocessed : d ∉ w₀.processedSet) :
+    ∃ (w₁ w₂ w₃ : World),
+      Transition w₀ (.drop d) w₁ ∧
+      Transition w₁ .rescanTick w₂ ∧
+      Transition w₂ (.handle d) w₃ ∧
+      d ∈ w₃.handled := by
+  let w₁ : World :=
+    { w₀ with subscriptionQueue := w₀.subscriptionQueue.erase d }
+  let w₂ : World :=
+    { w₁ with subscriptionQueue :=
+        (w₁.persistentSet.filter (fun x => x ∉ w₁.processedSet)) ++
+          w₁.subscriptionQueue }
+  let w₃ : World :=
+    { w₂ with handled := d :: w₂.handled
+            , processedSet := d :: w₂.processedSet
+            , subscriptionQueue := w₂.subscriptionQueue.erase d }
+  refine ⟨w₁, w₂, w₃, Transition.drop w₀ d h_queued,
+    Transition.rescanTick w₁, ?_, ?_⟩
+  · apply Transition.handle
+    · show d ∈
+        (w₁.persistentSet.filter (fun x => x ∉ w₁.processedSet)) ++
+          w₁.subscriptionQueue
+      apply List.mem_append.mpr
+      left
+      apply List.mem_filter.mpr
+      exact ⟨h_persisted, by simpa [w₁] using h_unprocessed⟩
+    · simpa [w₂, w₁] using h_unprocessed
+  · exact List.mem_cons_self _ _
+
 theorem C1_processed_set_excludes_handle
     (w : World) (d : DocId) (a : Action) (w' : World)
     (h_processed : d ∈ w.processedSet)

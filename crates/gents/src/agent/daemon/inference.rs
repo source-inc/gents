@@ -567,15 +567,17 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
         &self,
         request: &crate::watcher::AgentRequest,
         behavior_id: &str,
+        provenance: &crate::RequestExecutionProvenance,
         error: &anyhow::Error,
     ) -> Result<()> {
         let doc_id = self
             .stream_writer
-            .begin_with_requester_did(
+            .begin_document_response(
                 &request.session_id,
                 &request.request_id,
                 behavior_id,
                 request.requester_did.as_deref(),
+                provenance,
             )
             .await?;
         let error_reason = error.to_string();
@@ -705,12 +707,14 @@ mod tests {
         let escaped_request_id = crate::graphql::escape_graphql_string(&request_id);
         let escaped_session_id = crate::graphql::escape_graphql_string(&session_id);
         let escaped_agent_did = crate::graphql::escape_graphql_string(behavior.agent_did());
+        let escaped_source_author_did = crate::graphql::escape_graphql_string(behavior.agent_did());
         let escaped_requester_did = crate::graphql::escape_graphql_string(requester_did);
         let mutation = format!(
             r#"mutation {{
                 create_AgentRequest(input: {{
                     request_id: "{escaped_request_id}",
                     agent_did: "{escaped_agent_did}",
+                    source_author_did: "{escaped_source_author_did}",
                     requester_did: "{escaped_requester_did}",
                     behavior_id: "general",
                     session_id: "{escaped_session_id}",
@@ -726,7 +730,9 @@ mod tests {
                     created_at: "{created_at}",
                     retry_count: 0,
                     max_retries: 3,
-                    subagent_depth: 1
+                    subagent_depth: 1,
+                    caused_by_parent_request_id: "parent-request",
+                    caused_by_parent_tool_call_id: "parent-tool-call"
                 }}) {{ _docID }}
             }}"#
         );
@@ -842,11 +848,13 @@ mod tests {
 
     #[tokio::test]
     async fn daemon_request_path_stamps_requester_lineage_on_hook_messages() {
+        let behavior = test_behavior();
         let data_path =
             std::env::temp_dir().join(format!("daemon-requester-lineage-{}", uuid::Uuid::new_v4()));
         let node = Arc::new(
             defra_node::EmbeddedNode::builder()
                 .data_path(&data_path)
+                .with_node_identity_did(behavior.agent_did())
                 .build()
                 .await
                 .expect("embedded node"),
@@ -856,7 +864,6 @@ mod tests {
             .expect("runtime schemas");
 
         let requester_did = "did:test:coordinator";
-        let behavior = test_behavior();
         let request = create_routed_request(node.as_ref(), &behavior, requester_did).await;
         let prompt_builder = LayeredPromptBuilder::for_behavior(
             &behavior.system_prompt,
@@ -872,6 +879,10 @@ mod tests {
         let mut daemon = BehaviorDaemon::new(
             node.clone(),
             behavior,
+            crate::runtime_snapshot::ScopedBehaviorConfigProvenance {
+                scope: crate::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+                exact: None,
+            },
             Arc::new(RoutedReplyModel),
             preamble,
             loop_tools,

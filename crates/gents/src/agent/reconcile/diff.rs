@@ -37,6 +37,15 @@ pub(super) fn diff_counts(
                 .get(*behavior_id)
                 .expect("intersection must exist in proposed behaviors");
             format!("{current_behavior:?}") != format!("{proposed_behavior:?}")
+                || current.config_provenance_scope != proposed.config_provenance_scope
+                || current
+                    .behavior_config_provenance
+                    .get(*behavior_id)
+                    .map(AsRef::as_ref)
+                    != proposed
+                        .behavior_config_provenance
+                        .get(*behavior_id)
+                        .map(AsRef::as_ref)
                 || match (
                     current.tool_surfaces.get(*behavior_id),
                     proposed.tool_surfaces.get(*behavior_id),

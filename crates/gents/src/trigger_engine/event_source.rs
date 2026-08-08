@@ -20,8 +20,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
-use defra_node::EmbeddedNode;
-use serde::Deserialize;
+use defra_node::{EmbeddedNode, ExecuteRetryPolicy, QueryRequest, QueryResponse};
+use identity::Did;
+use query::TransactionHandle;
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
@@ -30,17 +32,14 @@ use crate::event_delivery_contract::{EventDeliveryRuntimeContract, EventDelivery
 use crate::runtime_snapshot::ActiveRuntimeSnapshot;
 use crate::UpdateSubscriptionSource;
 
+use super::subscription_source::UPDATE_SUBSCRIPTION_REOPEN_DELAY;
 use super::{FireIntent, TriggerKind, TriggerSource};
 
-/// Cap for the one-shot existing-docs seed query run when a collection is
-/// newly admitted to `desired_collections`. The goal of the seed is to
-/// enforce spec's forward-only semantic: pre-existing docs in the source
-/// collection must not fire as "created" when the first event arrives.
-/// Collections larger than the cap are still safe (we just log a warning
-/// and accept that docs beyond the cap may appear as "first-seen" on their
-/// next event); v1 doesn't target catalog-scale source collections, so a
-/// conservative limit is fine.
-const SEEN_DOCS_SEED_LIMIT: usize = 10_000;
+/// Page size for complete existing-document scans. Pagination, rather than a
+/// total cap, is required for forward-only semantics: every pre-existing row
+/// must be seeded, and every eligible durable row must remain recoverable after
+/// a dropped subscription wake.
+const SEEN_DOCS_PAGE_SIZE: usize = 500;
 const EVENT_SOURCE_RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 
 pub struct EventSource {
@@ -55,7 +54,6 @@ pub struct EventSource {
     cancel: CancellationToken,
     source_schema_cache: SourceSchemaCache,
     collection_id_to_name: HashMap<String, String>,
-    seen_docs: HashMap<String, HashSet<String>>,
     pending_intents: Mutex<VecDeque<FireIntent>>,
     /// Periodic live rescan that closes the lossy-subscription gap. The
     /// interval is stored on the source so a busy stream of `next_fire()` calls
@@ -67,6 +65,114 @@ pub struct EventSource {
 struct SourceDocIdRow {
     #[serde(rename = "_docID")]
     doc_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TxnCommitParentRow {
+    cid: String,
+    #[serde(rename = "fieldName")]
+    field_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TxnCompositeHeadRow {
+    cid: String,
+    #[serde(default)]
+    heads: Vec<TxnCommitParentRow>,
+}
+
+const EVENT_ACTIVATION_MANIFEST_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct BaselineSourceRef {
+    doc_id: String,
+    composite_commit_cid: String,
+    signer_did: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EventActivationManifest {
+    manifest_version: u32,
+    source_collection: String,
+    sources: Vec<BaselineSourceRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct EventTriggerActivationRow {
+    #[serde(rename = "_docID")]
+    doc_id: String,
+    activation_key: String,
+    agent_did: String,
+    trigger_id: String,
+    trigger_doc_id: String,
+    trigger_commit_cid: String,
+    trigger_signer_did: String,
+    source_collection: String,
+    event_kind: String,
+    baseline_manifest_version: u32,
+    baseline_source_manifest_json: String,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct EventDeliveryAdmissionRow {
+    #[serde(rename = "_docID")]
+    doc_id: String,
+    delivery_key: String,
+    request_id: String,
+    agent_did: String,
+    trigger_id: String,
+    trigger_doc_id: String,
+    trigger_commit_cid: String,
+    trigger_signer_did: String,
+    activation_doc_id: String,
+    activation_commit_cid: String,
+    activation_signer_did: String,
+    source_collection: String,
+    source_doc_id: String,
+    source_commit_cid: String,
+    source_signer_did: String,
+    event_kind: String,
+    created_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedActivation {
+    row: EventTriggerActivationRow,
+    source: crate::SignedDocumentVersionRef,
+    manifest: EventActivationManifest,
+}
+
+#[derive(Debug, Clone)]
+struct DeliveryWork {
+    request_id: String,
+    source: crate::SignedDocumentVersionRef,
+}
+
+async fn execute_with_identity(node: &EmbeddedNode, query: String, identity: Did) -> QueryResponse {
+    node.execute_request_with_retry(
+        QueryRequest::new(query).with_identity(Some(identity)),
+        ExecuteRetryPolicy::default(),
+    )
+    .await
+}
+
+async fn execute_in_txn_with_identity(
+    node: &EmbeddedNode,
+    handle: &TransactionHandle,
+    query: String,
+    identity: Did,
+) -> anyhow::Result<QueryResponse> {
+    let response = node
+        .execute_request_in_txn(
+            QueryRequest::new(query).with_identity(Some(identity)),
+            handle,
+        )
+        .await;
+    if response.has_errors() {
+        anyhow::bail!("transactional GraphQL failed: {:?}", response.errors);
+    }
+    Ok(response)
 }
 
 /// Per-source-collection schema cache.
@@ -97,6 +203,7 @@ impl SourceSchemaCache {
         &self,
         collection: &str,
         node: &EmbeddedNode,
+        identity: Did,
     ) -> anyhow::Result<Vec<String>> {
         crate::graphql::validate_collection_identifier(collection)?;
         let mut guard = self.by_collection.lock().await;
@@ -111,7 +218,7 @@ impl SourceSchemaCache {
             }}"#,
             name = collection,
         );
-        let response = node.execute(&query).await;
+        let response = execute_with_identity(node, query, identity).await;
         if response.has_errors() {
             anyhow::bail!("introspect {} failed: {:?}", collection, response.errors);
         }
@@ -154,6 +261,47 @@ fn event_source_rescan_tick(interval: Duration) -> tokio::time::Interval {
 }
 
 impl EventSource {
+    fn query_identity(&self) -> anyhow::Result<Did> {
+        let did = self.node.node_identity_did().ok_or_else(|| {
+            anyhow::anyhow!("EventSource durable operations require a DefraDB node identity")
+        })?;
+        Did::new(did).map_err(Into::into)
+    }
+
+    fn key_part(value: &str) -> String {
+        format!("{}:{value}", value.len())
+    }
+
+    fn activation_key(
+        trigger_doc_id: &str,
+        trigger_commit_cid: &str,
+        source_collection: &str,
+        event_kind: &str,
+    ) -> String {
+        format!(
+            "v1:{}:{}:{}:{}",
+            Self::key_part(trigger_doc_id),
+            Self::key_part(trigger_commit_cid),
+            Self::key_part(source_collection),
+            Self::key_part(event_kind)
+        )
+    }
+
+    fn delivery_key(
+        trigger_doc_id: &str,
+        source_collection: &str,
+        source_doc_id: &str,
+        event_kind: &str,
+    ) -> String {
+        format!(
+            "v1:{}:{}:{}:{}",
+            Self::key_part(trigger_doc_id),
+            Self::key_part(source_collection),
+            Self::key_part(source_doc_id),
+            Self::key_part(event_kind)
+        )
+    }
+
     pub fn new(
         snapshot_rx: watch::Receiver<Arc<ActiveRuntimeSnapshot>>,
         node: Arc<EmbeddedNode>,
@@ -179,7 +327,6 @@ impl EventSource {
             cancel,
             source_schema_cache: SourceSchemaCache::default(),
             collection_id_to_name: HashMap::new(),
-            seen_docs: HashMap::new(),
             pending_intents: Mutex::new(VecDeque::new()),
             rescan_tick: event_source_rescan_tick(EVENT_SOURCE_RESCAN_INTERVAL),
         }
@@ -257,13 +404,20 @@ impl EventSource {
 
         self.desired_collections = desired;
 
-        for added_collection in &added {
-            if let Err(err) = self.seed_seen_docs_for_collection(added_collection).await {
+        let mut triggers = snapshot
+            .active_event_triggers()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        triggers.sort_by(|left, right| left.trigger_id.cmp(&right.trigger_id));
+        let author_did = self.node.node_identity_did().unwrap_or_default().to_owned();
+        for trigger in &triggers {
+            if let Err(err) = self.ensure_activation(trigger, &author_did).await {
                 tracing::warn!(
-                    source_collection = %added_collection,
+                    trigger_id = %trigger.trigger_id,
+                    source_collection = %trigger.source_collection,
                     %err,
-                    "event source seed_seen_docs_for_collection failed; forward-only \
-                     semantics may be weaker for pre-existing docs in this collection",
+                    "event source could not establish durable activation baseline",
                 );
             }
         }
@@ -281,86 +435,790 @@ impl EventSource {
         self.reconciled_generation = snapshot.generation;
     }
 
-    async fn seed_seen_docs_for_collection(&mut self, collection: &str) -> anyhow::Result<()> {
+    async fn load_doc_ids_for_collection(&self, collection: &str) -> anyhow::Result<Vec<String>> {
         crate::graphql::validate_collection_identifier(collection)?;
-        let query = format!(
-            r#"query {{ {collection}(limit: {limit}) {{ _docID }} }}"#,
-            collection = collection,
-            limit = SEEN_DOCS_SEED_LIMIT,
-        );
-        let response = self.node.execute(&query).await;
-        if response.has_errors() {
-            tracing::warn!(
-                source_collection = %collection,
-                errors = ?response.errors,
-                "event source could not seed seen_docs (introspection errors); \
-                 forward-only semantics may be weaker for pre-existing docs",
+        let mut doc_ids = Vec::new();
+        let mut offset = 0usize;
+        loop {
+            let query = format!(
+                r#"query {{
+                    {collection}(
+                        order: {{ _docID: ASC }},
+                        limit: {limit},
+                        offset: {offset}
+                    ) {{ _docID }}
+                }}"#,
+                collection = collection,
+                limit = SEEN_DOCS_PAGE_SIZE,
+                offset = offset,
             );
-            return Ok(());
+            let response = execute_with_identity(&self.node, query, self.query_identity()?).await;
+            if response.has_errors() {
+                anyhow::bail!(
+                    "event source rescan page for {} offset={} failed: {:?}",
+                    collection,
+                    offset,
+                    response.errors
+                );
+            }
+            let rows: Vec<SourceDocIdRow> = response
+                .data
+                .as_ref()
+                .and_then(|data| data.get(collection))
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()?
+                .unwrap_or_default();
+            let page_len = rows.len();
+            doc_ids.extend(rows.into_iter().map(|row| row.doc_id));
+            if page_len < SEEN_DOCS_PAGE_SIZE {
+                break;
+            }
+            offset += page_len;
+        }
+        Ok(doc_ids)
+    }
+
+    async fn exact_current_ref(
+        &self,
+        collection: &str,
+        doc_id: &str,
+    ) -> anyhow::Result<crate::SignedDocumentVersionRef> {
+        crate::document_version::verified_current_signed_document_version_with_identity(
+            &self.node,
+            collection,
+            doc_id,
+            Some(self.query_identity()?),
+        )
+        .await
+    }
+
+    async fn verify_pinned_ref(
+        &self,
+        collection: &str,
+        doc_id: &str,
+        cid: &str,
+        signer_did: &str,
+    ) -> anyhow::Result<()> {
+        if doc_id.trim().is_empty() || cid.trim().is_empty() || signer_did.trim().is_empty() {
+            anyhow::bail!("{collection} exact event-delivery reference is incomplete");
+        }
+        let signer = self.node.verified_block_signer_did(cid).await?;
+        if signer != signer_did {
+            anyhow::bail!(
+                "{collection} {doc_id} pinned signer {signer_did} disagrees with cryptographic signer {signer}"
+            );
+        }
+        let escaped_cid = crate::graphql::escape_graphql_string(cid);
+        let response = execute_with_identity(
+            &self.node,
+            format!(r#"{{ {collection}(cid: ["{escaped_cid}"]) {{ _docID }} }}"#),
+            self.query_identity()?,
+        )
+        .await;
+        if response.has_errors() {
+            anyhow::bail!(
+                "loading exact {collection} event-delivery source {cid}: {:?}",
+                response.errors
+            );
         }
         let rows = response
             .data
             .as_ref()
-            .and_then(|d| d.get(collection))
-            .and_then(serde_json::Value::as_array);
-        let Some(rows) = rows else {
-            return Ok(());
-        };
-        let doc_ids: HashSet<String> = rows
-            .iter()
-            .filter_map(|r| r.get("_docID").and_then(|v| v.as_str()).map(str::to_owned))
-            .collect();
-        let count = doc_ids.len();
-        if count >= SEEN_DOCS_SEED_LIMIT {
-            tracing::warn!(
-                source_collection = %collection,
-                seed_count = %count,
-                limit = %SEEN_DOCS_SEED_LIMIT,
-                "event source seeded seen_docs at limit; older pre-existing docs \
-                 beyond the cap may fire as created on their first observed event",
-            );
+            .and_then(|data| data.get(collection))
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("exact {collection} query returned no rows"))?;
+        match rows.as_slice() {
+            [row] if row.get("_docID").and_then(serde_json::Value::as_str) == Some(doc_id) => {
+                Ok(())
+            }
+            rows => anyhow::bail!(
+                "exact {collection} CID {cid} reconstructed {} documents or a different _docID",
+                rows.len()
+            ),
         }
-        self.seen_docs
-            .entry(collection.to_string())
-            .or_default()
-            .extend(doc_ids);
-        Ok(())
     }
 
-    async fn load_doc_ids_for_collection(&self, collection: &str) -> anyhow::Result<Vec<String>> {
-        crate::graphql::validate_collection_identifier(collection)?;
-        let query = format!(
-            r#"query {{ {collection}(limit: {limit}) {{ _docID }} }}"#,
-            collection = collection,
-            limit = SEEN_DOCS_SEED_LIMIT,
-        );
-        let response = self.node.execute(&query).await;
+    async fn load_trigger_ref(
+        &self,
+        trigger: &crate::runtime_snapshot::ResolvedEventTrigger,
+    ) -> anyhow::Result<crate::SignedDocumentVersionRef> {
+        let escaped_trigger_id = crate::graphql::escape_graphql_string(&trigger.trigger_id);
+        let response = execute_with_identity(
+            &self.node,
+            format!(
+                r#"{{ EventTrigger(filter: {{ trigger_id: {{ _eq: "{escaped_trigger_id}" }} }}) {{
+                    _docID trigger_id task_id source_collection event_kind filter enabled concurrency
+                }} }}"#
+            ),
+            self.query_identity()?,
+        )
+        .await;
         if response.has_errors() {
             anyhow::bail!(
-                "event source rescan query for {} failed: {:?}",
-                collection,
+                "loading EventTrigger {} exact candidates: {:?}",
+                trigger.trigger_id,
                 response.errors
             );
         }
-        let rows: Vec<SourceDocIdRow> = response
+        let rows = response
             .data
             .as_ref()
-            .and_then(|data| data.get(collection))
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-            .unwrap_or_default();
-        if rows.len() >= SEEN_DOCS_SEED_LIMIT {
-            tracing::warn!(
-                source_collection = %collection,
-                limit = %SEEN_DOCS_SEED_LIMIT,
-                "event source rescan hit limit; older unseen docs may wait for a later event"
+            .and_then(|data| data.get("EventTrigger"))
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("EventTrigger candidate query returned no rows"))?;
+        let row = match rows.as_slice() {
+            [row] => row,
+            rows => anyhow::bail!(
+                "EventTrigger {} has {} visible logical candidates; refusing event admission",
+                trigger.trigger_id,
+                rows.len()
+            ),
+        };
+        let doc_id = row
+            .get("_docID")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("EventTrigger candidate has no _docID"))?;
+        let matches_snapshot = row
+            .get("task_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == trigger.task_id)
+            && row
+                .get("source_collection")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| value == trigger.source_collection)
+            && row
+                .get("event_kind")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| value == trigger.event_kind)
+            && row
+                .get("concurrency")
+                .and_then(serde_json::Value::as_str)
+                .and_then(crate::runtime_snapshot::ConcurrencyMode::parse)
+                == Some(trigger.concurrency)
+            && row.get("filter").and_then(serde_json::Value::as_str) == trigger.filter.as_deref()
+            && row
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+        if !matches_snapshot {
+            anyhow::bail!(
+                "EventTrigger {} changed after the active runtime snapshot was resolved",
+                trigger.trigger_id
             );
         }
-        Ok(rows.into_iter().map(|row| row.doc_id).collect())
+        self.exact_current_ref("EventTrigger", doc_id).await
     }
 
-    fn is_first_seen(&mut self, collection: &str, doc_id: &str) -> bool {
-        let set = self.seen_docs.entry(collection.to_string()).or_default();
-        set.insert(doc_id.to_string())
+    async fn exact_current_ref_in_txn(
+        &self,
+        handle: &TransactionHandle,
+        collection: &str,
+        doc_id: &str,
+    ) -> anyhow::Result<crate::SignedDocumentVersionRef> {
+        let response = execute_in_txn_with_identity(
+            &self.node,
+            handle,
+            format!(
+                r#"{{ _commits(docID: ["{}"], filter: {{ fieldName: {{ _eq: "_C" }} }}) {{
+                    cid heads {{ cid fieldName }}
+                }} }}"#,
+                crate::graphql::escape_graphql_string(doc_id),
+            ),
+            self.query_identity()?,
+        )
+        .await?;
+        let rows: Vec<TxnCompositeHeadRow> = response
+            .data
+            .as_ref()
+            .and_then(|data| data.get("_commits"))
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+        let nested = rows
+            .iter()
+            .flat_map(|row| row.heads.iter())
+            .filter(|head| head.field_name.as_deref() == Some("_C"))
+            .map(|head| head.cid.as_str())
+            .collect::<HashSet<_>>();
+        let current = rows
+            .iter()
+            .filter(|row| !nested.contains(row.cid.as_str()))
+            .collect::<Vec<_>>();
+        let current = match current.as_slice() {
+            [current] => *current,
+            rows => anyhow::bail!(
+                "transaction snapshot has {} current composite heads for {collection} {doc_id}",
+                rows.len()
+            ),
+        };
+        let signer_did = self.node.verified_block_signer_did(&current.cid).await?;
+        if signer_did.trim().is_empty() {
+            anyhow::bail!("{collection} {doc_id} transaction snapshot has no verified signer");
+        }
+        Ok(crate::SignedDocumentVersionRef::new(
+            crate::DocumentVersionRef::new(doc_id, &current.cid),
+            signer_did,
+        ))
+    }
+
+    async fn create_activation_in_snapshot(
+        &self,
+        trigger: &crate::runtime_snapshot::ResolvedEventTrigger,
+        trigger_source: &crate::SignedDocumentVersionRef,
+        agent_did: &str,
+    ) -> anyhow::Result<(String, String)> {
+        let handle = self.node.runner().begin_txn(false).await.map_err(|error| {
+            anyhow::anyhow!("begin EventSource activation transaction: {error}")
+        })?;
+        let result = self
+            .create_activation_in_snapshot_inner(&handle, trigger, trigger_source, agent_did)
+            .await;
+        match result {
+            Ok(result) => {
+                self.node
+                    .runner()
+                    .commit_txn(&handle)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("commit EventSource activation: {error}"))?;
+                Ok(result)
+            }
+            Err(error) => {
+                if let Err(rollback_error) = self.node.runner().rollback_txn(&handle).await {
+                    tracing::warn!(%rollback_error, "rolling back EventSource activation failed");
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn create_activation_in_snapshot_inner(
+        &self,
+        handle: &TransactionHandle,
+        trigger: &crate::runtime_snapshot::ResolvedEventTrigger,
+        trigger_source: &crate::SignedDocumentVersionRef,
+        agent_did: &str,
+    ) -> anyhow::Result<(String, String)> {
+        let transaction_trigger = self
+            .exact_current_ref_in_txn(handle, "EventTrigger", &trigger_source.version.doc_id)
+            .await?;
+        if &transaction_trigger != trigger_source {
+            anyhow::bail!("EventTrigger changed before activation snapshot was established");
+        }
+
+        let mut sources = Vec::new();
+        let mut offset = 0usize;
+        loop {
+            let response = execute_in_txn_with_identity(
+                &self.node,
+                handle,
+                format!(
+                    r#"{{ {}(order: {{ _docID: ASC }}, limit: {}, offset: {}) {{ _docID }} }}"#,
+                    trigger.source_collection, SEEN_DOCS_PAGE_SIZE, offset,
+                ),
+                self.query_identity()?,
+            )
+            .await?;
+            let rows: Vec<SourceDocIdRow> = response
+                .data
+                .as_ref()
+                .and_then(|data| data.get(&trigger.source_collection))
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()?
+                .unwrap_or_default();
+            let page_len = rows.len();
+            for row in rows {
+                let source = self
+                    .exact_current_ref_in_txn(handle, &trigger.source_collection, &row.doc_id)
+                    .await?;
+                sources.push(BaselineSourceRef {
+                    doc_id: source.version.doc_id,
+                    composite_commit_cid: source.version.composite_commit_cid,
+                    signer_did: source.signer_did,
+                });
+            }
+            if page_len < SEEN_DOCS_PAGE_SIZE {
+                break;
+            }
+            offset += page_len;
+        }
+        sources.sort_by(|left, right| left.doc_id.cmp(&right.doc_id));
+        if sources
+            .windows(2)
+            .any(|pair| pair[0].doc_id == pair[1].doc_id)
+        {
+            anyhow::bail!("activation snapshot contains duplicate source _docIDs");
+        }
+        let manifest = EventActivationManifest {
+            manifest_version: EVENT_ACTIVATION_MANIFEST_VERSION,
+            source_collection: trigger.source_collection.clone(),
+            sources,
+        };
+        let manifest_json =
+            crate::rendered_request::canonical_json_string(&serde_json::to_value(&manifest)?)?;
+        let activation_key = Self::activation_key(
+            &trigger_source.version.doc_id,
+            &trigger_source.version.composite_commit_cid,
+            &trigger.source_collection,
+            &trigger.event_kind,
+        );
+        let mutation = format!(
+            r#"mutation {{ create_EventTriggerActivation(input: {{
+                activation_key: "{}" agent_did: "{}" trigger_id: "{}"
+                trigger_doc_id: "{}" trigger_commit_cid: "{}" trigger_signer_did: "{}"
+                source_collection: "{}" event_kind: "{}" baseline_manifest_version: {}
+                baseline_source_manifest_json: "{}" created_at: "{}"
+            }}) {{ _docID }} }}"#,
+            crate::graphql::escape_graphql_string(&activation_key),
+            crate::graphql::escape_graphql_string(agent_did),
+            crate::graphql::escape_graphql_string(&trigger.trigger_id),
+            crate::graphql::escape_graphql_string(&trigger_source.version.doc_id),
+            crate::graphql::escape_graphql_string(&trigger_source.version.composite_commit_cid),
+            crate::graphql::escape_graphql_string(&trigger_source.signer_did),
+            crate::graphql::escape_graphql_string(&trigger.source_collection),
+            crate::graphql::escape_graphql_string(&trigger.event_kind),
+            EVENT_ACTIVATION_MANIFEST_VERSION,
+            crate::graphql::escape_graphql_string(&manifest_json),
+            crate::graphql::escape_graphql_string(&chrono::Utc::now().to_rfc3339()),
+        );
+        execute_in_txn_with_identity(&self.node, handle, mutation, self.query_identity()?).await?;
+        Ok((activation_key, manifest_json))
+    }
+
+    async fn load_activation_candidates(
+        &self,
+        trigger_doc_id: &str,
+        trigger_commit_cid: &str,
+        source_collection: &str,
+        event_kind: &str,
+    ) -> anyhow::Result<Vec<EventTriggerActivationRow>> {
+        let response = execute_with_identity(
+            &self.node,
+            format!(
+                r#"{{ EventTriggerActivation(filter: {{
+                    trigger_doc_id: {{ _eq: "{}" }},
+                    trigger_commit_cid: {{ _eq: "{}" }},
+                    source_collection: {{ _eq: "{}" }},
+                    event_kind: {{ _eq: "{}" }}
+                }}) {{
+                    _docID activation_key agent_did trigger_id trigger_doc_id
+                    trigger_commit_cid trigger_signer_did source_collection event_kind
+                    baseline_manifest_version baseline_source_manifest_json created_at
+                }} }}"#,
+                crate::graphql::escape_graphql_string(trigger_doc_id),
+                crate::graphql::escape_graphql_string(trigger_commit_cid),
+                crate::graphql::escape_graphql_string(source_collection),
+                crate::graphql::escape_graphql_string(event_kind),
+            ),
+            self.query_identity()?,
+        )
+        .await;
+        if response.has_errors() {
+            anyhow::bail!(
+                "loading EventTriggerActivation candidates: {:?}",
+                response.errors
+            );
+        }
+        response
+            .data
+            .as_ref()
+            .and_then(|data| data.get("EventTriggerActivation"))
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map(|rows| rows.unwrap_or_default())
+            .map_err(Into::into)
+    }
+
+    async fn verify_activation_row(
+        &self,
+        row: EventTriggerActivationRow,
+        expected_agent_did: &str,
+    ) -> anyhow::Result<LoadedActivation> {
+        if row.agent_did != expected_agent_did {
+            anyhow::bail!(
+                "EventTriggerActivation {} belongs to agent {}, expected {expected_agent_did}",
+                row.doc_id,
+                row.agent_did
+            );
+        }
+        let source = self
+            .exact_current_ref("EventTriggerActivation", &row.doc_id)
+            .await?;
+        if source.signer_did != row.agent_did {
+            anyhow::bail!(
+                "EventTriggerActivation {} signer {} does not match agent {}",
+                row.doc_id,
+                source.signer_did,
+                row.agent_did
+            );
+        }
+        self.verify_pinned_ref(
+            "EventTrigger",
+            &row.trigger_doc_id,
+            &row.trigger_commit_cid,
+            &row.trigger_signer_did,
+        )
+        .await?;
+        let manifest: EventActivationManifest =
+            serde_json::from_str(&row.baseline_source_manifest_json)?;
+        if manifest.manifest_version != EVENT_ACTIVATION_MANIFEST_VERSION
+            || row.baseline_manifest_version != EVENT_ACTIVATION_MANIFEST_VERSION
+            || manifest.source_collection != row.source_collection
+        {
+            anyhow::bail!(
+                "EventTriggerActivation {} has invalid manifest metadata",
+                row.doc_id
+            );
+        }
+        let canonical =
+            crate::rendered_request::canonical_json_string(&serde_json::to_value(&manifest)?)?;
+        if canonical != row.baseline_source_manifest_json {
+            anyhow::bail!(
+                "EventTriggerActivation {} manifest is not canonical",
+                row.doc_id
+            );
+        }
+        if manifest
+            .sources
+            .windows(2)
+            .any(|pair| pair[0].doc_id >= pair[1].doc_id)
+        {
+            anyhow::bail!(
+                "EventTriggerActivation {} baseline is not canonical",
+                row.doc_id
+            );
+        }
+        Ok(LoadedActivation {
+            row,
+            source,
+            manifest,
+        })
+    }
+
+    async fn ensure_activation(
+        &self,
+        trigger: &crate::runtime_snapshot::ResolvedEventTrigger,
+        agent_did: &str,
+    ) -> anyhow::Result<LoadedActivation> {
+        let trigger_source = self.load_trigger_ref(trigger).await?;
+        let candidates = self
+            .load_activation_candidates(
+                &trigger_source.version.doc_id,
+                &trigger_source.version.composite_commit_cid,
+                &trigger.source_collection,
+                &trigger.event_kind,
+            )
+            .await?;
+        match candidates.as_slice() {
+            [row] => return self.verify_activation_row(row.clone(), agent_did).await,
+            [] => {}
+            rows => anyhow::bail!(
+                "EventTriggerActivation logical twins for trigger {}: {} visible rows",
+                trigger.trigger_id,
+                rows.len()
+            ),
+        }
+
+        let (activation_key, manifest_json) = self
+            .create_activation_in_snapshot(trigger, &trigger_source, agent_did)
+            .await?;
+        let candidates = self
+            .load_activation_candidates(
+                &trigger_source.version.doc_id,
+                &trigger_source.version.composite_commit_cid,
+                &trigger.source_collection,
+                &trigger.event_kind,
+            )
+            .await?;
+        match candidates.as_slice() {
+            [row]
+                if row.activation_key == activation_key
+                    && row.trigger_commit_cid == trigger_source.version.composite_commit_cid
+                    && row.baseline_source_manifest_json == manifest_json =>
+            {
+                self.verify_activation_row(row.clone(), agent_did).await
+            }
+            rows => anyhow::bail!(
+                "EventTriggerActivation create-and-compare observed {} conflicting rows",
+                rows.len()
+            ),
+        }
+    }
+
+    async fn load_delivery_candidates(
+        &self,
+        trigger_doc_id: &str,
+        source_collection: &str,
+        source_doc_id: &str,
+        event_kind: &str,
+    ) -> anyhow::Result<Vec<EventDeliveryAdmissionRow>> {
+        let response = execute_with_identity(
+            &self.node,
+            format!(
+                r#"{{ EventDeliveryAdmission(filter: {{
+                    trigger_doc_id: {{ _eq: "{}" }},
+                    source_collection: {{ _eq: "{}" }},
+                    source_doc_id: {{ _eq: "{}" }},
+                    event_kind: {{ _eq: "{}" }}
+                }}) {{
+                    _docID delivery_key request_id agent_did trigger_id trigger_doc_id
+                    trigger_commit_cid trigger_signer_did activation_doc_id
+                    activation_commit_cid activation_signer_did source_collection
+                    source_doc_id source_commit_cid source_signer_did event_kind created_at
+                }} }}"#,
+                crate::graphql::escape_graphql_string(trigger_doc_id),
+                crate::graphql::escape_graphql_string(source_collection),
+                crate::graphql::escape_graphql_string(source_doc_id),
+                crate::graphql::escape_graphql_string(event_kind),
+            ),
+            self.query_identity()?,
+        )
+        .await;
+        if response.has_errors() {
+            anyhow::bail!(
+                "loading EventDeliveryAdmission candidates: {:?}",
+                response.errors
+            );
+        }
+        response
+            .data
+            .as_ref()
+            .and_then(|data| data.get("EventDeliveryAdmission"))
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map(|rows| rows.unwrap_or_default())
+            .map_err(Into::into)
+    }
+
+    async fn verify_delivery_row(
+        &self,
+        row: &EventDeliveryAdmissionRow,
+        expected_agent_did: &str,
+    ) -> anyhow::Result<()> {
+        if row.agent_did != expected_agent_did {
+            anyhow::bail!(
+                "EventDeliveryAdmission {} belongs to agent {}, expected {expected_agent_did}",
+                row.doc_id,
+                row.agent_did
+            );
+        }
+        let source = self
+            .exact_current_ref("EventDeliveryAdmission", &row.doc_id)
+            .await?;
+        if source.signer_did != row.agent_did {
+            anyhow::bail!(
+                "EventDeliveryAdmission {} signer {} does not match agent {}",
+                row.doc_id,
+                source.signer_did,
+                row.agent_did
+            );
+        }
+        self.verify_pinned_ref(
+            "EventTrigger",
+            &row.trigger_doc_id,
+            &row.trigger_commit_cid,
+            &row.trigger_signer_did,
+        )
+        .await?;
+        self.verify_pinned_ref(
+            "EventTriggerActivation",
+            &row.activation_doc_id,
+            &row.activation_commit_cid,
+            &row.activation_signer_did,
+        )
+        .await?;
+        self.verify_pinned_ref(
+            &row.source_collection,
+            &row.source_doc_id,
+            &row.source_commit_cid,
+            &row.source_signer_did,
+        )
+        .await
+    }
+
+    async fn request_materialized(&self, request_id: &str) -> anyhow::Result<bool> {
+        let response = execute_with_identity(
+            &self.node,
+            format!(
+                r#"{{ AgentRequest(filter: {{ request_id: {{ _eq: "{}" }} }}) {{ _docID request_id }} }}"#,
+                crate::graphql::escape_graphql_string(request_id),
+            ),
+            self.query_identity()?,
+        )
+        .await;
+        if response.has_errors() {
+            anyhow::bail!("loading deterministic AgentRequest: {:?}", response.errors);
+        }
+        let rows = response
+            .data
+            .as_ref()
+            .and_then(|data| data.get("AgentRequest"))
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("AgentRequest query returned no rows"))?;
+        match rows.as_slice() {
+            [] => Ok(false),
+            [_] => Ok(true),
+            rows => anyhow::bail!(
+                "deterministic request id {request_id} has {} visible logical twins",
+                rows.len()
+            ),
+        }
+    }
+
+    async fn admit_delivery(
+        &self,
+        trigger: &crate::runtime_snapshot::ResolvedEventTrigger,
+        activation: &LoadedActivation,
+        source: &crate::SignedDocumentVersionRef,
+        agent_did: &str,
+        allow_create: bool,
+    ) -> anyhow::Result<Option<DeliveryWork>> {
+        let source_doc_id = source.version.doc_id.as_str();
+        if activation
+            .manifest
+            .sources
+            .iter()
+            .any(|source| source.doc_id == source_doc_id)
+        {
+            return Ok(None);
+        }
+        let candidates = self
+            .load_delivery_candidates(
+                &activation.row.trigger_doc_id,
+                &trigger.source_collection,
+                source_doc_id,
+                &trigger.event_kind,
+            )
+            .await?;
+        match candidates.as_slice() {
+            [row] => {
+                self.verify_delivery_row(row, agent_did).await?;
+                if self.request_materialized(&row.request_id).await? {
+                    return Ok(None);
+                }
+                let current_trigger = self.load_trigger_ref(trigger).await?;
+                if current_trigger.version.composite_commit_cid != row.trigger_commit_cid {
+                    anyhow::bail!(
+                        "pending EventDeliveryAdmission {} pins an older trigger version; refusing to materialize it with changed configuration",
+                        row.doc_id
+                    );
+                }
+                return Ok(Some(DeliveryWork {
+                    request_id: row.request_id.clone(),
+                    source: crate::SignedDocumentVersionRef::new(
+                        crate::DocumentVersionRef::new(&row.source_doc_id, &row.source_commit_cid),
+                        &row.source_signer_did,
+                    ),
+                }));
+            }
+            [] => {}
+            rows => anyhow::bail!(
+                "EventDeliveryAdmission logical twins for trigger {} source {}: {} visible rows",
+                trigger.trigger_id,
+                source_doc_id,
+                rows.len()
+            ),
+        }
+
+        if !allow_create {
+            return Ok(None);
+        }
+
+        let trigger_source = self.load_trigger_ref(trigger).await?;
+        if trigger_source.version.doc_id != activation.row.trigger_doc_id {
+            anyhow::bail!(
+                "EventTrigger {} physical document changed after activation",
+                trigger.trigger_id
+            );
+        }
+        let current_source = self
+            .exact_current_ref(&trigger.source_collection, source_doc_id)
+            .await?;
+        if &current_source != source {
+            anyhow::bail!(
+                "{} {} changed before durable event admission",
+                trigger.source_collection,
+                source_doc_id
+            );
+        }
+        let delivery_key = Self::delivery_key(
+            &trigger_source.version.doc_id,
+            &trigger.source_collection,
+            source_doc_id,
+            &trigger.event_kind,
+        );
+        let request_id = format!("event-delivery:{delivery_key}");
+        let created_at = chrono::Utc::now().to_rfc3339();
+        let mutation = format!(
+            r#"mutation {{ create_EventDeliveryAdmission(input: {{
+                delivery_key: "{}"
+                request_id: "{}"
+                agent_did: "{}"
+                trigger_id: "{}"
+                trigger_doc_id: "{}"
+                trigger_commit_cid: "{}"
+                trigger_signer_did: "{}"
+                activation_doc_id: "{}"
+                activation_commit_cid: "{}"
+                activation_signer_did: "{}"
+                source_collection: "{}"
+                source_doc_id: "{}"
+                source_commit_cid: "{}"
+                source_signer_did: "{}"
+                event_kind: "{}"
+                created_at: "{}"
+            }}) {{ _docID }} }}"#,
+            crate::graphql::escape_graphql_string(&delivery_key),
+            crate::graphql::escape_graphql_string(&request_id),
+            crate::graphql::escape_graphql_string(agent_did),
+            crate::graphql::escape_graphql_string(&trigger.trigger_id),
+            crate::graphql::escape_graphql_string(&trigger_source.version.doc_id),
+            crate::graphql::escape_graphql_string(&trigger_source.version.composite_commit_cid),
+            crate::graphql::escape_graphql_string(&trigger_source.signer_did),
+            crate::graphql::escape_graphql_string(&activation.source.version.doc_id),
+            crate::graphql::escape_graphql_string(&activation.source.version.composite_commit_cid,),
+            crate::graphql::escape_graphql_string(&activation.source.signer_did),
+            crate::graphql::escape_graphql_string(&trigger.source_collection),
+            crate::graphql::escape_graphql_string(source_doc_id),
+            crate::graphql::escape_graphql_string(&source.version.composite_commit_cid),
+            crate::graphql::escape_graphql_string(&source.signer_did),
+            crate::graphql::escape_graphql_string(&trigger.event_kind),
+            crate::graphql::escape_graphql_string(&created_at),
+        );
+        let response = execute_with_identity(&self.node, mutation, self.query_identity()?).await;
+        if response.has_errors() {
+            anyhow::bail!("creating EventDeliveryAdmission: {:?}", response.errors);
+        }
+        let candidates = self
+            .load_delivery_candidates(
+                &trigger_source.version.doc_id,
+                &trigger.source_collection,
+                source_doc_id,
+                &trigger.event_kind,
+            )
+            .await?;
+        match candidates.as_slice() {
+            [row]
+                if row.delivery_key == delivery_key
+                    && row.request_id == request_id
+                    && row.trigger_commit_cid == trigger_source.version.composite_commit_cid
+                    && row.source_commit_cid == source.version.composite_commit_cid =>
+            {
+                self.verify_delivery_row(row, agent_did).await?;
+                Ok(Some(DeliveryWork {
+                    request_id,
+                    source: source.clone(),
+                }))
+            }
+            rows => anyhow::bail!(
+                "EventDeliveryAdmission create-and-compare observed {} conflicting rows",
+                rows.len()
+            ),
+        }
     }
 
     async fn resolve_collection_name(&mut self, collection_id: &str) -> Option<String> {
@@ -419,7 +1277,7 @@ impl EventSource {
     /// rather than validating it, in a different embedding than this one.
     async fn probe_filter(
         &self,
-        source_doc_id: &str,
+        source: &crate::SignedDocumentVersionRef,
         trigger: &crate::runtime_snapshot::ResolvedEventTrigger,
     ) -> anyhow::Result<bool> {
         crate::graphql::validate_collection_identifier(&trigger.source_collection)?;
@@ -434,24 +1292,25 @@ impl EventSource {
         let filter_literal = match user_filter {
             Some(f) => format!(
                 r#"{{ _docID: {{ _eq: "{id}" }}, _and: [ {user_filter} ] }}"#,
-                id = crate::graphql::escape_graphql_string(source_doc_id),
+                id = crate::graphql::escape_graphql_string(&source.version.doc_id),
                 user_filter = f,
             ),
             None => format!(
                 r#"{{ _docID: {{ _eq: "{id}" }} }}"#,
-                id = crate::graphql::escape_graphql_string(source_doc_id),
+                id = crate::graphql::escape_graphql_string(&source.version.doc_id),
             ),
         };
         let query = format!(
             r#"query {{
-                {collection}(filter: {filter_literal}, limit: 1) {{
+                {collection}(cid: ["{cid}"], filter: {filter_literal}, limit: 1) {{
                     _docID
                 }}
             }}"#,
             collection = trigger.source_collection,
+            cid = crate::graphql::escape_graphql_string(&source.version.composite_commit_cid,),
             filter_literal = filter_literal,
         );
-        let response = self.node.execute(&query).await;
+        let response = execute_with_identity(&self.node, query, self.query_identity()?).await;
         if response.has_errors() {
             anyhow::bail!("filter probe errors: {:?}", response.errors);
         }
@@ -466,27 +1325,27 @@ impl EventSource {
     async fn fetch_source_doc(
         &self,
         collection: &str,
-        source_doc_id: &str,
+        source: &crate::SignedDocumentVersionRef,
     ) -> anyhow::Result<serde_json::Value> {
         // `fields_for` validates this same binding and `?`-propagates before
         // the query below is built, so it is the one gate for both sites.
         let fields = self
             .source_schema_cache
-            .fields_for(collection, &self.node)
+            .fields_for(collection, &self.node, self.query_identity()?)
             .await?;
         let projection = fields.join("\n                    ");
         let query = format!(
             r#"query {{
-                {collection}(filter: {{ _docID: {{ _eq: "{id}" }} }}, limit: 1) {{
+                {collection}(cid: ["{cid}"], limit: 1) {{
                     _docID
                     {projection}
                 }}
             }}"#,
             collection = collection,
-            id = crate::graphql::escape_graphql_string(source_doc_id),
+            cid = crate::graphql::escape_graphql_string(&source.version.composite_commit_cid,),
             projection = projection,
         );
-        let response = self.node.execute(&query).await;
+        let response = execute_with_identity(&self.node, query, self.query_identity()?).await;
         if response.has_errors() {
             anyhow::bail!("fetch source doc errors: {:?}", response.errors);
         }
@@ -498,65 +1357,26 @@ impl EventSource {
         else {
             anyhow::bail!(
                 "source doc {} not found in {} (no rows in response)",
-                source_doc_id,
+                source.version.doc_id,
                 collection
             );
         };
         let Some(row) = rows.first() else {
             anyhow::bail!(
                 "source doc {} not found in {} (empty rows)",
-                source_doc_id,
+                source.version.doc_id,
                 collection
             );
         };
+        if row.get("_docID").and_then(serde_json::Value::as_str)
+            != Some(source.version.doc_id.as_str())
+        {
+            anyhow::bail!(
+                "source CID {} reconstructed a different _docID",
+                source.version.composite_commit_cid
+            );
+        }
         Ok(row.clone())
-    }
-
-    pub(super) fn spawn_runtime_field_write(
-        node: Arc<EmbeddedNode>,
-        trigger_id: String,
-        source_doc_id: String,
-        result: crate::trigger_engine::FireResult,
-    ) {
-        tokio::spawn(async move {
-            let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-            let (status, error_value, fire_delta) = match &result {
-                crate::trigger_engine::FireResult::Fired { request_id } => {
-                    tracing::debug!(
-                        trigger_id = %trigger_id,
-                        request_id = %request_id,
-                        "event trigger fire materialized request"
-                    );
-                    ("fired", None, Some(1))
-                }
-                crate::trigger_engine::FireResult::Skipped { reason } => {
-                    ("skipped", Some(reason.clone()), None)
-                }
-                crate::trigger_engine::FireResult::Errored { error } => {
-                    ("error", Some(error.clone()), None)
-                }
-            };
-            let update = crate::document_config::EventTriggerRuntimeUpdate {
-                last_attempt_at: Some(now),
-                last_fired_source_doc_id: Some(source_doc_id),
-                last_status: Some(status.to_string()),
-                last_error: error_value,
-                fire_count_delta: fire_delta,
-            };
-            if let Err(error) = crate::document_config::update_event_trigger_runtime_fields(
-                &node,
-                &trigger_id,
-                update,
-            )
-            .await
-            {
-                tracing::warn!(
-                    trigger_id = %trigger_id,
-                    %error,
-                    "event trigger runtime-field update failed"
-                );
-            }
-        });
     }
 
     /// Build a `FireIntent` for every active `EventTrigger` whose
@@ -591,32 +1411,85 @@ impl EventSource {
         candidates.sort_by(|a, b| a.trigger_id.cmp(&b.trigger_id));
 
         let mut intents = Vec::with_capacity(candidates.len());
+        let author_did = self.node.node_identity_did().unwrap_or_default().to_owned();
         for trigger in candidates {
-            match self.probe_filter(source_doc_id, &trigger).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    tracing::trace!(
-                        trigger_id = %trigger.trigger_id,
-                        source_collection = %collection_name,
-                        %source_doc_id,
-                        "event source: filter miss, skipping this trigger",
-                    );
-                    continue;
-                }
+            let source = match self
+                .exact_current_ref(&trigger.source_collection, source_doc_id)
+                .await
+            {
+                Ok(source) => source,
                 Err(err) => {
                     tracing::warn!(
                         trigger_id = %trigger.trigger_id,
                         source_collection = %collection_name,
                         %source_doc_id,
                         %err,
-                        "event source: filter probe failed; skipping this trigger",
+                        "event source: exact source verification failed",
+                    );
+                    continue;
+                }
+            };
+            let activation = match self.ensure_activation(&trigger, &author_did).await {
+                Ok(activation) => activation,
+                Err(err) => {
+                    tracing::warn!(
+                        trigger_id = %trigger.trigger_id,
+                        source_collection = %collection_name,
+                        %source_doc_id,
+                        %err,
+                        "event source: durable activation is unavailable",
+                    );
+                    continue;
+                }
+            };
+            let current_matches = match self.probe_filter(&source, &trigger).await {
+                Ok(matches) => matches,
+                Err(err) => {
+                    tracing::warn!(
+                        trigger_id = %trigger.trigger_id,
+                        source_collection = %collection_name,
+                        %source_doc_id,
+                        %err,
+                        "event source: current source filter probe failed",
+                    );
+                    false
+                }
+            };
+            let work = match self
+                .admit_delivery(&trigger, &activation, &source, &author_did, current_matches)
+                .await
+            {
+                Ok(Some(work)) => work,
+                Ok(None) => continue,
+                Err(err) => {
+                    tracing::warn!(
+                        trigger_id = %trigger.trigger_id,
+                        source_collection = %collection_name,
+                        %source_doc_id,
+                        %err,
+                        "event source: durable delivery admission rejected",
+                    );
+                    continue;
+                }
+            };
+
+            match self.probe_filter(&work.source, &trigger).await {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(err) => {
+                    tracing::warn!(
+                        trigger_id = %trigger.trigger_id,
+                        source_collection = %collection_name,
+                        %source_doc_id,
+                        %err,
+                        "event source: exact admitted source filter probe failed",
                     );
                     continue;
                 }
             }
 
             let doc_vars = match self
-                .fetch_source_doc(&trigger.source_collection, source_doc_id)
+                .fetch_source_doc(&trigger.source_collection, &work.source)
                 .await
             {
                 Ok(value) => Some(value),
@@ -650,7 +1523,6 @@ impl EventSource {
 
             let trigger_id_for_callback = trigger.trigger_id.clone();
             let source_doc_id_for_callback = source_doc_id.to_string();
-            let node_for_callback = self.node.clone();
 
             intents.push(FireIntent {
                 trigger_id: Some(trigger.trigger_id.clone()),
@@ -661,12 +1533,13 @@ impl EventSource {
                 doc_vars,
                 args_vars: None,
                 pre_materialized_request_id: None,
+                materialization_request_id: Some(work.request_id),
                 on_result: Box::new(move |result| {
-                    EventSource::spawn_runtime_field_write(
-                        node_for_callback,
-                        trigger_id_for_callback,
-                        source_doc_id_for_callback,
-                        result,
+                    tracing::info!(
+                        trigger_id = %trigger_id_for_callback,
+                        source_doc_id = %source_doc_id_for_callback,
+                        result = ?result,
+                        "durably admitted event trigger dispatch completed",
                     );
                 }),
             });
@@ -708,9 +1581,6 @@ impl EventSource {
             };
 
             for doc_id in doc_ids {
-                if !self.is_first_seen(&collection, &doc_id) {
-                    continue;
-                }
                 let intents = self
                     .build_intents_for_all_matching(
                         snapshot.as_ref(),
@@ -786,6 +1656,7 @@ impl TriggerSource for EventSource {
                 // above, so we can take a &mut borrow for the recv poll.
                 let mut message = None;
                 let mut dropped = 0;
+                let mut subscription_closed = false;
                 let rescan_due = {
                     let subscription = self
                         .subscription
@@ -794,13 +1665,13 @@ impl TriggerSource for EventSource {
                     let rescan_due = tokio::select! {
                         biased;
                         _ = self.cancel.cancelled() => return None,
+                        _ = self.rescan_tick.tick() => true,
                         res = self.snapshot_rx.changed() => {
                             if res.is_err() {
                                 return None;
                             }
                             continue;
                         }
-                        _ = self.rescan_tick.tick() => true,
                         msg = subscription.recv() => {
                             match msg {
                                 Some(m) => {
@@ -808,11 +1679,8 @@ impl TriggerSource for EventSource {
                                     false
                                 }
                                 None => {
-                                    tracing::warn!(
-                                        "event source subscription channel closed; \
-                                         source exiting",
-                                    );
-                                    return None;
+                                    subscription_closed = true;
+                                    false
                                 }
                             }
                         }
@@ -822,6 +1690,28 @@ impl TriggerSource for EventSource {
                     }
                     rescan_due
                 };
+                if subscription_closed {
+                    self.subscription = None;
+                    tracing::warn!(
+                        "event source subscription channel closed; reopening after durable rescan",
+                    );
+                    if let Some(intent) = self.rescan_created_docs().await {
+                        return Some(intent);
+                    }
+                    tokio::select! {
+                        biased;
+                        _ = self.cancel.cancelled() => return None,
+                        _ = tokio::time::sleep(UPDATE_SUBSCRIPTION_REOPEN_DELAY) => {}
+                    }
+                    if !self.desired_collections.is_empty() {
+                        self.subscription = Some(self.subscription_source.subscribe_updates());
+                        tracing::info!(
+                            collections = self.desired_collections.len(),
+                            "event source reopened global Update subscription",
+                        );
+                    }
+                    continue;
+                }
                 if rescan_due {
                     if let Some(intent) = self.rescan_created_docs().await {
                         return Some(intent);
@@ -857,15 +1747,6 @@ impl TriggerSource for EventSource {
                 };
 
                 if !self.desired_collections.contains(&collection_name) {
-                    continue;
-                }
-
-                if !self.is_first_seen(&collection_name, &doc_id) {
-                    tracing::debug!(
-                        source_collection = %collection_name,
-                        source_doc_id = %doc_id,
-                        "event source treating non-first-seen event as update; skipping",
-                    );
                     continue;
                 }
 

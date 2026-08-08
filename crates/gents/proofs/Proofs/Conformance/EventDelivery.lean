@@ -1,4 +1,5 @@
 import Proofs.EventDelivery
+import Proofs.EventDelivery.DurableAdmission
 import Proofs.Conformance.ContractTypes
 
 namespace Conformance.EventDelivery
@@ -173,8 +174,21 @@ def subagentSourceTrace : ConvergenceTraceRow :=
   , status := "substantive"
   }
 
+def droppedWakeRecoveryTrace : ConvergenceTraceRow :=
+  { name := "subscription_drop_rescan_handle"
+  , instanceName := "SubagentSource"
+  , initialWorld := mkWorld [doc "doc-lossy"] [doc "doc-lossy"] [] []
+  , actions :=
+      [ .drop (doc "doc-lossy")
+      , .rescanTick
+      , .handle (doc "doc-lossy") ]
+  , finalWorld :=
+      mkWorld [doc "doc-lossy"] [] [doc "doc-lossy"] [doc "doc-lossy"]
+  , status := "substantive"
+  }
+
 def convergenceTraces : List ConvergenceTraceRow :=
-  [ watcherTrace, eventSourceTrace, subagentSourceTrace ]
+  [ watcherTrace, eventSourceTrace, subagentSourceTrace, droppedWakeRecoveryTrace ]
 
 def convergenceTraceCount : Nat := convergenceTraces.length
 
@@ -237,5 +251,143 @@ def convergenceTraceRowJson (r : ConvergenceTraceRow) : String :=
 
 def convergenceTracesJson : String :=
   jsonArray (convergenceTraces.map convergenceTraceRowJson)
+
+/-! Durable EventSource activation/admission witnesses. -/
+
+open _root_.EventDelivery.DurableAdmission
+
+structure DurableAdmissionCase where
+  name : String
+  operation : String
+  disposition : String
+  activationTwins : Nat
+  deliveryTwins : Nat
+  baselineContainsSource : Bool
+  triggerCid : Nat
+  sourceCid : Nat
+  durableActivations : Nat
+  durableDeliveries : Nat
+  deriving Repr
+
+private def exact (docId cid signerDid : Nat) : ExactRef :=
+  { docId, compositeCommitCid := cid, signerDid, signatureValid := true }
+
+private def activationKey : ActivationKey :=
+  { triggerDocId := 10, triggerCommitCid := 2000, sourceCollection := 20, eventKind := 30 }
+
+private def baselineSource := exact 100 1000 7
+private def triggerV1 := exact 10 2000 8
+private def triggerV2 := exact 10 2001 8
+private def activation : ActivationFact :=
+  { key := activationKey, trigger := triggerV1, baseline := [baselineSource] }
+private def activationV2 : ActivationFact :=
+  { key := { activationKey with triggerCommitCid := 2001 }
+  , trigger := triggerV2
+  , baseline := [baselineSource] }
+private def activationRef := exact 50 5000 8
+
+private def deliveryKey (sourceDocId : Nat) : DeliveryKey :=
+  { triggerDocId := 10, sourceCollection := 20, sourceDocId, eventKind := 30 }
+
+private def delivery (source : ExactRef) (trigger := triggerV1) : DeliveryFact :=
+  { key := deliveryKey source.docId, requestId := 9000, activation := activationRef, trigger, source }
+
+private def newSource := exact 101 1001 7
+private def desired := delivery newSource
+
+private def dispositionString : Disposition → String
+  | .activated => "activated"
+  | .baselined => "baselined"
+  | .admitted => "admitted"
+  | .idempotent => "idempotent"
+  | .alreadyDelivered => "already_delivered"
+  | .recoveringRequest => "recovering_request"
+  | .recoveredAdmission => "recovered_admission"
+  | .rejected => "rejected"
+
+private def activationCase
+    (name : String) (twins : Nat) (observation : ActivationObservation) :
+    DurableAdmissionCase :=
+  { name
+  , operation := "activate"
+  , disposition := dispositionString observation.disposition
+  , activationTwins := twins
+  , deliveryTwins := 0
+  , baselineContainsSource := false
+  , triggerCid := activation.trigger.compositeCommitCid
+  , sourceCid := 0
+  , durableActivations := observation.facts.length
+  , durableDeliveries := 0 }
+
+private def deliveryCase
+    (name : String) (deliveryTwins : Nat) (trigger source : ExactRef)
+    (baseline : Bool) (observation : DeliveryObservation) : DurableAdmissionCase :=
+  { name
+  , operation := "admit"
+  , disposition := dispositionString observation.disposition
+  , activationTwins := 1
+  , deliveryTwins
+  , baselineContainsSource := baseline
+  , triggerCid := trigger.compositeCommitCid
+  , sourceCid := source.compositeCommitCid
+  , durableActivations := 1
+  , durableDeliveries := observation.facts.length }
+
+private def unsignedActivation : ActivationFact :=
+  { activation with trigger := { triggerV1 with signatureValid := false } }
+private def changedTriggerDelivery := delivery newSource triggerV2
+private def updatedSourceDelivery := delivery { newSource with compositeCommitCid := 1002 }
+private def unsignedSourceDelivery :=
+  delivery { newSource with signatureValid := false }
+
+def durableAdmissionCases : List DurableAdmissionCase :=
+  [ activationCase "activation_baselines_current_docs" 0
+      (activate [] activation)
+  , activationCase "activation_replay_is_idempotent" 1
+      (activate [activation] activation)
+  , activationCase "activation_twins_fail_closed" 2
+      (activate [activation, { activation with trigger := triggerV2 }] activation)
+  , activationCase "config_edit_gets_new_activation_snapshot" 0
+      (activate [] activationV2)
+  , activationCase "unsigned_activation_rejected" 0
+      (activate [] unsignedActivation)
+  , deliveryCase "baseline_doc_is_not_fired" 0 triggerV1 baselineSource true
+      (admit [activation] [] [] (delivery baselineSource))
+  , deliveryCase "offline_creation_is_admitted_by_rescan" 0 triggerV1 newSource false
+      (admit [activation] [] [] desired)
+  , deliveryCase "dropped_wake_is_admitted_by_rescan" 0 triggerV1 newSource false
+      (admit [activation] [] [] desired)
+  , deliveryCase "exact_delivery_replay_is_idempotent" 1 triggerV1 newSource false
+      (admit [activation] [desired] [desired.requestId] desired)
+  , deliveryCase "same_trigger_doc_config_change_does_not_readmit" 1 triggerV2 newSource false
+      (admit [activation] [desired] [desired.requestId] changedTriggerDelivery)
+  , deliveryCase "source_update_does_not_reclassify_created" 1 triggerV1 newSource false
+      (admit [activation] [desired] [desired.requestId] updatedSourceDelivery)
+  , deliveryCase "delivery_twins_fail_closed" 2 triggerV1 newSource false
+      (admit [activation] [desired, changedTriggerDelivery] [] desired)
+  , deliveryCase "unsigned_source_rejected" 0 triggerV1 newSource false
+      (admit [activation] [] [] unsignedSourceDelivery)
+  , deliveryCase "admission_durable_request_absent_recovers" 1 triggerV1 newSource false
+      (admit [activation] [desired] [] desired)
+  , deliveryCase "request_durable_admission_absent_recovers" 0 triggerV1 newSource false
+      (admit [activation] [] [desired.requestId] desired) ]
+
+def durableAdmissionCaseJson (row : DurableAdmissionCase) : String :=
+  "{"
+    ++ "\"name\":" ++ jsonString row.name ++ ","
+    ++ "\"operation\":" ++ jsonString row.operation ++ ","
+    ++ "\"disposition\":" ++ jsonString row.disposition ++ ","
+    ++ "\"activation_twins\":" ++ toString row.activationTwins ++ ","
+    ++ "\"delivery_twins\":" ++ toString row.deliveryTwins ++ ","
+    ++ "\"baseline_contains_source\":"
+      ++ (if row.baselineContainsSource then "true" else "false") ++ ","
+    ++ "\"trigger_cid\":" ++ toString row.triggerCid ++ ","
+    ++ "\"source_cid\":" ++ toString row.sourceCid ++ ","
+    ++ "\"durable_activations\":" ++ toString row.durableActivations ++ ","
+    ++ "\"durable_deliveries\":" ++ toString row.durableDeliveries
+    ++ "}"
+
+def durableAdmissionCasesJson : String :=
+  jsonArray (durableAdmissionCases.map durableAdmissionCaseJson)
 
 end Conformance.EventDelivery

@@ -63,6 +63,10 @@ pub(crate) async fn enqueue_task_run(args: &ConfigTaskRunArgs) -> Result<TaskRun
     }
 
     let (access, _) = resolve_config_access(args.home.as_deref(), args.graphql.as_deref()).await?;
+    let source_author_did = access
+        .node_identity_did()
+        .await
+        .map_err(|error| anyhow!("task run requires a signed database endpoint: {error}"))?;
 
     let task_query = format!(
         r#"query {{
@@ -160,6 +164,7 @@ pub(crate) async fn enqueue_task_run(args: &ConfigTaskRunArgs) -> Result<TaskRun
         request_id: &request_id,
         session_id: &session_id,
         agent_did: &agent_did,
+        source_author_did: &source_author_did,
         behavior_id: &behavior_id,
         content: &content,
         metadata: metadata.as_deref(),
@@ -221,6 +226,7 @@ struct CreateManualRequestInput<'a> {
     request_id: &'a str,
     session_id: &'a str,
     agent_did: &'a str,
+    source_author_did: &'a str,
     behavior_id: &'a str,
     content: &'a str,
     metadata: Option<&'a str>,
@@ -245,6 +251,7 @@ fn build_create_manual_request_mutation(input: CreateManualRequestInput<'_>) -> 
             create_AgentRequest(input: {{
                 request_id: "{request_id}",
                 agent_did: "{agent_did}",
+                source_author_did: "{source_author_did}",
                 behavior_id: "{behavior_id}",
                 session_id: "{session_id}",
                 retry_parent_request: "",
@@ -264,6 +271,7 @@ fn build_create_manual_request_mutation(input: CreateManualRequestInput<'_>) -> 
         }}"#,
         request_id = escape_graphql_string(input.request_id),
         agent_did = escape_graphql_string(input.agent_did),
+        source_author_did = escape_graphql_string(input.source_author_did),
         behavior_id = escape_graphql_string(input.behavior_id),
         session_id = escape_graphql_string(input.session_id),
         content = escape_graphql_string(input.content),
@@ -333,6 +341,7 @@ mod tests {
             request_id: "req-1",
             session_id: "sess-1",
             agent_did: "did:test:test",
+            source_author_did: "did:test:node",
             behavior_id: "behavior-1",
             content: "hello Amy",
             metadata: None,
@@ -347,6 +356,7 @@ mod tests {
         assert!(mutation.contains("lifecycle_state: \"pending\""));
         assert!(mutation.contains("status: \"pending\""));
         assert!(mutation.contains("content: \"hello Amy\""));
+        assert!(mutation.contains("source_author_did: \"did:test:node\""));
     }
 
     #[test]
@@ -355,6 +365,7 @@ mod tests {
             request_id: "req-1",
             session_id: "sess-1",
             agent_did: "did:test:test",
+            source_author_did: "did:test:node",
             behavior_id: "behavior-1",
             content: "/vuln-scan /work",
             metadata: Some(r#"{"selected_skill_ids":["vuln-scan"]}"#),

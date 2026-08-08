@@ -273,6 +273,39 @@ pub(crate) struct LeanTranscriptCase {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct LeanTranscriptFinalizationCase {
+    pub(crate) name: String,
+    pub(crate) action: String,
+    pub(crate) visible_logical_fact_count: usize,
+    pub(crate) checkpoint_present: bool,
+    pub(crate) fact_present_before: bool,
+    pub(crate) fact_present_after: bool,
+    pub(crate) fact_commit_cid: Option<usize>,
+    pub(crate) checkpoint_payload_hash: Option<usize>,
+    pub(crate) write_payload_hash: usize,
+    pub(crate) fact_payload_hash: Option<usize>,
+    pub(crate) write_signer_did: Option<usize>,
+    pub(crate) write_signature_valid: Option<bool>,
+    pub(crate) write_policy_authorized: Option<bool>,
+    pub(crate) fact_signer_did: Option<usize>,
+    pub(crate) disposition: String,
+    pub(crate) checkpoint_preserved: bool,
+    pub(crate) sibling_isolated: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct LeanTranscriptProviderHistoryCase {
+    pub(crate) name: String,
+    pub(crate) reference_count: usize,
+    pub(crate) visible_conflict_count: usize,
+    pub(crate) accepted: bool,
+    pub(crate) output_count: usize,
+    pub(crate) output_payload_hashes: Vec<usize>,
+    pub(crate) exact_finalized_domain_only: bool,
+    pub(crate) strictly_increasing: bool,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct LeanResponseTransitionCase {
     pub(crate) name: String,
     pub(crate) group: String,

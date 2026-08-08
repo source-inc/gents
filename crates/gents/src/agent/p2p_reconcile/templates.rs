@@ -115,9 +115,11 @@ pub type PairingFilters = BTreeMap<String, FilterPredicate>;
 const CONVERSATION_COLLECTIONS: &[&str] = &[
     "AgentRequest",
     "AgentResponse",
+    "AgentResponseOutcome",
     "AgentMessage",
     "AgentToolCall",
     "AgentToolResult",
+    "AgentToolApproval",
     "AgentSession",
     "AgentConversation",
     "CompactionEntry",
@@ -133,9 +135,11 @@ const CONVERSATION_COLLECTIONS: &[&str] = &[
 const CONVERSATION_TRANSCRIPT_COLLECTIONS: &[&str] = &[
     "AgentRequest",
     "AgentResponse",
+    "AgentResponseOutcome",
     "AgentMessage",
     "AgentToolCall",
     "AgentToolResult",
+    "AgentToolApproval",
     "AgentSession",
     "AgentConversation",
     "CompactionEntry",
@@ -154,6 +158,11 @@ const CONVERSATION_RULES: &[CollectionRule] = &[
         source: DidSource::PeerDid,
     },
     CollectionRule {
+        collection: "AgentResponseOutcome",
+        field: "requester_did",
+        source: DidSource::PeerDid,
+    },
+    CollectionRule {
         collection: "AgentMessage",
         field: "requester_did",
         source: DidSource::PeerDid,
@@ -165,6 +174,11 @@ const CONVERSATION_RULES: &[CollectionRule] = &[
     },
     CollectionRule {
         collection: "AgentToolResult",
+        field: "requester_did",
+        source: DidSource::PeerDid,
+    },
+    CollectionRule {
+        collection: "AgentToolApproval",
         field: "requester_did",
         source: DidSource::PeerDid,
     },
@@ -200,9 +214,11 @@ pub const AGENT_DIRECTORY_COLLECTION: &str = "AgentDirectoryEntry";
 const MACHINE_COLLECTIONS: &[&str] = &[
     "AgentRequest",
     "AgentResponse",
+    "AgentResponseOutcome",
     "AgentMessage",
     "AgentToolCall",
     "AgentToolResult",
+    "AgentToolApproval",
     "AgentSession",
     "AgentConversation",
     "CompactionEntry",
@@ -229,6 +245,11 @@ const MACHINE_RULES: &[CollectionRule] = &[
         source: DidSource::PeerDid,
     },
     CollectionRule {
+        collection: "AgentResponseOutcome",
+        field: "requester_did",
+        source: DidSource::PeerDid,
+    },
+    CollectionRule {
         collection: "AgentMessage",
         field: "requester_did",
         source: DidSource::PeerDid,
@@ -240,6 +261,11 @@ const MACHINE_RULES: &[CollectionRule] = &[
     },
     CollectionRule {
         collection: "AgentToolResult",
+        field: "requester_did",
+        source: DidSource::PeerDid,
+    },
+    CollectionRule {
+        collection: "AgentToolApproval",
         field: "requester_did",
         source: DidSource::PeerDid,
     },
@@ -331,8 +357,10 @@ const SUBAGENT_COORDINATOR_RULES: &[CollectionRule] = &[CollectionRule {
 const SUBAGENT_HOST_COLLECTIONS: &[&str] = &[
     "AgentRequest",
     "AgentResponse",
+    "AgentResponseOutcome",
     "AgentMessage",
     "AgentToolCall",
+    "AgentToolApproval",
 ];
 
 const SUBAGENT_HOST_RULES: &[CollectionRule] = &[
@@ -347,6 +375,11 @@ const SUBAGENT_HOST_RULES: &[CollectionRule] = &[
         source: DidSource::PeerDid,
     },
     CollectionRule {
+        collection: "AgentResponseOutcome",
+        field: "requester_did",
+        source: DidSource::PeerDid,
+    },
+    CollectionRule {
         collection: "AgentMessage",
         field: "requester_did",
         source: DidSource::PeerDid,
@@ -356,6 +389,29 @@ const SUBAGENT_HOST_RULES: &[CollectionRule] = &[
         field: "requester_did",
         source: DidSource::PeerDid,
     },
+    CollectionRule {
+        collection: "AgentToolApproval",
+        field: "requester_did",
+        source: DidSource::PeerDid,
+    },
+];
+
+/// Owner-authored scheduler recovery facts. Replication (rather than push)
+/// backfills immutable admissions to late peers, while the owner-DID filter
+/// prevents these control-plane facts from becoming participant gossip.
+const SCHEDULER_OWNER_COLLECTIONS: &[&str] = &["EventTriggerActivation", "EventDeliveryAdmission"];
+
+const SCHEDULER_OWNER_RULES: &[CollectionRule] = &[
+    CollectionRule {
+        collection: "EventTriggerActivation",
+        field: "agent_did",
+        source: DidSource::LocalDid,
+    },
+    CollectionRule {
+        collection: "EventDeliveryAdmission",
+        field: "agent_did",
+        source: DidSource::LocalDid,
+    },
 ];
 
 pub const NETWORK_CONTROL_TEMPLATE: &str = "network-control";
@@ -363,6 +419,7 @@ pub const SUBAGENT_COORDINATOR_TEMPLATE: &str = "subagent-coordinator";
 pub const SUBAGENT_HOST_TEMPLATE: &str = "subagent-host";
 pub const APP_COLLECTIONS_TEMPLATE: &str = "app-collections";
 pub const MACHINE_TEMPLATE: &str = "machine";
+pub const SCHEDULER_OWNER_TEMPLATE: &str = "scheduler-owner";
 
 static BUILTIN_TEMPLATES: &[ScopeTemplate] = &[
     ScopeTemplate {
@@ -412,6 +469,12 @@ static BUILTIN_TEMPLATES: &[ScopeTemplate] = &[
         collections: SUBAGENT_HOST_COLLECTIONS,
         scope: Scope::PerCollection(SUBAGENT_HOST_RULES),
         delivery: Delivery::Push,
+    },
+    ScopeTemplate {
+        id: SCHEDULER_OWNER_TEMPLATE,
+        collections: SCHEDULER_OWNER_COLLECTIONS,
+        scope: Scope::PerCollection(SCHEDULER_OWNER_RULES),
+        delivery: Delivery::Replicate,
     },
     ScopeTemplate {
         id: APP_COLLECTIONS_TEMPLATE,
@@ -534,7 +597,7 @@ mod tests {
     fn conversation_scope_filters_transcript_by_requester_and_readiness_by_claimant() {
         let t = resolve_template("conversation").unwrap();
         let f = scope_filter(&t.scope, t.collections, "did:key:bob", "did:key:alice");
-        assert_eq!(f.len(), 9);
+        assert_eq!(f.len(), 11);
         let p = f.get("AgentRequest").unwrap();
         assert_eq!(p.field, "requester_did");
         assert_eq!(p.value, "did:key:bob");
@@ -576,8 +639,27 @@ mod tests {
     }
 
     #[test]
-    fn builtin_template_count_is_nine() {
-        assert_eq!(builtin_templates().len(), 9);
+    fn builtin_template_count_is_ten() {
+        assert_eq!(builtin_templates().len(), 10);
+    }
+
+    #[test]
+    fn scheduler_owner_replicates_only_owner_scoped_recovery_facts() {
+        let template = resolve_template(SCHEDULER_OWNER_TEMPLATE).unwrap();
+        assert_eq!(template.delivery, Delivery::Replicate);
+        assert_eq!(template.collections, SCHEDULER_OWNER_COLLECTIONS);
+        let filters = scope_filter(
+            &template.scope,
+            template.collections,
+            "did:key:peer",
+            "did:key:owner",
+        );
+        assert_eq!(filters.len(), 2);
+        for collection in SCHEDULER_OWNER_COLLECTIONS {
+            let filter = filters.get(*collection).expect("owner-scoped filter");
+            assert_eq!(filter.field, "agent_did");
+            assert_eq!(filter.value, "did:key:owner");
+        }
     }
 
     #[test]

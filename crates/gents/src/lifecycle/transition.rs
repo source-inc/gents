@@ -25,6 +25,7 @@ fn request_view_is_terminal(view: &RequestViewRow) -> bool {
 
 impl RequestLifecycle {
     pub async fn record_failure_reason(&mut self, reason: &str) -> Result<()> {
+        self.require_active_execution_provenance("record an execution failure reason")?;
         // Latch before I/O so the subsequent atomic terminal mutation still
         // carries the reason if this best-effort standalone write fails.
         self.failure_reason = Some(reason.to_string());
@@ -60,6 +61,7 @@ impl RequestLifecycle {
 
     pub async fn advance(&mut self) -> Result<()> {
         self.ensure_state(&[LocalLifecycleState::Streaming], "advance")?;
+        self.require_execution_provenance("advance response progress")?;
         let doc_id = self
             .response_doc_id
             .as_ref()
@@ -127,6 +129,7 @@ impl RequestLifecycle {
             &[LocalLifecycleState::Claimed, LocalLifecycleState::Streaming],
             "complete",
         )?;
+        self.require_execution_provenance("complete execution")?;
 
         match self
             .transition_request_status(
@@ -189,6 +192,7 @@ impl RequestLifecycle {
     }
 
     pub async fn transition_to_interrupted(&mut self) -> Result<()> {
+        self.require_active_execution_provenance("interrupt execution")?;
         let doc_id = escape_graphql_string(&self.request.doc_id);
         let agent_did = escape_graphql_string(&self.request.agent_did);
         let active_runtime_states = active_runtime_lifecycle_state_graphql_list();
@@ -266,6 +270,11 @@ impl RequestLifecycle {
             );
             return Ok(());
         }
+        self.ensure_state(
+            &[LocalLifecycleState::Claimed, LocalLifecycleState::Streaming],
+            "fail",
+        )?;
+        self.require_execution_provenance("fail execution")?;
         if crate::interrupt::fetch_interrupt_requested_at(&self.node, &self.request.request_id)
             .await?
             .is_some()
@@ -277,11 +286,6 @@ impl RequestLifecycle {
             self.transition_to_interrupted().await?;
             return Ok(());
         }
-        self.ensure_state(
-            &[LocalLifecycleState::Claimed, LocalLifecycleState::Streaming],
-            "fail",
-        )?;
-
         match self
             .transition_request_status(
                 "processing",

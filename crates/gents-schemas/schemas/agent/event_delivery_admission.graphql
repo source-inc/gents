@@ -1,0 +1,22 @@
+# Immutable admission of one source document to one physical EventTrigger.
+# The logical key intentionally excludes trigger/source CIDs: bookkeeping or
+# later source versions cannot reclassify an already delivered "created"
+# document. Exact CIDs/signers record the versions admitted originally.
+type EventDeliveryAdmission @branchable {
+    delivery_key: String @index @immutable
+    request_id: String @index @immutable
+    agent_did: String @index @immutable
+    trigger_id: String @index @immutable
+    trigger_doc_id: String @index @immutable
+    trigger_commit_cid: String @index @immutable
+    trigger_signer_did: String @index @immutable
+    activation_doc_id: String @index @immutable
+    activation_commit_cid: String @index @immutable
+    activation_signer_did: String @index @immutable
+    source_collection: String @index @immutable
+    source_doc_id: String @index @immutable
+    source_commit_cid: String @index @immutable
+    source_signer_did: String @index @immutable
+    event_kind: String @index @immutable
+    created_at: DateTime @immutable
+}

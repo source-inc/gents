@@ -1,0 +1,16 @@
+# Immutable forward-only activation boundary for one physical EventTrigger.
+# Current source documents captured in baseline_source_manifest_json are never
+# classified as new. Replicated logical twins remain visible and fail closed.
+type EventTriggerActivation @branchable {
+    activation_key: String @index @immutable
+    agent_did: String @index @immutable
+    trigger_id: String @index @immutable
+    trigger_doc_id: String @index @immutable
+    trigger_commit_cid: String @index @immutable
+    trigger_signer_did: String @index @immutable
+    source_collection: String @index @immutable
+    event_kind: String @index @immutable
+    baseline_manifest_version: Int @immutable
+    baseline_source_manifest_json: String @immutable
+    created_at: DateTime @immutable
+}

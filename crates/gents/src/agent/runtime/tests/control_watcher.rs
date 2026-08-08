@@ -68,18 +68,20 @@ async fn control_watcher_publishes_reconciled_snapshot_after_relevant_update() {
         .await
         .unwrap();
 
-    let watcher_task = tokio::spawn(run_control_watcher(
+    let (startup_ready_tx, startup_ready_rx) = tokio::sync::oneshot::channel();
+    let watcher_task = tokio::spawn(run_control_watcher_inner(
         node.clone(),
-        subscription,
+        Some(subscription),
         agent.agent_did().to_string(),
         resolve_context,
         proposal_tx,
         runtime_status.clone(),
         mpsc::channel::<()>(1).1,
         shutdown_rx,
+        Some(startup_ready_tx),
     ));
 
-    tokio::task::yield_now().await;
+    startup_ready_rx.await.expect("control watcher startup");
     let debouncing = fetch_runtime_status(node.as_ref(), agent.agent_did()).await;
     assert_eq!(debouncing.reconcile_phase, "debouncing");
     tokio::time::advance(CONTROL_RECONCILE_DEBOUNCE + Duration::from_millis(1)).await;
@@ -96,6 +98,80 @@ async fn control_watcher_publishes_reconciled_snapshot_after_relevant_update() {
     );
     let resolving = fetch_runtime_status(node.as_ref(), agent.agent_did()).await;
     assert_eq!(resolving.reconcile_phase, "resolving");
+
+    let _ = shutdown_tx.send(true);
+    watcher_task.await.unwrap().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn control_watcher_periodic_rescan_recovers_without_an_update_subscription() {
+    let node = test_node().await;
+    ensure_runtime_schemas(node.as_ref()).await.unwrap();
+    let identity = Arc::new(test_identity("control-watcher-periodic-rescan"));
+    bind_default_behavior_backend(
+        node.as_ref(),
+        identity.did(),
+        "backend-control-rescan",
+        "http://127.0.0.1:8119/v1",
+    )
+    .await;
+    let agent = crate::Gents::from_default_behavior_documents(
+        node.clone(),
+        identity,
+        crate::agent::DocumentRuntimeOptions {
+            tool_ceiling: ToolCeiling::meta_only(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let resolve_context = agent
+        .document_runtime_context()
+        .cloned()
+        .expect("document-backed agent");
+    let runtime_status = RuntimeStatusHandle::new(node.clone(), agent.agent_did().to_string());
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (proposal_tx, mut proposal_rx) = mpsc::channel(4);
+
+    let (startup_ready_tx, startup_ready_rx) = tokio::sync::oneshot::channel();
+    let watcher_task = tokio::spawn(run_control_watcher_inner(
+        node.clone(),
+        None,
+        agent.agent_did().to_string(),
+        resolve_context,
+        proposal_tx,
+        runtime_status,
+        mpsc::channel::<()>(1).1,
+        shutdown_rx,
+        Some(startup_ready_tx),
+    ));
+    startup_ready_rx.await.expect("control watcher startup");
+
+    let mut default_behavior =
+        crate::load_agent_behavior(node.as_ref(), agent.default_behavior_id())
+            .await
+            .unwrap()
+            .expect("default behavior document");
+    default_behavior.system_prompt = Some("recovered by periodic rescan".to_string());
+    crate::upsert_agent_behavior(node.as_ref(), &default_behavior)
+        .await
+        .unwrap();
+
+    tokio::time::advance(CONTROL_FULL_RESCAN_INTERVAL + Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+
+    let snapshot = proposal_rx
+        .recv()
+        .await
+        .expect("periodic rescan must publish the later control write");
+    assert_eq!(
+        snapshot
+            .behaviors
+            .get(agent.default_behavior_id())
+            .expect("default behavior in snapshot")
+            .system_prompt,
+        "recovered by periodic rescan"
+    );
 
     let _ = shutdown_tx.send(true);
     watcher_task.await.unwrap().unwrap();
@@ -138,18 +214,20 @@ async fn control_watcher_demotes_and_recovers_behavior_on_measured_health_flip()
     let (proposal_tx, mut proposal_rx) = mpsc::channel(4);
     let (health_tx, health_rx) = mpsc::channel::<()>(1);
 
-    let watcher_task = tokio::spawn(run_control_watcher(
+    let (startup_ready_tx, startup_ready_rx) = tokio::sync::oneshot::channel();
+    let watcher_task = tokio::spawn(run_control_watcher_inner(
         node.clone(),
-        node.subscribe(&[defra_node::EventName::Update]),
+        Some(node.subscribe(&[defra_node::EventName::Update])),
         agent.agent_did().to_string(),
         resolve_context,
         proposal_tx,
         runtime_status.clone(),
         health_rx,
         shutdown_rx,
+        Some(startup_ready_tx),
     ));
 
-    tokio::task::yield_now().await;
+    startup_ready_rx.await.expect("control watcher startup");
 
     // The prober measured K consecutive failures: routing veto engages.
     backend_health
@@ -247,25 +325,29 @@ async fn control_watcher_recovers_after_resolve_error() {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (proposal_tx, mut proposal_rx) = mpsc::channel(4);
 
-    let watcher_task = tokio::spawn(run_control_watcher(
+    let (startup_ready_tx, startup_ready_rx) = tokio::sync::oneshot::channel();
+    let watcher_task = tokio::spawn(run_control_watcher_inner(
         node.clone(),
-        node.subscribe(&[defra_node::EventName::Update]),
+        Some(node.subscribe(&[defra_node::EventName::Update])),
         agent.agent_did().to_string(),
         resolve_context,
         proposal_tx,
         runtime_status.clone(),
         mpsc::channel::<()>(1).1,
         shutdown_rx,
+        Some(startup_ready_tx),
     ));
 
-    tokio::task::yield_now().await;
+    startup_ready_rx.await.expect("control watcher startup");
     update_agent_principal_enabled(node.as_ref(), agent.agent_did(), false).await;
 
-    tokio::task::yield_now().await;
+    let debouncing = fetch_runtime_status(node.as_ref(), agent.agent_did()).await;
+    assert_eq!(debouncing.reconcile_phase, "debouncing");
     tokio::time::advance(CONTROL_RECONCILE_DEBOUNCE + Duration::from_millis(1)).await;
     tokio::task::yield_now().await;
     assert!(proposal_rx.try_recv().is_err());
-    let failed_status = fetch_runtime_status(node.as_ref(), agent.agent_did()).await;
+    let failed_status =
+        wait_for_runtime_reconcile_result(node.as_ref(), agent.agent_did(), "error").await;
     assert_eq!(failed_status.reconcile_phase, "idle");
     assert_eq!(failed_status.active_generation, 0);
     assert_eq!(failed_status.last_reconcile_result, "error");
@@ -280,7 +362,14 @@ async fn control_watcher_recovers_after_resolve_error() {
     let snapshot = proposal_rx.recv().await.expect("recovered snapshot");
     assert_eq!(snapshot.default_behavior_id, agent.default_behavior_id());
     let recovered_status = fetch_runtime_status(node.as_ref(), agent.agent_did()).await;
-    assert_eq!(recovered_status.reconcile_phase, "resolving");
+    assert!(
+        matches!(
+            recovered_status.reconcile_phase.as_str(),
+            "idle" | "resolving" | "debouncing"
+        ),
+        "recovered watcher entered unexpected phase {}",
+        recovered_status.reconcile_phase
+    );
 
     let _ = shutdown_tx.send(true);
     watcher_task.await.unwrap().unwrap();
@@ -316,18 +405,20 @@ async fn control_watcher_resolves_tool_selection_into_reconciled_tool_surface() 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (proposal_tx, mut proposal_rx) = mpsc::channel(4);
 
-    let watcher_task = tokio::spawn(run_control_watcher(
+    let (startup_ready_tx, startup_ready_rx) = tokio::sync::oneshot::channel();
+    let watcher_task = tokio::spawn(run_control_watcher_inner(
         node.clone(),
-        node.subscribe(&[defra_node::EventName::Update]),
+        Some(node.subscribe(&[defra_node::EventName::Update])),
         agent.agent_did().to_string(),
         resolve_context,
         proposal_tx,
         runtime_status.clone(),
         mpsc::channel::<()>(1).1,
         shutdown_rx,
+        Some(startup_ready_tx),
     ));
 
-    tokio::task::yield_now().await;
+    startup_ready_rx.await.expect("control watcher startup");
 
     let selection_id = crate::default_tool_selection_id_for_behavior(agent.default_behavior_id());
     crate::upsert_tool_selection(

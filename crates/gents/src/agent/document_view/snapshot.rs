@@ -59,6 +59,7 @@ pub(crate) async fn resolve_document_runtime_snapshot_from_view(
     let measured_vetoed = context.backend_health.vetoed_backend_ids().await;
 
     let mut unavailable_behaviors = HashMap::new();
+    let mut behavior_config_provenance = HashMap::new();
     let mut behavior_factories: Vec<
         Box<
             dyn FnOnce(
@@ -92,17 +93,14 @@ pub(crate) async fn resolve_document_runtime_snapshot_from_view(
                 .ok_or_else(|| {
                     anyhow!("behavior {} has no backend binding", behavior.behavior_id)
                 })?;
-            let backend = view
-                .backends
-                .get(backend_id)
-                .map(|record| record.value.clone())
-                .ok_or_else(|| {
-                    anyhow!(
-                        "behavior {} references missing backend {}",
-                        behavior.behavior_id,
-                        backend_id
-                    )
-                })?;
+            let backend_record = view.backends.get(backend_id).ok_or_else(|| {
+                anyhow!(
+                    "behavior {} references missing backend {}",
+                    behavior.behavior_id,
+                    backend_id
+                )
+            })?;
+            let backend = backend_record.value.clone();
             if !backend.is_available() {
                 anyhow::bail!(
                     "behavior {} backend {} is unavailable (enabled={} probe_status={})",
@@ -154,18 +152,16 @@ pub(crate) async fn resolve_document_runtime_snapshot_from_view(
                         behavior.behavior_id
                     )
                 })?;
-            let inference_profile = view
-                .inference_profiles
-                .get(profile_id)
-                .map(|record| record.value.clone())
-                .ok_or_else(|| {
+            let inference_profile_record =
+                view.inference_profiles.get(profile_id).ok_or_else(|| {
                     anyhow!(
                         "behavior {} references missing inference profile {}",
                         behavior.behavior_id,
                         profile_id
                     )
                 })?;
-            let (tool_selection, subagent_tools) = match behavior
+            let inference_profile = inference_profile_record.value.clone();
+            let (tool_selection, subagent_tools, tool_selection_fact) = match behavior
                 .tool_selection_id
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
@@ -177,6 +173,7 @@ pub(crate) async fn resolve_document_runtime_snapshot_from_view(
                         (
                             tool_selection_from_document(&record.value)?,
                             subagent_tool_config_from_document(&record.value),
+                            Some(record.fact.clone()),
                         )
                     }
                     None => anyhow::bail!(
@@ -185,13 +182,33 @@ pub(crate) async fn resolve_document_runtime_snapshot_from_view(
                         selection_id
                     ),
                 },
-                None => (ToolSelection::default(), SubagentToolConfig::default()),
+                None => (
+                    ToolSelection::default(),
+                    SubagentToolConfig::default(),
+                    None,
+                ),
             };
-            Ok((backend, inference_profile, tool_selection, subagent_tools))
+            Ok((
+                backend,
+                inference_profile,
+                tool_selection,
+                subagent_tools,
+                backend_record.fact.clone(),
+                inference_profile_record.fact.clone(),
+                tool_selection_fact,
+            ))
         })();
 
         match resolved_result {
-            Ok((backend, inference_profile, tool_selection, subagent_tools)) => {
+            Ok((
+                backend,
+                inference_profile,
+                tool_selection,
+                subagent_tools,
+                backend_fact,
+                inference_profile_fact,
+                tool_selection_fact,
+            )) => {
                 let behavior_id = behavior.behavior_id.clone();
                 let behavior_value = behavior.clone();
                 let tool_ceiling = context.tool_ceiling.clone();
@@ -204,6 +221,31 @@ pub(crate) async fn resolve_document_runtime_snapshot_from_view(
                 .into_iter()
                 .cloned()
                 .collect::<Vec<crate::skills::Skill>>();
+                let skill_facts = behavior_skills
+                    .iter()
+                    .map(|skill| {
+                        view.skills
+                            .get(&skill.skill_id)
+                            .map(|record| record.fact.clone())
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "effective skill {} has no exact source fact",
+                                    skill.skill_id
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let config_provenance = crate::ResolvedBehaviorConfigProvenance {
+                    principal: view.principal.fact.clone(),
+                    behavior: behavior_record.fact.clone(),
+                    inference_backend: backend_fact,
+                    inference_profile: inference_profile_fact,
+                    tool_selection: tool_selection_fact,
+                    skills: skill_facts,
+                    resolution_algorithm_version: 1,
+                };
+                config_provenance.validate_for_behavior(&behavior_id, &behavior.agent_did)?;
+                behavior_config_provenance.insert(behavior_id.clone(), Arc::new(config_provenance));
                 let factory: Box<
                     dyn FnOnce(
                             Arc<AgentPrincipal>,
@@ -270,6 +312,7 @@ pub(crate) async fn resolve_document_runtime_snapshot_from_view(
         .iter()
         .map(|(behavior, _)| behavior.behavior_id.clone())
         .collect::<HashSet<_>>();
+    behavior_config_provenance.retain(|behavior_id, _| active_behavior_ids.contains(behavior_id));
     let mut behaviors = Vec::with_capacity(behavior_surfaces.len());
     let mut tool_surfaces = HashMap::with_capacity(behavior_surfaces.len());
     for (behavior, mut tool_surface) in behavior_surfaces {
@@ -302,7 +345,7 @@ pub(crate) async fn resolve_document_runtime_snapshot_from_view(
     let active_tasks = resolve_tasks(view, &unavailable_behaviors);
     let paired_peer_dids = load_paired_peer_dids(node, context.identity.did()).await?;
 
-    Ok(ResolvedRuntimeSnapshot::from_parts_with_admission_configs(
+    let snapshot = ResolvedRuntimeSnapshot::from_parts_with_admission_configs(
         default_behavior_id,
         behaviors,
         tool_surfaces,
@@ -314,7 +357,8 @@ pub(crate) async fn resolve_document_runtime_snapshot_from_view(
     .with_paired_peer_dids(paired_peer_dids)
     .with_schedules(active_schedules, unavailable_schedules)
     .with_event_triggers(active_event_triggers, unavailable_event_triggers)
-    .with_tasks(active_tasks))
+    .with_tasks(active_tasks);
+    snapshot.with_reconciled_document_runtime_config_provenance(behavior_config_provenance)
 }
 
 #[derive(Debug, Deserialize)]

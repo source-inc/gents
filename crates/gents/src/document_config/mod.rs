@@ -11,12 +11,13 @@ mod task;
 mod tool_selection;
 
 pub use principal::{load_agent_principal, upsert_agent_principal, AgentPrincipal};
-pub(crate) use principal::{load_agent_principal_by_doc_id, load_agent_principal_record};
+pub(crate) use principal::{load_agent_principal_at_cid, load_agent_principal_by_doc_id};
 
 use behavior::create_default_behavior;
 #[allow(unused_imports)]
 pub(crate) use behavior::{
-    list_agent_behavior_records, load_agent_behavior_by_doc_id, load_agent_behavior_record,
+    list_agent_behavior_records, load_agent_behavior_at_cid, load_agent_behavior_by_doc_id,
+    load_agent_behavior_record,
 };
 pub use behavior::{
     list_agent_behaviors, load_agent_behavior, upsert_agent_behavior, AgentBehavior,
@@ -28,7 +29,7 @@ pub use inference_profile::{
 };
 #[allow(unused_imports)]
 pub(crate) use inference_profile::{
-    load_inference_profile_by_doc_id, load_inference_profile_record,
+    load_inference_profile_at_cid, load_inference_profile_by_doc_id, load_inference_profile_record,
 };
 
 pub use tool_selection::default_tool_selection_id_for_behavior;
@@ -39,14 +40,16 @@ pub use tool_selection::{
 };
 #[allow(unused_imports)]
 pub(crate) use tool_selection::{
-    list_all_tool_selection_records, list_tool_selection_records, load_tool_selection_by_doc_id,
-    load_tool_selection_record,
+    list_all_tool_selection_records, list_tool_selection_records, load_tool_selection_at_cid,
+    load_tool_selection_by_doc_id, load_tool_selection_record,
 };
 
 pub use subagent_target::{subagent_target_entry, SubagentTarget};
 
 #[allow(unused_imports)]
-pub(crate) use skill::{list_skill_records, load_skill_by_doc_id, SkillDocument};
+pub(crate) use skill::{
+    list_skill_records, load_skill_at_cid, load_skill_by_doc_id, SkillDocument,
+};
 
 #[allow(unused_imports)]
 pub(crate) use event_trigger::{

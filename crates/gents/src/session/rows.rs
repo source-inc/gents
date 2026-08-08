@@ -1,14 +1,14 @@
 use super::*;
 
-#[derive(Deserialize)]
-pub(super) struct AgentMessageRow {
-    pub(super) role: String,
-    pub(super) content: String,
-}
-
-#[derive(Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(super) struct CompactionEntryRow {
+    #[serde(rename = "_docID")]
+    pub(super) doc_id: String,
+    pub(super) compaction_key: String,
     pub(super) session_id: String,
+    pub(super) agent_did: String,
+    #[serde(default)]
+    pub(super) requester_did: Option<String>,
     pub(super) sequence: u32,
     pub(super) summary: String,
     pub(super) files_read: String,
@@ -16,7 +16,15 @@ pub(super) struct CompactionEntryRow {
     pub(super) messages_compacted: u32,
     pub(super) original_tokens: usize,
     pub(super) compacted_tokens: usize,
+    pub(super) source_manifest_version: u32,
+    pub(super) source_manifest_json: String,
     pub(super) created_at: String,
+    #[serde(default)]
+    pub(super) fork_source_doc_id: Option<String>,
+    #[serde(default)]
+    pub(super) fork_source_composite_commit_cid: Option<String>,
+    #[serde(default)]
+    pub(super) fork_source_signer_did: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,6 +77,16 @@ impl TryFrom<CompactionEntryRow> for CompactionEntry {
     type Error = anyhow::Error;
 
     fn try_from(row: CompactionEntryRow) -> Result<Self> {
+        let source_manifest: CompactionSourceManifest =
+            serde_json::from_str(&row.source_manifest_json)?;
+        if source_manifest.manifest_version != row.source_manifest_version {
+            anyhow::bail!(
+                "CompactionEntry {} source manifest version column {} disagrees with manifest {}",
+                row.doc_id,
+                row.source_manifest_version,
+                source_manifest.manifest_version
+            );
+        }
         Ok(Self {
             session_id: row.session_id,
             sequence: row.sequence,
@@ -78,6 +96,7 @@ impl TryFrom<CompactionEntryRow> for CompactionEntry {
             messages_compacted: row.messages_compacted,
             original_tokens: row.original_tokens,
             compacted_tokens: row.compacted_tokens,
+            source_manifest,
             created_at: row.created_at,
         })
     }

@@ -30,7 +30,7 @@ use crate::support::snapshots::fetch_request_snapshot;
 use crate::support::streaming_backend::{
     MockStreamingBackend, StreamChunk, StreamPlan, StreamResponse, StreamScript,
 };
-use crate::support::test_db;
+use crate::support::{test_db_with_identity, TestDb};
 
 const CAPTURE_MODEL: &str = "capture-model";
 const CAPTURE_BACKEND_ID: &str = "capture-backend";
@@ -57,7 +57,7 @@ async fn the_persisted_request_json_is_the_body_the_provider_received() {
         vec![StreamScript::completes("capture-me", ["ok"])],
     )
     .expect("mock backend");
-    let db = test_db("rendered-request-capture").await;
+    let db = signed_capture_db("rendered-request-capture").await;
     let agent = boot_capture_agent(&db, "rendered-request-capture", backend.endpoint(), None).await;
 
     let doc_id = create_runtime_request(
@@ -87,6 +87,38 @@ async fn the_persisted_request_json_is_the_body_the_provider_received() {
         "the persisted payload must be the body the provider was posted"
     );
     assert_eq!(row["capture_scope"], "inference.1");
+    assert_eq!(row["request_doc_id"], doc_id);
+    let request_source_commit_cid = row["request_source_commit_cid"]
+        .as_str()
+        .filter(|cid| !cid.is_empty())
+        .expect("document-backed capture must pin its source commit");
+    let request_claim_commit_cid = row["request_claim_commit_cid"]
+        .as_str()
+        .filter(|cid| !cid.is_empty())
+        .expect("document-backed capture must pin its claim commit");
+    assert_eq!(
+        row["request_source_signer_did"].as_str(),
+        Some(agent.agent_did.as_str()),
+        "the source signer column must carry verified authorship"
+    );
+    assert_eq!(
+        row["request_claim_signer_did"].as_str(),
+        Some(agent.agent_did.as_str()),
+        "the claim signer column must carry the target agent's verified DID"
+    );
+    let inference_call_doc_id = row["inference_call_doc_id"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .expect("production capture must pin its running InferenceCall _docID");
+    let inference_call_cid = row["inference_call_composite_commit_cid"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .expect("production capture must pin its running InferenceCall CID");
+    assert_eq!(
+        row["inference_call_signer_did"].as_str(),
+        Some(agent.agent_did.as_str()),
+        "running InferenceCall signer must be cryptographically attributed to the agent"
+    );
     assert_eq!(row["turn_index"], 0);
     assert_eq!(row["attempt"], 0);
     assert_eq!(row["source"], "openai_chat_completions");
@@ -109,6 +141,50 @@ async fn the_persisted_request_json_is_the_body_the_provider_received() {
     assert_eq!(provenance["capture_seam"], "transport_body");
     assert_eq!(provenance["status"], "captured_only");
     assert_eq!(provenance["capture_scope"], "inference.1");
+    assert_eq!(
+        provenance["manifest_version"],
+        gents::rendered_request::PROVENANCE_MANIFEST_VERSION
+    );
+    assert!(
+        provenance.get("request_version").is_none(),
+        "a current manifest must not emit the legacy request_version field: {provenance}"
+    );
+    assert_eq!(
+        provenance["request_provenance"]["source"]["version"]["doc_id"],
+        doc_id
+    );
+    assert_eq!(
+        provenance["request_provenance"]["claim"]["version"]["doc_id"],
+        doc_id
+    );
+    assert_eq!(
+        provenance["inference_call_provenance_scope"],
+        "admitted_provider_call"
+    );
+    assert_eq!(
+        provenance["inference_call_provenance"]["version"]["doc_id"],
+        inference_call_doc_id
+    );
+    assert_eq!(
+        provenance["inference_call_provenance"]["version"]["composite_commit_cid"],
+        inference_call_cid
+    );
+    assert_eq!(
+        provenance["request_provenance"]["source"]["version"]["composite_commit_cid"],
+        request_source_commit_cid
+    );
+    assert_eq!(
+        provenance["request_provenance"]["claim"]["version"]["composite_commit_cid"],
+        request_claim_commit_cid
+    );
+    assert_eq!(
+        provenance["request_provenance"]["source"]["signer_did"],
+        row["request_source_signer_did"]
+    );
+    assert_eq!(
+        provenance["request_provenance"]["claim"]["signer_did"],
+        row["request_claim_signer_did"]
+    );
     assert!(
         provenance["assembly_trace"]
             .get("effective_messages")
@@ -119,6 +195,78 @@ async fn the_persisted_request_json_is_the_body_the_provider_received() {
         provenance["assembly_trace"]["effective_message_count"], 1,
         "the compact trace still validates positional overlays"
     );
+
+    let source_historical = db
+        .node
+        .execute(&format!(
+            r#"query {{
+                AgentRequest(cid: ["{}"]) {{
+                    _docID
+                    source_author_did
+                    content
+                    status
+                    lifecycle_state
+                }}
+            }}"#,
+            escape_graphql_string(request_source_commit_cid),
+        ))
+        .await;
+    assert!(
+        !source_historical.has_errors(),
+        "pinned source time-travel read failed: {:?}",
+        source_historical.errors
+    );
+    let source_historical = source_historical
+        .data
+        .as_ref()
+        .and_then(|data| data.get("AgentRequest"))
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .expect("pinned source snapshot");
+    assert_eq!(source_historical["_docID"], doc_id);
+    assert_eq!(
+        source_historical["source_author_did"], agent.agent_did,
+        "the immutable claimed source author must equal the node signer"
+    );
+    assert_eq!(source_historical["content"], "please capture-me");
+    assert_eq!(source_historical["status"], "pending");
+    assert_eq!(source_historical["lifecycle_state"], "pending");
+
+    let claim_historical = db
+        .node
+        .execute(&format!(
+            r#"query {{
+                AgentRequest(cid: ["{}"]) {{
+                    _docID
+                    source_author_did
+                    content
+                    status
+                    lifecycle_state
+                }}
+            }}"#,
+            escape_graphql_string(request_claim_commit_cid),
+        ))
+        .await;
+    assert!(
+        !claim_historical.has_errors(),
+        "pinned claim time-travel read failed: {:?}",
+        claim_historical.errors
+    );
+    let claim_historical = claim_historical
+        .data
+        .as_ref()
+        .and_then(|data| data.get("AgentRequest"))
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .expect("pinned claim snapshot");
+    assert_eq!(claim_historical["_docID"], doc_id);
+    assert_eq!(
+        claim_historical["source_author_did"], agent.agent_did,
+        "claiming must preserve the source author's immutable DID"
+    );
+    assert_eq!(claim_historical["content"], "please capture-me");
+    assert_eq!(claim_historical["status"], "processing");
+    assert_eq!(claim_historical["lifecycle_state"], "claimed");
 
     agent.shutdown().await;
 }
@@ -137,7 +285,7 @@ async fn a_failing_capture_sink_issues_no_provider_request() {
         vec![StreamScript::completes("must-not-send", ["ok"])],
     )
     .expect("mock backend");
-    let db = test_db("rendered-request-capture-faults").await;
+    let db = signed_capture_db("rendered-request-capture-faults").await;
     let agent = boot_capture_agent(
         &db,
         "rendered-request-capture-faults",
@@ -196,11 +344,12 @@ async fn a_failing_capture_sink_issues_no_provider_request() {
 /// memory and a malformed one degrades to no filter at all.
 #[tokio::test]
 async fn capture_is_idempotent_and_never_rebinds_a_key() {
-    let db = test_db("rendered-request-capture-idempotency").await;
+    let db = signed_capture_db("rendered-request-capture-idempotency").await;
     let sink = gents::rendered_request::DefraRenderedRequestSink::new(
         db.node.clone(),
         "did:key:z6MkCaptureIdempotency",
-    );
+    )
+    .expect("signed rendered-request sink");
 
     let first = rendered_fixture(serde_json::json!({"model": "m", "messages": [{"role": "user"}]}));
     sink.capture(first.clone()).await.expect("first capture");
@@ -240,27 +389,6 @@ async fn capture_is_idempotent_and_never_rebinds_a_key() {
         the content anchor, must be untouched"
     );
 
-    // Same key and provider body, different provenance: still a different
-    // immutable fact. A future reconstructor trusts AssemblyTrace just as much
-    // as request_json, so accepting this as idempotent would make a false
-    // projection look verified.
-    let mut provenance_conflict = first.clone();
-    provenance_conflict.provenance_json["status_reason"] =
-        Value::String("conflicting provenance".to_string());
-    let error = sink
-        .capture(provenance_conflict)
-        .await
-        .expect_err("provenance rebinding must be an integrity error");
-    assert!(
-        error.to_string().contains("integrity violation"),
-        "unexpected error: {error:#}"
-    );
-    assert_eq!(
-        commit_set(db.node.as_ref(), &first.capture_key).await,
-        anchor,
-        "a provenance conflict must not mutate the winning fact"
-    );
-
     // Same key, different canonical value: integrity error, no write.
     let mut conflicting = first.clone();
     conflicting.request_json = serde_json::json!({"model": "m", "messages": []});
@@ -285,6 +413,161 @@ async fn capture_is_idempotent_and_never_rebinds_a_key() {
         anchor,
         "a rejected rebinding must leave no trace in the commit history either"
     );
+}
+
+#[tokio::test]
+async fn capture_rejects_forged_persisted_execution_provenance_without_writing() {
+    let backend = MockStreamingBackend::start(
+        CAPTURE_MODEL,
+        vec![StreamScript::completes("forge-provenance", ["ok"])],
+    )
+    .expect("mock backend");
+    let db = signed_capture_db("rendered-request-forged-provenance").await;
+    let agent = boot_capture_agent(
+        &db,
+        "rendered-request-forged-provenance",
+        backend.endpoint(),
+        None,
+    )
+    .await;
+    let doc_id = create_runtime_request(
+        db.node.as_ref(),
+        &agent.agent_did,
+        CAPTURE_BEHAVIOR_ID,
+        "req-forged-provenance",
+        "session-forged-provenance",
+        "please forge-provenance",
+    )
+    .await;
+    wait_for_request_lifecycle_state(db.node.as_ref(), &doc_id, "completed").await;
+    let rows = wait_for_rendered_requests(db.node.as_ref(), "req-forged-provenance", 1).await;
+    let row = &rows[0];
+
+    let mut forged = rendered_fixture(serde_json::json!({
+        "model": CAPTURE_MODEL,
+        "messages": [{"role": "user", "content": "forged"}]
+    }));
+    forged.request_doc_id = doc_id;
+    forged.request_id = "req-forged-provenance".to_string();
+    forged.session_id = "session-forged-provenance".to_string();
+    forged.agent_did = agent.agent_did.clone();
+    forged.behavior_id = CAPTURE_BEHAVIOR_ID.to_string();
+    forged.requester_did = String::new();
+    forged.request_source_commit_cid = row["request_source_commit_cid"]
+        .as_str()
+        .expect("source CID")
+        .to_string();
+    forged.request_claim_commit_cid = row["request_claim_commit_cid"]
+        .as_str()
+        .expect("claim CID")
+        .to_string();
+    forged.request_source_signer_did = row["request_source_signer_did"]
+        .as_str()
+        .expect("source signer")
+        .to_string();
+    forged.request_claim_signer_did = agent.agent_did.clone();
+    let admitted_provenance = gents::RequestExecutionProvenance {
+        source: gents::SignedDocumentVersionRef {
+            version: gents::DocumentVersionRef {
+                doc_id: forged.request_doc_id.clone(),
+                composite_commit_cid: forged.request_source_commit_cid.clone(),
+            },
+            signer_did: forged.request_source_signer_did.clone(),
+        },
+        claim: gents::SignedDocumentVersionRef {
+            version: gents::DocumentVersionRef {
+                doc_id: forged.request_doc_id.clone(),
+                composite_commit_cid: forged.request_claim_commit_cid.clone(),
+            },
+            signer_did: forged.request_claim_signer_did.clone(),
+        },
+    };
+    forged.provenance_json = serde_json::to_value(
+        gents::rendered_request::ProvenanceManifest::captured_only_with_request_provenance(
+            forged.capture_scope.clone(),
+            None,
+            Some(admitted_provenance),
+            forged.assembly_trace.clone(),
+        ),
+    )
+    .expect("forged manifest");
+
+    let sink =
+        gents::rendered_request::DefraRenderedRequestSink::new(db.node.clone(), &agent.agent_did)
+            .expect("signed rendered-request sink");
+    let mut signer_forged = forged.clone();
+    signer_forged.request_source_signer_did = "did:key:z6MkForgedSourceSigner".to_string();
+    signer_forged.provenance_json["request_provenance"]["source"]["signer_did"] =
+        Value::String(signer_forged.request_source_signer_did.clone());
+    signer_forged.attempt = 41;
+    signer_forged.capture_key = gents::rendered_request::capture_key(
+        &signer_forged.agent_did,
+        &signer_forged.session_id,
+        &signer_forged.request_doc_id,
+        &signer_forged.capture_scope,
+        signer_forged.turn_index,
+        signer_forged.attempt,
+    )
+    .expect("forged signer capture key");
+    let error = sink
+        .capture(signer_forged)
+        .await
+        .expect_err("forged source signer must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("re-verifying rendered-request execution provenance"),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(
+        rendered_requests(db.node.as_ref(), "req-forged-provenance")
+            .await
+            .len(),
+        1,
+        "a rejected forged capture must not create a second row"
+    );
+
+    let mut ancestry_forged = forged;
+    ancestry_forged.request_claim_commit_cid = latest_composite_cid_excluding(
+        db.node.as_ref(),
+        &ancestry_forged.request_doc_id,
+        &[
+            ancestry_forged.request_source_commit_cid.as_str(),
+            ancestry_forged.request_claim_commit_cid.as_str(),
+        ],
+    )
+    .await;
+    ancestry_forged.provenance_json["request_provenance"]["claim"]["version"]
+        ["composite_commit_cid"] = Value::String(ancestry_forged.request_claim_commit_cid.clone());
+    ancestry_forged.attempt = 42;
+    ancestry_forged.capture_key = gents::rendered_request::capture_key(
+        &ancestry_forged.agent_did,
+        &ancestry_forged.session_id,
+        &ancestry_forged.request_doc_id,
+        &ancestry_forged.capture_scope,
+        ancestry_forged.turn_index,
+        ancestry_forged.attempt,
+    )
+    .expect("forged ancestry capture key");
+    let error = sink
+        .capture(ancestry_forged)
+        .await
+        .expect_err("a later signed child cannot replace the exact claim snapshot");
+    assert!(
+        error
+            .to_string()
+            .contains("re-verifying rendered-request execution provenance"),
+        "unexpected ancestry error: {error:#}"
+    );
+    assert_eq!(
+        rendered_requests(db.node.as_ref(), "req-forged-provenance")
+            .await
+            .len(),
+        1,
+        "a rejected ancestry forgery must not create a row"
+    );
+
+    agent.shutdown().await;
 }
 
 /// Two attempts at one turn are two facts, and `attempt` is the only thing that
@@ -328,7 +611,7 @@ async fn a_retried_attempt_is_its_own_durable_fact() {
         )],
     )
     .expect("mock backend");
-    let db = test_db("rendered-request-capture-attempts").await;
+    let db = signed_capture_db("rendered-request-capture-attempts").await;
     let agent = boot_capture_agent(
         &db,
         "rendered-request-capture-attempts",
@@ -417,7 +700,7 @@ async fn a_multi_turn_tool_using_request_captures_every_turn_in_order() {
         )],
     )
     .expect("mock backend");
-    let db = test_db("rendered-request-capture-multi-turn").await;
+    let db = signed_capture_db("rendered-request-capture-multi-turn").await;
     let agent = boot_capture_agent_with(
         &db,
         "rendered-request-capture-multi-turn",
@@ -530,7 +813,7 @@ async fn a_repaired_attempt_is_a_second_fact_with_a_different_canonical_request(
         )],
     )
     .expect("mock backend");
-    let db = test_db("rendered-request-capture-repair").await;
+    let db = signed_capture_db("rendered-request-capture-repair").await;
     let agent = boot_capture_agent_with(
         &db,
         "rendered-request-capture-repair",
@@ -684,7 +967,7 @@ async fn per_turn_compaction_is_captured_and_governs_later_turns() {
         )],
     )
     .expect("mock backend");
-    let db = test_db("rendered-request-capture-compaction").await;
+    let db = signed_capture_db("rendered-request-capture-compaction").await;
     let agent = boot_capture_agent_with(
         &db,
         "rendered-request-capture-compaction",
@@ -867,7 +1150,7 @@ async fn model_backed_compaction_is_captured_like_every_other_provider_call() {
     )
     .expect("mock backend");
 
-    let db = test_db("rendered-request-capture-summarizer").await;
+    let db = signed_capture_db("rendered-request-capture-summarizer").await;
     let agent = boot_capture_agent_with(
         &db,
         "rendered-request-capture-summarizer",
@@ -1124,7 +1407,10 @@ fn parse_json(value: &Value) -> Value {
 fn rendered_fixture(request_json: Value) -> RenderedCompletionRequest {
     let agent_did = "did:key:z6MkCaptureIdempotency".to_string();
     let session_id = "session-idem".to_string();
-    let request_doc_id = "bae-request-idem".to_string();
+    // This fixture exercises capture-key idempotence independently of the
+    // document-backed provenance gate. One-shot captures intentionally carry
+    // no AgentRequest evidence.
+    let request_doc_id = String::new();
     let request_id = "req-idem".to_string();
     let capture_scope = "inference.1".to_string();
     let assembly_trace = gents::rendered_request::AssemblyTrace::from_effective_messages(
@@ -1143,6 +1429,13 @@ fn rendered_fixture(request_json: Value) -> RenderedCompletionRequest {
         .expect("capture key"),
         capture_version: gents::rendered_request::CAPTURE_VERSION,
         request_doc_id,
+        request_source_commit_cid: String::new(),
+        request_source_signer_did: String::new(),
+        request_claim_commit_cid: String::new(),
+        request_claim_signer_did: String::new(),
+        inference_call_doc_id: String::new(),
+        inference_call_composite_commit_cid: String::new(),
+        inference_call_signer_did: String::new(),
         request_id,
         capture_scope: capture_scope.clone(),
         turn_index: 0,
@@ -1161,8 +1454,9 @@ fn rendered_fixture(request_json: Value) -> RenderedCompletionRequest {
         prompt_hash: "0".repeat(64),
         tools_hash: "0".repeat(64),
         provenance_json: serde_json::to_value(
-            gents::rendered_request::ProvenanceManifest::captured_only(
+            gents::rendered_request::ProvenanceManifest::captured_only_with_request_provenance(
                 capture_scope,
+                None,
                 None,
                 assembly_trace.clone(),
             ),
@@ -1204,6 +1498,13 @@ async fn rendered_requests(node: &EmbeddedNode, request_id: &str) -> Vec<Value> 
             RenderedRequest(filter: {{ request_id: {{ _eq: "{request_id}" }} }}) {{
                 capture_key
                 request_doc_id
+                request_source_commit_cid
+                request_source_signer_did
+                request_claim_commit_cid
+                request_claim_signer_did
+                inference_call_doc_id
+                inference_call_composite_commit_cid
+                inference_call_signer_did
                 request_id
                 session_id
                 agent_did
@@ -1255,6 +1556,40 @@ async fn rendered_requests(node: &EmbeddedNode, request_id: &str) -> Vec<Value> 
 /// is applied in memory and a malformed one degrades to no filter at all, which
 /// would make a filtered assertion pass for the wrong reason. The field names
 /// come back and are checked in Rust instead.
+async fn latest_composite_cid_excluding(
+    node: &EmbeddedNode,
+    request_doc_id: &str,
+    excluded: &[&str],
+) -> String {
+    let query = format!(
+        r#"query {{
+            _commits(
+                docID: ["{}"],
+                filter: {{ fieldName: {{ _eq: "_C" }} }}
+            ) {{ cid height }}
+        }}"#,
+        escape_graphql_string(request_doc_id),
+    );
+    let response = node.execute(&query).await;
+    assert!(
+        !response.has_errors(),
+        "AgentRequest composite commit query failed: {:?}",
+        response.errors
+    );
+    let mut commits = response
+        .data
+        .and_then(|data| data.get("_commits").cloned())
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    commits.sort_by_key(|row| row["height"].as_i64().unwrap_or_default());
+    commits
+        .into_iter()
+        .rev()
+        .filter_map(|row| row["cid"].as_str().map(ToOwned::to_owned))
+        .find(|cid| !excluded.contains(&cid.as_str()))
+        .expect("completed request must have a later composite commit than its exact claim")
+}
+
 async fn commit_set(node: &EmbeddedNode, capture_key: &str) -> Vec<(String, String)> {
     let doc_id_query = format!(
         r#"query {{
@@ -1356,6 +1691,11 @@ async fn wait_for_rendered_requests(
     }
 }
 
+async fn signed_capture_db(test_name: &str) -> TestDb {
+    let identity: Arc<dyn AgentIdentity> = Arc::new(test_identity(test_name));
+    test_db_with_identity(test_name, identity).await
+}
+
 async fn boot_capture_agent(
     db: &crate::support::TestDb,
     test_name: &str,
@@ -1378,7 +1718,14 @@ async fn boot_capture_agent_with(
     customize: impl FnOnce(BehaviorBuilder) -> BehaviorBuilder,
 ) -> BootedAgent {
     upsert_capture_backend(db.node.as_ref(), endpoint).await;
-    let identity: Arc<dyn AgentIdentity> = Arc::new(test_identity(test_name));
+    let identity = db.node_identity().unwrap_or_else(|| {
+        panic!("{test_name}: rendered-request capture requires a signed TestDb")
+    });
+    assert_eq!(
+        db.node.node_identity_did(),
+        Some(identity.did()),
+        "{test_name}: TestDb identity must configure the embedded node signer"
+    );
     let mut builder = Gents::builder()
         .node(db.node.clone())
         .identity(identity)

@@ -91,7 +91,7 @@ async fn cancel_subagent_cancels_bridge_active_descendants_and_owned_queue() {
         agent_did.clone(),
     );
     descendant_bridge.start_running().await.unwrap();
-    let _grandchild_session_id = create_subagent_request_with_request_id(
+    let _grandchild_session_id = create_subagent_request_with_request_id_for_test(
         db.node.as_ref(),
         grandchild_request_id.to_string(),
         child_request_id.clone(),

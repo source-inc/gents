@@ -18,14 +18,20 @@
 //! regression here is a regression in the engine's materialization surface
 //! regardless of which concrete materializer is wired in.
 
+use std::sync::Arc;
+
 use gents::graphql::escape_graphql_string;
 use gents::lifecycle::{ExecutionOrigin, RequestLifecycle, TriggerLineage};
+use gents::AgentIdentity;
 
-use crate::support::{test_db, AGENT_DID, AGENT_NAME, BACKEND_ID, DEADLINE_SECS};
+use crate::support::fixtures::test_identity;
+use crate::support::{test_db_with_identity, AGENT_NAME, BACKEND_ID, DEADLINE_SECS};
 
 #[tokio::test]
 async fn scheduled_fire_persists_trigger_lineage_on_agent_request() {
-    let db = test_db("trigger-engine-e2e-lineage").await;
+    let identity: Arc<dyn AgentIdentity> = Arc::new(test_identity("trigger-engine-e2e-lineage"));
+    let agent_did = identity.did().to_string();
+    let db = test_db_with_identity("trigger-engine-e2e-lineage", identity).await;
 
     let lineage = TriggerLineage {
         trigger_id: Some("sched-e2e".to_string()),
@@ -35,7 +41,7 @@ async fn scheduled_fire_persists_trigger_lineage_on_agent_request() {
     let lifecycle = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "rendered prompt from trigger engine",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -91,5 +97,9 @@ async fn scheduled_fire_persists_trigger_lineage_on_agent_request() {
         row.get("lifecycle_state").and_then(|v| v.as_str()),
         Some("claimed"),
         "materialize_claimed_with_execution_binding should persist lifecycle_state=claimed: {row}"
+    );
+    assert!(
+        lifecycle.execution_provenance().is_some(),
+        "materialization must return the cryptographically verified source/claim chain"
     );
 }

@@ -331,7 +331,7 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
     baseline_entry!(
         gents_protocol::schemas::INFERENCE_CALL_NAME,
         gents_protocol::schemas::INFERENCE_CALL,
-        "bafyreiba6ptexjit4udtq2xfcxyre4ph2zezyexn5vg2nycnzaefpexaju"
+        "bafyreic7lu3rc5xtbsysvqx2nk3fzsutubkn7gw34d5jdkefeshpulip5q"
     ),
     baseline_entry!(
         gents_protocol::schemas::AGENT_CONVERSATION_NAME,
@@ -341,17 +341,22 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
     baseline_entry!(
         gents_protocol::schemas::AGENT_REQUEST_NAME,
         gents_protocol::schemas::AGENT_REQUEST,
-        "bafyreidm25txacrwuypexjpvvxqyekewsw352ftqjohsf267cvlsklxu4y"
+        "bafyreifob26o3gn2tokke5mznpuqh2p6fyp34qcfuai6rc54tgelachqye"
     ),
     baseline_entry!(
         gents_protocol::schemas::AGENT_RESPONSE_NAME,
         gents_protocol::schemas::AGENT_RESPONSE,
-        "bafyreihihn632s6qtxj62hgcjgc2l2qy5ebim3ehmwbtbejc7ey7ux4qzi"
+        "bafyreifxg2qvw5lexb75muxjzsdkkoptzpx33jawmosnwwasgxrezi4hau"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::AGENT_RESPONSE_OUTCOME_NAME,
+        gents_protocol::schemas::AGENT_RESPONSE_OUTCOME,
+        "bafyreifosr4zpbfmozhozm6xddhigex6fxo326wpptav22eij2yqlcigfi"
     ),
     baseline_entry!(
         gents_protocol::schemas::AGENT_TOOL_RESULT_NAME,
         gents_protocol::schemas::AGENT_TOOL_RESULT,
-        "bafyreibyv44zzio5tdatrh2bxp35i6jrdli5zpszxdtysovqnd5smesxku"
+        "bafyreibxcb6tjjdtywyzgxw52xzwgq74k44wr3dsys6bfqkkkdglqyh2oa"
     ),
     baseline_entry!(
         gents_protocol::schemas::AGENT_SESSION_NAME,
@@ -364,29 +369,34 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
         "bafyreig5hlyzlujmegnnlww6tjt6krquzuq2ltgh2pjqwwzxzjbognuguu"
     ),
     baseline_entry!(
+        gents_protocol::schemas::AGENT_MESSAGE_DRAFT_NAME,
+        gents_protocol::schemas::AGENT_MESSAGE_DRAFT,
+        "bafyreiewzlktmetmk7hmzillayqdsen4wmhgljlhrlfqaky5uzr23ctrie"
+    ),
+    baseline_entry!(
         gents_protocol::schemas::AGENT_MESSAGE_NAME,
         gents_protocol::schemas::AGENT_MESSAGE,
-        "bafyreiemjtuletwxi5p2jvgplanfyzne6pu7a3knkn4n4dbx6kmgxytfre"
+        "bafyreialupfkre4eztd5aftruwbi2xkyllh2kbyjgqwr3s4po6y44o6ney"
     ),
     baseline_entry!(
         gents_protocol::schemas::AGENT_TOOL_CALL_NAME,
         gents_protocol::schemas::AGENT_TOOL_CALL,
-        "bafyreihjkmrocfh7zk5wl5hloawnerbalu6d5e7ovx5kod4kcb7yopbsui"
+        "bafyreign5kpn5eoxab3gddceao24cimgblmzdi2okvn7kpirjjj465h5om"
     ),
     baseline_entry!(
         gents_protocol::schemas::AGENT_TOOL_APPROVAL_NAME,
         gents_protocol::schemas::AGENT_TOOL_APPROVAL,
-        "bafyreic6razxeyhpi4re5nshdxtih63in7ostxn2uoqdoet2k7yl4a54cm"
+        "bafyreianyd3uqbs636ozwnktbxma6wg5aduwwpy2rsoclwhqxpr5mwqyaq"
     ),
     baseline_entry!(
         gents_protocol::schemas::COMPACTION_ENTRY_NAME,
         gents_protocol::schemas::COMPACTION_ENTRY,
-        "bafyreiczxjv6ah2blpjdz7jxtwzue4rvjzwkefuds4gukibexhddam4j5y"
+        "bafyreigfqimneimniqbh2wwoo6bf2wrapxgyydveamsgft4a2u6swsts2i"
     ),
     baseline_entry!(
         gents_protocol::schemas::RENDERED_REQUEST_NAME,
         gents_protocol::schemas::RENDERED_REQUEST,
-        "bafyreidvnuaxv3up5nyrjpjq75tqbjagbd2slczmqu53vudojewrsl5ofu"
+        "bafyreiafnswefe55s6woto2o6mkvtorbeypcvgepbjsold4aio7535ogqe"
     ),
     baseline_entry!(
         gents_protocol::schemas::PROJECTION_ACP_BINDING_NAME,
@@ -407,6 +417,16 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
         gents_protocol::schemas::EVENT_TRIGGER_NAME,
         gents_protocol::schemas::EVENT_TRIGGER,
         "bafyreih4b54rbekqry2nwymuppgil7v2ldmxirim5upv7nbjkvxjhihnwi"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::EVENT_TRIGGER_ACTIVATION_NAME,
+        gents_protocol::schemas::EVENT_TRIGGER_ACTIVATION,
+        "bafyreigrsjubjod7mcv2xkso55yscaezdvkbvnfggw6qpkn4ns22zh7sse"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::EVENT_DELIVERY_ADMISSION_NAME,
+        gents_protocol::schemas::EVENT_DELIVERY_ADMISSION,
+        "bafyreieoa5lnqx23mirtmytjf56x4i4psrft6vligkir2lsqdiqtjlcyhe"
     ),
     baseline_entry!(
         gents_protocol::schemas::TOOL_SERVICE_REGISTRY_NAME,

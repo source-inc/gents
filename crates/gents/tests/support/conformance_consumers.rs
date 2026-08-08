@@ -119,6 +119,13 @@ pub fn registered_conformance_consumers() -> &'static [ConformanceConsumer] {
             function: "generated_inference_slot_accounting_cases_drive_db_backed_reconstruction",
         },
         ConformanceConsumer::RustTest {
+            id: "conformance::generated_inference_call_exact_target_cases_drive_fenced_updates",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance.rs",
+            module_path: "conformance",
+            function: "generated_inference_call_exact_target_cases_drive_fenced_updates",
+        },
+        ConformanceConsumer::RustTest {
             id: "admission::tests::rust_inference_call_state_vocabulary_matches_lean_model",
             package: "gents",
             source_path: "crates/gents/src/admission/tests.rs",
@@ -596,6 +603,13 @@ pub fn registered_conformance_consumers() -> &'static [ConformanceConsumer] {
             function: "generated_transcript_cases_drive_agent_message_ordering_contract",
         },
         ConformanceConsumer::RustTest {
+            id: "conformance::generated_transcript_finalization_and_provider_history_cases_pin_split_contract",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance.rs",
+            module_path: "conformance",
+            function: "generated_transcript_finalization_and_provider_history_cases_pin_split_contract",
+        },
+        ConformanceConsumer::RustTest {
             id: "conformance::generated_streaming_response_cases_pin_lifecycle_contract",
             package: "gents",
             source_path: "crates/gents/tests/conformance.rs",
@@ -650,6 +664,20 @@ pub fn registered_conformance_consumers() -> &'static [ConformanceConsumer] {
             source_path: "crates/gents/tests/conformance/rendered_capture.rs",
             module_path: "conformance::rendered_capture",
             function: "generated_rendered_capture_key_cases_pin_the_capture_key_tuple",
+        },
+        ConformanceConsumer::RustTest {
+            id: "conformance::request_ingest::generated_request_ingest_cases_fence_provenance_invariants",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/request_ingest.rs",
+            module_path: "conformance::request_ingest",
+            function: "generated_request_ingest_cases_fence_provenance_invariants",
+        },
+        ConformanceConsumer::RustTest {
+            id: "conformance::subagent_source::generated_bridge_admission_cases_require_signed_exact_parent_evidence",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/subagent_source.rs",
+            module_path: "conformance::subagent_source",
+            function: "generated_bridge_admission_cases_require_signed_exact_parent_evidence",
         },
         ConformanceConsumer::RustTest {
             id: "agent::loop_stream::tests::generated_layer_cases_pin_the_assembled_request_order",

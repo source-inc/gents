@@ -103,9 +103,11 @@ theorem conversation_filter_eq (peerDid localDid : Did) :
     scopeFilter (.perCollection conversationRules) [] peerDid localDid
       = [ { collection := "AgentRequest",      field := "requester_did", value := peerDid }
         , { collection := "AgentResponse",     field := "requester_did", value := peerDid }
+        , { collection := "AgentResponseOutcome", field := "requester_did", value := peerDid }
         , { collection := "AgentMessage",      field := "requester_did", value := peerDid }
         , { collection := "AgentToolCall",     field := "requester_did", value := peerDid }
         , { collection := "AgentToolResult",   field := "requester_did", value := peerDid }
+        , { collection := "AgentToolApproval", field := "requester_did", value := peerDid }
         , { collection := "AgentSession",      field := "requester_did", value := peerDid }
         , { collection := "AgentConversation", field := "requester_did", value := peerDid }
         , { collection := "CompactionEntry",   field := "requester_did", value := peerDid }
@@ -184,9 +186,22 @@ theorem subagentHost_filter_eq (peerDid localDid : Did) :
     scopeFilter (.perCollection subagentHostRules) [] peerDid localDid
       = [ { collection := "AgentRequest",      field := "requester_did", value := peerDid }
         , { collection := "AgentResponse",     field := "requester_did", value := peerDid }
+        , { collection := "AgentResponseOutcome", field := "requester_did", value := peerDid }
         , { collection := "AgentMessage",      field := "requester_did", value := peerDid }
-        , { collection := "AgentToolCall",     field := "requester_did", value := peerDid } ] := by
+        , { collection := "AgentToolCall",     field := "requester_did", value := peerDid }
+        , { collection := "AgentToolApproval", field := "requester_did", value := peerDid } ] := by
   simp [scopeFilter, subagentHostRules, subagentHostCollections]
+
+theorem schedulerOwner_filter_eq (peerDid localDid : Did) :
+    scopeFilter (.perCollection schedulerOwnerRules) [] peerDid localDid
+      = [ { collection := "EventTriggerActivation", field := "agent_did", value := localDid }
+        , { collection := "EventDeliveryAdmission", field := "agent_did", value := localDid } ] := by
+  simp [scopeFilter, schedulerOwnerRules]
+
+theorem schedulerOwner_is_owner_scoped_replicate :
+    schedulerOwnerTemplate.delivery = .replicate
+      ∧ schedulerOwnerTemplate.scope = .perCollection schedulerOwnerRules := by
+  simp [schedulerOwnerTemplate]
 
 theorem subagentHost_filters_requester_lineage (peerDid localDid : Did) :
     (scopeFilter subagentHostTemplate.scope [] peerDid localDid).all

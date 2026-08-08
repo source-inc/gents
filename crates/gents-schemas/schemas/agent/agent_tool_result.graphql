@@ -1,13 +1,21 @@
 type AgentToolResult @branchable {
+    result_key: String @index(unique: true) @immutable
+    tool_call_key: String @index @immutable
+    tool_call_doc_id: String @index @immutable
+    tool_call_composite_commit_cid: String @immutable
+    tool_call_signer_did: String @immutable
     agent_did: String @index @immutable
     requester_did: String @index @immutable
-    session_id: String @index
-    tool_name: String @index
-    tool_input: String
-    output_text: String
-    truncated: Boolean
-    truncation_metadata: String
-    conversation_doc_id: String
-    created_at: String @index
-    discarded_because_interrupted: Boolean  # NEW: true if result never reached the model
+    session_id: String @index @immutable
+    tool_name: String @index @immutable
+    tool_input: String @immutable
+    output_text: String @immutable
+    model_output_truncated: Boolean @immutable
+    truncation_metadata: String @immutable
+    conversation_doc_id: String @immutable
+    created_at: String @index @immutable
+    discarded_because_interrupted: Boolean @immutable
+    fork_source_doc_id: String @index @immutable
+    fork_source_composite_commit_cid: String @immutable
+    fork_source_signer_did: String @immutable
 }

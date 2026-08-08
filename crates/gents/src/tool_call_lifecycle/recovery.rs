@@ -7,21 +7,26 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use defra_node::EmbeddedNode;
+use defra_node::{EmbeddedNode, ExecuteRetryPolicy, QueryRequest};
+use identity::Did;
 use serde::Deserialize;
 
 use crate::background_completion::ensure_background_subagent_completion_side_effects;
 use crate::background_tools::{
     child_request_completed, fail_running_subagent_tool_call, load_parent_subagent_authorization,
-    project_child_terminal, subagent_spawn_denial, subagent_tool_not_allowed_payload,
+    project_child_terminal, render_assistant_message_text, subagent_spawn_denial,
+    subagent_tool_not_allowed_payload,
 };
 use crate::graphql::{escape_graphql_string, response_has_documents};
 use crate::interrupt::interrupt_request;
 use crate::session::execute_mutation_with_retry;
 
 use super::{
-    subagent_request::create_subagent_request_with_request_id, AwaitMode, CancelCause,
-    CancelPolicy, ChildTerminal, FailureClass, ToolCallState,
+    subagent_request::{
+        create_subagent_request_with_request_id, verify_current_bridge_admission,
+        BridgeAdmissionSnapshot,
+    },
+    AwaitMode, CancelCause, CancelPolicy, ChildTerminal, FailureClass, ToolCallState,
 };
 
 #[derive(Debug, Default)]
@@ -116,6 +121,25 @@ struct RunningToolCallRow {
     spawn_target_did: Option<String>,
     #[serde(default)]
     unclaimed_deadline_at: Option<String>,
+}
+
+impl RunningToolCallRow {
+    fn bridge_admission_snapshot(&self) -> BridgeAdmissionSnapshot {
+        BridgeAdmissionSnapshot {
+            request_id: self.request_id.clone(),
+            agent_did: self.agent_did.clone(),
+            tool_call_id: self.tool_call_id.clone(),
+            tool_name: self.tool_name.clone(),
+            args: self.args.clone(),
+            lifecycle_state: self.lifecycle_state.clone(),
+            deadline_at: self.deadline_at.clone(),
+            await_mode: self.await_mode.clone(),
+            cancel_policy: self.cancel_policy.clone(),
+            child_request_id: self.child_request_id.clone(),
+            spawn_target_did: self.spawn_target_did.clone(),
+            unclaimed_deadline_at: self.unclaimed_deadline_at.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -725,6 +749,44 @@ async fn recover_orphan_subagent_children(node: &EmbeddedNode, agent_did: &str) 
         {
             continue;
         }
+
+        let bridge_admission = match verify_current_bridge_admission(
+            node,
+            &row.doc_id,
+            &row.bridge_admission_snapshot(),
+        )
+        .await
+        {
+            Ok(admission) if admission.signer_did == agent_did => admission,
+            Ok(admission) => {
+                let error = anyhow::anyhow!(
+                    "bridge signer {} does not match recovering agent {agent_did}",
+                    admission.signer_did
+                );
+                tracing::warn!(
+                    doc_id = %row.doc_id,
+                    tool_call_id = %row.tool_call_id,
+                    %error,
+                    "cannot materialize orphan subagent child from foreign-signed bridge"
+                );
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    doc_id = %row.doc_id,
+                    tool_call_id = %row.tool_call_id,
+                    %error,
+                    "cannot materialize orphan subagent child without exact signed bridge admission"
+                );
+                continue;
+            }
+        };
+        tracing::debug!(
+            doc_id = %row.doc_id,
+            bridge_commit_cid = %bridge_admission.composite_commit_cid,
+            bridge_signer_did = %bridge_admission.signer_did,
+            "verified orphan subagent bridge admission"
+        );
 
         let parent_request_id = match row
             .request_id
@@ -1966,40 +2028,75 @@ async fn load_child_completion_result(
     child_request_id: &str,
 ) -> Result<Option<String>> {
     #[derive(Deserialize)]
-    struct ResponseRow {
-        content: Option<String>,
+    struct ChildIdentityRow {
+        #[serde(rename = "_docID")]
+        doc_id: String,
+        request_id: String,
+        session_id: String,
+        agent_did: String,
     }
 
     let escaped_child_request_id = escape_graphql_string(child_request_id);
     let query = format!(
         r#"{{
-            AgentResponse(
-                filter: {{ request_id: {{ _eq: "{escaped_child_request_id}" }} }},
-                order: {{ created_at: DESC }},
-                limit: 1
+            AgentRequest(
+                filter: {{ request_id: {{ _eq: "{escaped_child_request_id}" }} }}
             ) {{
-                content
+                _docID
+                request_id
+                session_id
+                agent_did
             }}
         }}"#
     );
-    let response = node.execute(&query).await;
+    let reader_did = node.node_identity_did().ok_or_else(|| {
+        anyhow::anyhow!("child completion recovery requires a DefraDB query identity")
+    })?;
+    let identity = Did::new(reader_did).context("parsing child completion reader DID")?;
+    let response = node
+        .execute_request_with_retry(
+            QueryRequest::new(query).with_identity(Some(identity)),
+            ExecuteRetryPolicy::default(),
+        )
+        .await;
     if response.has_errors() {
         anyhow::bail!(
-            "query child AgentResponse {child_request_id} for bridge recovery failed: {:?}",
+            "query child AgentRequest {child_request_id} identity for bridge recovery failed: {:?}",
             response.errors
         );
     }
-    let rows: Vec<ResponseRow> = response
+    let rows: Vec<ChildIdentityRow> = response
         .data
         .as_ref()
-        .and_then(|data| data.get("AgentResponse"))
+        .and_then(|data| data.get("AgentRequest"))
         .and_then(|value| serde_json::from_value(value.clone()).ok())
         .unwrap_or_default();
-    Ok(rows
-        .into_iter()
-        .next()
-        .and_then(|row| row.content)
-        .filter(|content| !content.trim().is_empty()))
+    let child = match rows.as_slice() {
+        [] => return Ok(None),
+        [child] => child,
+        rows => anyhow::bail!(
+            "child AgentRequest {child_request_id} resolved to {} physical documents during bridge recovery",
+            rows.len()
+        ),
+    };
+    let Some(message) = crate::response_outcome::load_verified_complete_response_message(
+        node,
+        &child.agent_did,
+        &child.doc_id,
+        &child.request_id,
+        &child.session_id,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    tracing::debug!(
+        child_request_doc_id = %child.doc_id,
+        final_message_doc_id = %message.fact.doc_id,
+        final_message_composite_commit_cid = %message.fact.composite_commit_cid,
+        "recovered bridge from verified immutable child completion"
+    );
+    Ok(Some(render_assistant_message_text(&message.content)?))
 }
 
 async fn recover_bridge_completed_row(

@@ -2,5 +2,6 @@ import Proofs.InferenceCall.State
 import Proofs.InferenceCall.Transition
 import Proofs.InferenceCall.Executable
 import Proofs.InferenceCall.Properties
+import Proofs.InferenceCall.ExactTarget
 import Proofs.InferenceCall.SlotAccounting
 import Proofs.InferenceCall.ControllerBookkeeping

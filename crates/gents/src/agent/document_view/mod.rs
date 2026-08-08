@@ -18,6 +18,29 @@ use crate::document_config::{
 #[derive(Debug, Clone)]
 pub(crate) struct DocumentRecord<T> {
     pub(crate) doc_id: String,
+    pub(crate) fact: crate::ConfigFactRef,
+    pub(crate) value: T,
+}
+
+impl<T> DocumentRecord<T> {
+    fn from_verified_fact(fact: crate::ConfigFactRef, value: T) -> anyhow::Result<Self> {
+        let doc_id = fact.source.version.doc_id.clone();
+        if doc_id.trim().is_empty() {
+            anyhow::bail!("verified configuration document has an empty _docID");
+        }
+        Ok(Self {
+            doc_id,
+            fact,
+            value,
+        })
+    }
+}
+
+/// Documents that participate in runtime operation but not provider
+/// configuration provenance in this slice.
+#[derive(Debug, Clone)]
+pub(crate) struct UnversionedDocumentRecord<T> {
+    pub(crate) doc_id: String,
     pub(crate) value: T,
 }
 
@@ -29,10 +52,10 @@ pub(crate) struct DocumentRuntimeView {
     pub(crate) tool_selections: HashMap<String, DocumentRecord<ToolSelectionDocument>>,
     pub(crate) inference_profiles: HashMap<String, DocumentRecord<InferenceProfile>>,
     pub(crate) backends: HashMap<String, DocumentRecord<InferenceBackend>>,
-    pub(crate) oauth_credentials: HashMap<String, DocumentRecord<OAuthCredential>>,
-    pub(crate) tasks: HashMap<String, DocumentRecord<Task>>,
-    pub(crate) schedules: HashMap<String, DocumentRecord<Schedule>>,
-    pub(crate) event_triggers: HashMap<String, DocumentRecord<EventTrigger>>,
+    pub(crate) oauth_credentials: HashMap<String, UnversionedDocumentRecord<OAuthCredential>>,
+    pub(crate) tasks: HashMap<String, UnversionedDocumentRecord<Task>>,
+    pub(crate) schedules: HashMap<String, UnversionedDocumentRecord<Schedule>>,
+    pub(crate) event_triggers: HashMap<String, UnversionedDocumentRecord<EventTrigger>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,46 +108,12 @@ impl DocumentRuntimeView {
             .any(|record| record.doc_id == doc_id)
     }
 
-    fn remove_behavior_by_doc_id(&mut self, doc_id: &str) -> bool {
-        let key = self.behaviors.iter().find_map(|(behavior_id, record)| {
-            (record.doc_id == doc_id).then_some(behavior_id.clone())
-        });
-        key.is_some_and(|behavior_id| self.behaviors.remove(&behavior_id).is_some())
-    }
-
-    fn remove_tool_selection_by_doc_id(&mut self, doc_id: &str) -> bool {
-        let key = self
-            .tool_selections
-            .iter()
-            .find_map(|(selection_id, record)| {
-                (record.doc_id == doc_id).then_some(selection_id.clone())
-            });
-        key.is_some_and(|selection_id| self.tool_selections.remove(&selection_id).is_some())
-    }
-
     fn remove_skill_by_doc_id(&mut self, doc_id: &str) -> bool {
         let key = self
             .skills
             .iter()
             .find_map(|(skill_id, record)| (record.doc_id == doc_id).then_some(skill_id.clone()));
         key.is_some_and(|skill_id| self.skills.remove(&skill_id).is_some())
-    }
-
-    fn remove_inference_profile_by_doc_id(&mut self, doc_id: &str) -> bool {
-        let key = self
-            .inference_profiles
-            .iter()
-            .find_map(|(profile_id, record)| {
-                (record.doc_id == doc_id).then_some(profile_id.clone())
-            });
-        key.is_some_and(|profile_id| self.inference_profiles.remove(&profile_id).is_some())
-    }
-
-    fn remove_backend_by_doc_id(&mut self, doc_id: &str) -> bool {
-        let key = self.backends.iter().find_map(|(backend_id, record)| {
-            (record.doc_id == doc_id).then_some(backend_id.clone())
-        });
-        key.is_some_and(|backend_id| self.backends.remove(&backend_id).is_some())
     }
 
     fn has_oauth_credential_doc_id(&self, doc_id: &str) -> bool {

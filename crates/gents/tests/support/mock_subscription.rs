@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use events::{Bus, ChannelBus, EventName, Message, Subscription, Update};
@@ -8,7 +8,7 @@ use tokio::sync::Notify;
 
 #[derive(Clone)]
 pub struct MockUpdateSubscriptionSource {
-    bus: Arc<ChannelBus>,
+    bus: Arc<RwLock<Arc<ChannelBus>>>,
     subscriber_count: Arc<AtomicUsize>,
     subscriber_notify: Arc<Notify>,
 }
@@ -16,7 +16,7 @@ pub struct MockUpdateSubscriptionSource {
 impl MockUpdateSubscriptionSource {
     pub fn new() -> Self {
         Self {
-            bus: Arc::new(ChannelBus::new()),
+            bus: Arc::new(RwLock::new(Arc::new(ChannelBus::new()))),
             subscriber_count: Arc::new(AtomicUsize::new(0)),
             subscriber_notify: Arc::new(Notify::new()),
         }
@@ -29,7 +29,24 @@ impl MockUpdateSubscriptionSource {
         let cid = defra_core::block::generate_cid_from_bytes(&block)
             .expect("synthetic update block bytes must produce a CID");
         let update = Update::new(doc_id, cid, collection_id, block, false, true);
-        self.bus.publish(Message::update(update));
+        self.bus
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .publish(Message::update(update));
+    }
+
+    /// Close the bus backing existing subscriptions and replace it with a live
+    /// bus for deterministic subscription-recovery tests.
+    pub fn close_and_replace_bus(&self) {
+        let replacement = Arc::new(ChannelBus::new());
+        let previous = {
+            let mut bus = self
+                .bus
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::replace(&mut *bus, replacement)
+        };
+        previous.close();
     }
 
     pub async fn wait_for_subscribers(&self, expected: usize, timeout: Duration) -> bool {
@@ -60,7 +77,11 @@ impl Default for MockUpdateSubscriptionSource {
 
 impl UpdateSubscriptionSource for MockUpdateSubscriptionSource {
     fn subscribe_updates(&self) -> Subscription {
-        let subscription = self.bus.subscribe(&[EventName::Update]);
+        let subscription = self
+            .bus
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .subscribe(&[EventName::Update]);
         self.subscriber_count.fetch_add(1, Ordering::SeqCst);
         self.subscriber_notify.notify_waiters();
         subscription

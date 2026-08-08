@@ -3,17 +3,16 @@
 # a send is legal only after the matching (capture_key, canonical request) is
 # durable, and one capture key names at most one canonical request.
 #
-# `@branchable` is deliberate and irreversible. DefraDB rejects every patch that
-# flips `is_branchable`, and a populated collection cannot be dropped and
-# recreated, so the property is chosen here or never. It is NOT what produces
+# `@branchable` is deliberate and immutable for this collection version.
+# DefraDB rejects every patch that flips `is_branchable`; changing it therefore
+# requires an explicit successor or destructive reset. It is NOT what produces
 # the content address for `request_json`: per-field and composite commit blocks
 # are written unconditionally, and `is_branchable` gates only the extra
-# collection-level block. It is taken because it is the sole precondition for
-# two capabilities this fact record will want and could not acquire later —
-# DefraDB's branchable collection sync, which is a newly paired peer's only bulk
-# backfill path and rejects non-branchable collections outright, and
-# collection-scoped ACP read decisions, which are the enforcement surface #840's
-# participant boundary needs once defradb.rs#1318 lands.
+# collection-level block. It is taken for two capabilities this fact record may
+# need and could not acquire in place: peer-initiated branchable collection
+# catch-up, which rejects non-branchable collections, and collection-scoped ACP
+# decisions. Ordinary replicator creation can also push existing documents from
+# non-branchable collections, so branchability is not the only backfill path.
 #
 # There is deliberately no `request_hash` column. A stored digest is
 # self-attested: the same writer chooses both the bytes and the digest over
@@ -21,7 +20,9 @@
 # Integrity comes from the DefraDB field commit CID for `request_json`, which is
 # computed over the block that was actually stored and replicates with it.
 #
-# No `@policy` and no encryption directives. ACP is blocked on defradb.rs#1318
+# No `@policy` and no encryption directives. A policy cannot be added to this
+# collection version later; it will require a successor collection. Runtime
+# installation is also blocked on defradb.rs#1318
 # (`EmbeddedNode` exposes no policy or relationship API), and a policy id that
 # is never installed deploys cleanly while leaving rows anonymously readable.
 # `encrypt: true` protects replicated CRDT block deltas only — the local node
@@ -39,6 +40,24 @@ type RenderedRequest @branchable {
     # provenance edge; request_id below remains the logical/user-facing id.
     # Empty only for one-shot runs, which do not author an AgentRequest.
     request_doc_id: String @index @immutable
+    # Composite commit CID and cryptographically verified signer DID of the
+    # sole AgentRequest source head admitted before claim. These name the
+    # immutable authored input; requester_did remains attribution, not proof.
+    # Empty only for a one-shot run.
+    request_source_commit_cid: String @immutable
+    request_source_signer_did: String @index @immutable
+    # Composite commit CID and cryptographically verified signer DID of the
+    # target-agent claim snapshot the runtime consumed. The claim commit has
+    # exactly request_source_commit_cid as its sole composite parent.
+    request_claim_commit_cid: String @immutable
+    request_claim_signer_did: String @index @immutable
+    # Exact signed running InferenceCall snapshot whose admission permit
+    # authorized this provider send. These are empty only for explicit test or
+    # static fixtures; every production send, including one-shot, fails closed
+    # before the transport when this evidence is unavailable.
+    inference_call_doc_id: String @index @immutable
+    inference_call_composite_commit_cid: String @immutable
+    inference_call_signer_did: String @index @immutable
     request_id: String @index @immutable
     session_id: String @index @immutable
     agent_did: String @index @immutable

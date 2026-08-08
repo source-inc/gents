@@ -6,3 +6,4 @@ import Proofs.Compaction.Transition
 import Proofs.Compaction.Properties
 import Proofs.Compaction.Summarize
 import Proofs.Compaction.Executable
+import Proofs.Compaction.SourceManifest

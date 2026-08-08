@@ -3,17 +3,19 @@ mod support;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use gents::defra_node::EmbeddedNode;
 use gents::graphql::escape_graphql_string;
 use gents::{
-    ensure_runtime_schemas, AgentIdentity, DocumentRuntimeOptions, Gents, ProcessLifecycleObserver,
-    ProcessLifecycleState, ToolCeiling,
+    AgentIdentity, DocumentRuntimeOptions, Gents, ProcessLifecycleObserver, ProcessLifecycleState,
+    ToolCeiling,
 };
 use serde_json::Value;
 use tokio::sync::watch;
 
-use support::fixtures::{bind_default_behavior_backend, test_behavior, test_identity};
+use support::fixtures::{
+    bind_default_behavior_backend, test_behavior_for_principal, test_identity, test_principal_for,
+};
 use support::mock_endpoint::MockModelEndpoint;
+use support::test_db_with_identity;
 use support::waits::wait_for_runtime_process_state;
 
 #[derive(Default)]
@@ -69,9 +71,9 @@ async fn run_agent_uses_backend_specific_api_key_env_var_for_startup_probe() -> 
     }
 
     let _env_guard = ENV_VAR_LOCK.lock().await;
-    let node = Arc::new(EmbeddedNode::builder().build().await?);
-    ensure_runtime_schemas(node.as_ref()).await?;
     let identity = Arc::new(test_identity("startup-probe-backend-auth"));
+    let db = test_db_with_identity("startup-probe-backend-auth", identity.clone()).await;
+    let node = db.node.clone();
     let mock_endpoint =
         MockModelEndpoint::start_with_required_bearer("default", Some("backend-key"))?;
     bind_default_behavior_backend(
@@ -136,13 +138,17 @@ async fn run_agent_uses_backend_specific_api_key_env_var_for_startup_probe() -> 
 async fn openrouter_oneshot_uses_provider_request_preferences() -> Result<()> {
     use gents::BackendProviderKind;
 
-    let node = Arc::new(EmbeddedNode::builder().build().await?);
-    ensure_runtime_schemas(node.as_ref()).await?;
+    let identity = Arc::new(test_identity("openrouter-oneshot-provider-preferences"));
+    let db =
+        test_db_with_identity("openrouter-oneshot-provider-preferences", identity.clone()).await;
+    let node = db.node.clone();
     let mock_endpoint = MockModelEndpoint::start_with_required_bearer(
         "openai/gpt-4o-mini",
         Some("openrouter-key"),
     )?;
-    let mut behavior = test_behavior("openrouter-oneshot", "backend-openrouter", None);
+    let principal = test_principal_for(identity, "openrouter-oneshot");
+    let mut behavior = test_behavior_for_principal("openrouter-oneshot", principal);
+    behavior.backend_id = Some("backend-openrouter".to_string());
     behavior.backend_provider_kind = BackendProviderKind::OpenRouter;
     behavior.backend_endpoint = mock_endpoint.endpoint().to_string();
     behavior.backend_api_key = Some("openrouter-key".to_string());

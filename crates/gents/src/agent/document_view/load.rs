@@ -1,33 +1,201 @@
 use anyhow::{anyhow, Result};
 use defra_node::EmbeddedNode;
 
-use crate::backend_registry::list_backend_records;
+use crate::backend_registry::lookup_backend_at_cid;
 use crate::document_config::{
-    ensure_agent_principal, list_agent_behavior_records, list_all_tool_selection_records,
-    list_event_trigger_records, list_inference_profile_records, list_schedule_records,
-    list_skill_records, list_task_records, list_tool_selection_records, load_tool_selection_record,
-    ToolSelectionDocument,
+    ensure_agent_principal, list_all_tool_selection_records, list_event_trigger_records,
+    list_schedule_records, list_task_records, load_agent_behavior_at_cid,
+    load_agent_principal_at_cid, load_inference_profile_at_cid, load_skill_at_cid,
+    load_tool_selection_at_cid, load_tool_selection_record, AgentBehavior, AgentPrincipal,
+    InferenceProfile, SkillDocument, ToolSelectionDocument,
 };
 
-use super::{DocumentRecord, DocumentRuntimeView};
+use super::{DocumentRecord, DocumentRuntimeView, UnversionedDocumentRecord};
+
+fn exact_record<T>(
+    collection: &str,
+    logical_id: String,
+    expected_doc_id: &str,
+    source: crate::SignedDocumentVersionRef,
+    snapshot: Option<(String, T)>,
+) -> Result<DocumentRecord<T>> {
+    let (snapshot_doc_id, value) = snapshot.ok_or_else(|| {
+        anyhow!(
+            "{} composite commit {} did not reconstruct document {expected_doc_id}",
+            collection,
+            source.version.composite_commit_cid
+        )
+    })?;
+    if snapshot_doc_id != expected_doc_id || source.version.doc_id != expected_doc_id {
+        anyhow::bail!(
+            "{} composite commit {} reconstructed document {}, expected {expected_doc_id}",
+            collection,
+            source.version.composite_commit_cid,
+            snapshot_doc_id
+        );
+    }
+    if logical_id.trim().is_empty() {
+        anyhow::bail!("{collection} {expected_doc_id} has an empty logical id");
+    }
+    DocumentRecord::from_verified_fact(
+        crate::ConfigFactRef::new(collection, logical_id, source),
+        value,
+    )
+}
+
+pub(super) async fn load_verified_principal_by_doc_id(
+    node: &EmbeddedNode,
+    doc_id: &str,
+) -> Result<DocumentRecord<AgentPrincipal>> {
+    let source = crate::document_version::verified_current_signed_document_version(
+        node,
+        "AgentPrincipal",
+        doc_id,
+    )
+    .await?;
+    let snapshot = load_agent_principal_at_cid(node, &source.version.composite_commit_cid).await?;
+    let logical_id = snapshot
+        .as_ref()
+        .map(|(_, value)| value.agent_did.clone())
+        .unwrap_or_default();
+    exact_record("AgentPrincipal", logical_id, doc_id, source, snapshot)
+}
+
+pub(super) async fn load_verified_behavior_by_doc_id(
+    node: &EmbeddedNode,
+    doc_id: &str,
+) -> Result<DocumentRecord<AgentBehavior>> {
+    let source = crate::document_version::verified_current_signed_document_version(
+        node,
+        "AgentBehavior",
+        doc_id,
+    )
+    .await?;
+    let snapshot = load_agent_behavior_at_cid(node, &source.version.composite_commit_cid).await?;
+    let logical_id = snapshot
+        .as_ref()
+        .map(|(_, value)| value.behavior_id.clone())
+        .unwrap_or_default();
+    exact_record("AgentBehavior", logical_id, doc_id, source, snapshot)
+}
+
+pub(super) async fn load_verified_tool_selection_by_doc_id(
+    node: &EmbeddedNode,
+    doc_id: &str,
+) -> Result<DocumentRecord<ToolSelectionDocument>> {
+    let source = crate::document_version::verified_current_signed_document_version(
+        node,
+        "ToolSelection",
+        doc_id,
+    )
+    .await?;
+    let snapshot = load_tool_selection_at_cid(node, &source.version.composite_commit_cid).await?;
+    let logical_id = snapshot
+        .as_ref()
+        .map(|(_, value)| value.selection_id.clone())
+        .unwrap_or_default();
+    exact_record("ToolSelection", logical_id, doc_id, source, snapshot)
+}
+
+pub(super) async fn load_verified_profile_by_doc_id(
+    node: &EmbeddedNode,
+    doc_id: &str,
+) -> Result<DocumentRecord<InferenceProfile>> {
+    let source = crate::document_version::verified_current_signed_document_version(
+        node,
+        "InferenceProfile",
+        doc_id,
+    )
+    .await?;
+    let snapshot =
+        load_inference_profile_at_cid(node, &source.version.composite_commit_cid).await?;
+    let logical_id = snapshot
+        .as_ref()
+        .map(|(_, value)| value.profile_id.clone())
+        .unwrap_or_default();
+    exact_record("InferenceProfile", logical_id, doc_id, source, snapshot)
+}
+
+pub(super) async fn load_verified_backend_by_doc_id(
+    node: &EmbeddedNode,
+    doc_id: &str,
+) -> Result<DocumentRecord<crate::backend_registry::InferenceBackend>> {
+    let source = crate::document_version::verified_current_signed_document_version(
+        node,
+        "InferenceBackend",
+        doc_id,
+    )
+    .await?;
+    let snapshot = lookup_backend_at_cid(node, &source.version.composite_commit_cid).await?;
+    let logical_id = snapshot
+        .as_ref()
+        .map(|(_, value)| value.backend_id.clone())
+        .unwrap_or_default();
+    exact_record("InferenceBackend", logical_id, doc_id, source, snapshot)
+}
+
+pub(super) async fn load_verified_skill_by_doc_id(
+    node: &EmbeddedNode,
+    doc_id: &str,
+) -> Result<DocumentRecord<SkillDocument>> {
+    let source =
+        crate::document_version::verified_current_signed_document_version(node, "Skill", doc_id)
+            .await?;
+    let snapshot = load_skill_at_cid(node, &source.version.composite_commit_cid).await?;
+    let logical_id = snapshot
+        .as_ref()
+        .map(|(_, value)| value.skill_id.clone())
+        .unwrap_or_default();
+    exact_record("Skill", logical_id, doc_id, source, snapshot)
+}
+
+pub(super) fn insert_unique<T>(
+    records: &mut std::collections::HashMap<String, DocumentRecord<T>>,
+    record: DocumentRecord<T>,
+) -> Result<()> {
+    let logical_id = record.fact.logical_id.clone();
+    if let Some(existing) = records.get(&logical_id) {
+        anyhow::bail!(
+            "{} logical id {} resolves to duplicate documents {} and {}",
+            record.fact.collection,
+            logical_id,
+            existing.doc_id,
+            record.doc_id
+        );
+    }
+    records.insert(logical_id, record);
+    Ok(())
+}
 
 pub(crate) async fn load_document_runtime_view(
     node: &EmbeddedNode,
     agent_did: &str,
 ) -> Result<DocumentRuntimeView> {
-    use crate::document_config::load_agent_principal_record;
     use std::collections::HashMap;
 
     ensure_agent_principal(node, agent_did).await?;
-    let principal = load_agent_principal_record(node, agent_did)
-        .await?
-        .ok_or_else(|| anyhow!("AgentPrincipal {agent_did} was not persisted"))?;
+    let principal_rows =
+        list_logical_doc_ids(node, "AgentPrincipal", "agent_did", agent_did).await?;
+    let principal_doc_id = match principal_rows.as_slice() {
+        [doc_id] => doc_id,
+        [] => anyhow::bail!("AgentPrincipal {agent_did} was not persisted"),
+        doc_ids => anyhow::bail!(
+            "AgentPrincipal logical id {agent_did} resolves to {} duplicate documents: {}",
+            doc_ids.len(),
+            doc_ids.join(", ")
+        ),
+    };
+    let principal = load_verified_principal_by_doc_id(node, principal_doc_id).await?;
+    if principal.value.agent_did != agent_did {
+        anyhow::bail!(
+            "AgentPrincipal exact snapshot {} belongs to {}, expected {agent_did}",
+            principal.doc_id,
+            principal.value.agent_did
+        );
+    }
 
     let mut view = DocumentRuntimeView {
-        principal: DocumentRecord {
-            doc_id: principal.0,
-            value: principal.1,
-        },
+        principal,
         behaviors: HashMap::new(),
         skills: HashMap::new(),
         tool_selections: HashMap::new(),
@@ -39,34 +207,26 @@ pub(crate) async fn load_document_runtime_view(
         event_triggers: HashMap::new(),
     };
 
-    for (doc_id, selection) in list_tool_selection_records(node, agent_did).await? {
-        view.tool_selections.insert(
-            selection.selection_id.clone(),
-            DocumentRecord {
-                doc_id,
-                value: selection,
-            },
-        );
+    for doc_id in list_logical_doc_ids(node, "ToolSelection", "agent_did", agent_did).await? {
+        let record = load_verified_tool_selection_by_doc_id(node, &doc_id).await?;
+        if record.value.agent_did != agent_did {
+            anyhow::bail!(
+                "ToolSelection exact snapshot {} belongs to {}, expected {agent_did}",
+                record.doc_id,
+                record.value.agent_did
+            );
+        }
+        insert_unique(&mut view.tool_selections, record)?;
     }
 
-    for (doc_id, profile) in list_inference_profile_records(node).await? {
-        view.inference_profiles.insert(
-            profile.profile_id.clone(),
-            DocumentRecord {
-                doc_id,
-                value: profile,
-            },
-        );
+    for doc_id in list_all_config_doc_ids(node, "InferenceProfile").await? {
+        let record = load_verified_profile_by_doc_id(node, &doc_id).await?;
+        insert_unique(&mut view.inference_profiles, record)?;
     }
 
-    for (doc_id, backend) in list_backend_records(node).await? {
-        view.backends.insert(
-            backend.backend_id.clone(),
-            DocumentRecord {
-                doc_id,
-                value: backend,
-            },
-        );
+    for doc_id in list_all_config_doc_ids(node, "InferenceBackend").await? {
+        let record = load_verified_backend_by_doc_id(node, &doc_id).await?;
+        insert_unique(&mut view.backends, record)?;
     }
 
     match crate::chatgpt_codex::list_oauth_credentials(node, agent_did).await {
@@ -75,7 +235,7 @@ pub(crate) async fn load_document_runtime_view(
                 let doc_id = credential.doc_id.clone().unwrap_or_default();
                 view.oauth_credentials.insert(
                     credential.credential_id.clone(),
-                    DocumentRecord {
+                    UnversionedDocumentRecord {
                         doc_id,
                         value: credential,
                     },
@@ -91,43 +251,28 @@ pub(crate) async fn load_document_runtime_view(
         }
     }
 
-    for (doc_id, behavior) in list_agent_behavior_records(node, agent_did).await? {
-        let behavior_id = behavior.behavior_id.clone();
-        view.behaviors.insert(
-            behavior_id,
-            DocumentRecord {
-                doc_id,
-                value: behavior,
-            },
-        );
-    }
-
-    match list_skill_records(node, agent_did).await {
-        Ok(records) => {
-            for (doc_id, skill) in records {
-                if skill.skill_id.trim().is_empty() {
-                    tracing::warn!(
-                        doc_id = %doc_id,
-                        "runtime document view skipped Skill document with empty skill_id"
-                    );
-                    continue;
-                }
-                view.skills.insert(
-                    skill.skill_id.clone(),
-                    DocumentRecord {
-                        doc_id,
-                        value: skill,
-                    },
-                );
-            }
-        }
-        Err(error) => {
-            tracing::warn!(
-                agent_did = %agent_did,
-                error = %error,
-                "runtime document view could not load Skill documents; treating as empty"
+    for doc_id in list_logical_doc_ids(node, "AgentBehavior", "agent_did", agent_did).await? {
+        let record = load_verified_behavior_by_doc_id(node, &doc_id).await?;
+        if record.value.agent_did != agent_did {
+            anyhow::bail!(
+                "AgentBehavior exact snapshot {} belongs to {}, expected {agent_did}",
+                record.doc_id,
+                record.value.agent_did
             );
         }
+        insert_unique(&mut view.behaviors, record)?;
+    }
+
+    for doc_id in list_logical_doc_ids(node, "Skill", "agent_did", agent_did).await? {
+        let record = load_verified_skill_by_doc_id(node, &doc_id).await?;
+        if record.value.agent_did != agent_did {
+            anyhow::bail!(
+                "Skill exact snapshot {} belongs to {}, expected {agent_did}",
+                record.doc_id,
+                record.value.agent_did
+            );
+        }
+        insert_unique(&mut view.skills, record)?;
     }
 
     for (doc_id, task) in list_task_records(node).await? {
@@ -141,7 +286,7 @@ pub(crate) async fn load_document_runtime_view(
         let task_id = task.task_id.clone();
         view.tasks.insert(
             task_id,
-            DocumentRecord {
+            UnversionedDocumentRecord {
                 doc_id,
                 value: task,
             },
@@ -159,7 +304,7 @@ pub(crate) async fn load_document_runtime_view(
         let schedule_id = schedule.schedule_id.clone();
         view.schedules.insert(
             schedule_id,
-            DocumentRecord {
+            UnversionedDocumentRecord {
                 doc_id,
                 value: schedule,
             },
@@ -176,7 +321,7 @@ pub(crate) async fn load_document_runtime_view(
         }
         view.event_triggers.insert(
             trigger.trigger_id.clone(),
-            DocumentRecord {
+            UnversionedDocumentRecord {
                 doc_id,
                 value: trigger,
             },
@@ -186,6 +331,66 @@ pub(crate) async fn load_document_runtime_view(
     hydrate_referenced_tool_selections(node, agent_did, &mut view).await?;
 
     Ok(view)
+}
+
+async fn list_logical_doc_ids(
+    node: &EmbeddedNode,
+    collection: &str,
+    logical_field: &str,
+    logical_id: &str,
+) -> Result<Vec<String>> {
+    let escaped_logical_id = crate::graphql::escape_graphql_string(logical_id);
+    let query = format!(
+        r#"{{
+            {collection}(filter: {{ {logical_field}: {{ _eq: "{escaped_logical_id}" }} }}) {{
+                _docID
+            }}
+        }}"#
+    );
+    let response = node.execute(&query).await;
+    if response.has_errors() {
+        anyhow::bail!(
+            "checking duplicate {collection} logical id {logical_id} failed: {:?}",
+            response.errors
+        );
+    }
+    let mut doc_ids = response
+        .data
+        .as_ref()
+        .and_then(|data| data.get(collection))
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("_docID").and_then(serde_json::Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    doc_ids.sort();
+    doc_ids.dedup();
+    Ok(doc_ids)
+}
+
+async fn list_all_config_doc_ids(node: &EmbeddedNode, collection: &str) -> Result<Vec<String>> {
+    let query = format!("{{ {collection} {{ _docID }} }}");
+    let response = node.execute(&query).await;
+    if response.has_errors() {
+        anyhow::bail!(
+            "listing {collection} configuration documents failed: {:?}",
+            response.errors
+        );
+    }
+    let mut doc_ids = response
+        .data
+        .as_ref()
+        .and_then(|data| data.get(collection))
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("_docID").and_then(serde_json::Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    doc_ids.sort();
+    doc_ids.dedup();
+    Ok(doc_ids)
 }
 
 async fn hydrate_referenced_tool_selections(
@@ -222,12 +427,13 @@ async fn hydrate_referenced_tool_selections(
                 None => continue,
             },
         };
-        let (doc_id, selection) = selection;
-        if selection.agent_did != agent_did {
+        let (doc_id, _) = selection;
+        let record = load_verified_tool_selection_by_doc_id(node, &doc_id).await?;
+        if record.value.agent_did != agent_did {
             tracing::warn!(
                 agent_did = %agent_did,
                 selection_id = %selection_id,
-                selection_agent_did = %selection.agent_did,
+                selection_agent_did = %record.value.agent_did,
                 "runtime document view ignored referenced tool selection owned by another agent"
             );
             continue;
@@ -238,13 +444,7 @@ async fn hydrate_referenced_tool_selections(
             doc_id = %doc_id,
             "runtime document view recovered referenced tool selection missing from agent filter query"
         );
-        view.tool_selections.insert(
-            selection.selection_id.clone(),
-            DocumentRecord {
-                doc_id,
-                value: selection,
-            },
-        );
+        insert_unique(&mut view.tool_selections, record)?;
     }
 
     Ok(())

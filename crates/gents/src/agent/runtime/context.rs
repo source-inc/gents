@@ -103,6 +103,7 @@ impl RuntimeContext {
         &self,
         behavior: Arc<crate::config::AgentBehavior>,
         tool_surface: Arc<ToolSurface>,
+        config_provenance: crate::runtime_snapshot::ScopedBehaviorConfigProvenance,
         request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
         shutdown: watch::Receiver<bool>,
     ) -> Result<()> {
@@ -161,6 +162,7 @@ impl RuntimeContext {
                     .with_context(|| build_context.clone())?;
                     self.run_behavior_with_client(
                         behavior,
+                        config_provenance,
                         request_rx,
                         shutdown,
                         prompt_builder,
@@ -191,6 +193,7 @@ impl RuntimeContext {
                     .with_context(|| build_context.clone())?;
                     self.run_behavior_with_client(
                         behavior,
+                        config_provenance,
                         request_rx,
                         shutdown,
                         prompt_builder,
@@ -220,6 +223,7 @@ impl RuntimeContext {
                     .with_context(|| build_context.clone())?;
                 self.run_behavior_with_client(
                     behavior,
+                    config_provenance,
                     request_rx,
                     shutdown,
                     prompt_builder,
@@ -256,6 +260,7 @@ impl RuntimeContext {
                 })?;
                 self.run_behavior_with_client(
                     behavior,
+                    config_provenance,
                     request_rx,
                     shutdown,
                     prompt_builder,
@@ -293,6 +298,7 @@ impl RuntimeContext {
                     .with_context(|| build_context.clone())?;
                     self.run_behavior_with_client(
                         behavior,
+                        config_provenance,
                         request_rx,
                         shutdown,
                         prompt_builder,
@@ -318,6 +324,7 @@ impl RuntimeContext {
                     .with_context(|| build_context.clone())?;
                     self.run_behavior_with_client(
                         behavior,
+                        config_provenance,
                         request_rx,
                         shutdown,
                         prompt_builder,
@@ -337,6 +344,7 @@ impl RuntimeContext {
     pub(super) async fn run_behavior_with_client<C>(
         &self,
         behavior: Arc<crate::config::AgentBehavior>,
+        config_provenance: crate::runtime_snapshot::ScopedBehaviorConfigProvenance,
         request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
         shutdown: watch::Receiver<bool>,
         prompt_builder: LayeredPromptBuilder,
@@ -358,6 +366,7 @@ impl RuntimeContext {
         let mut daemon = BehaviorDaemon::new(
             self.node.clone(),
             behavior,
+            config_provenance,
             model,
             preamble,
             loop_tools,

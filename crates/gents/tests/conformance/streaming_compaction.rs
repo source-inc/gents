@@ -1,11 +1,9 @@
 use super::*;
-use std::sync::Arc;
 
 use gents::config::DEFAULT_STREAM_LIVENESS_TIMEOUT_SECS;
 use gents::StreamWriter;
 use gents_protocol::transcript::present_persisted_message;
 
-use super::support::fixtures::test_identity;
 use super::support::interrupt::{
     create_runtime_request, wait_for_inference_call_state, wait_for_request_lifecycle_state,
     wait_for_response_content_contains, wait_for_response_doc_id, wait_for_runtime_ready,
@@ -140,7 +138,7 @@ pub(super) async fn generated_streaming_response_idle_timeout_case_drives_daemon
 async fn drive_streaming_response_idle_timeout_case(
     case: &lean_vocab_test::LeanResponseTransitionCase,
 ) {
-    let db = test_db(&format!("streaming-idle-timeout-{}", case.name)).await;
+    let db = signed_materializer_test_db(&format!("streaming-idle-timeout-{}", case.name)).await;
     let backend = MockStreamingBackend::start(
         IDLE_TIMEOUT_MODEL,
         vec![StreamScript::paused(
@@ -418,7 +416,7 @@ async fn drive_streaming_response_interrupt_flow_case(
     assert_eq!(case.group, "interrupt");
     assert_eq!(case.action, "daemon_interrupt_flow");
 
-    let db = test_db(&format!("streaming-interrupt-flow-{}", case.name)).await;
+    let db = signed_materializer_test_db(&format!("streaming-interrupt-flow-{}", case.name)).await;
     let backend = MockStreamingBackend::start(
         INTERRUPT_FLOW_MODEL,
         vec![StreamScript::paused(
@@ -948,10 +946,12 @@ fn inference_call_state_is_terminal(state: &str) -> bool {
 
 async fn boot_streaming_interrupt_flow_agent(
     db: &support::TestDb,
-    test_name: &str,
+    _test_name: &str,
     endpoint: &str,
 ) -> BootedAgent {
-    let identity: Arc<dyn gents::AgentIdentity> = Arc::new(test_identity(test_name));
+    let identity = db
+        .node_identity()
+        .expect("streaming interrupt fixture must use the node signing identity");
     upsert_interrupt_flow_backend(db.node.as_ref(), endpoint).await;
 
     let agent = gents::Gents::builder()
@@ -977,10 +977,12 @@ async fn boot_streaming_interrupt_flow_agent(
 
 async fn boot_streaming_idle_timeout_agent(
     db: &support::TestDb,
-    test_name: &str,
+    _test_name: &str,
     endpoint: &str,
 ) -> BootedAgent {
-    let identity: Arc<dyn gents::AgentIdentity> = Arc::new(test_identity(test_name));
+    let identity = db
+        .node_identity()
+        .expect("streaming idle-timeout fixture must use the node signing identity");
     upsert_idle_timeout_backend(db.node.as_ref(), endpoint).await;
 
     let agent = gents::Gents::builder()

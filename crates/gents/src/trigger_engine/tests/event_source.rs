@@ -1,5 +1,90 @@
 use super::*;
 
+async fn event_source_test_node() -> Arc<defra_node::EmbeddedNode> {
+    let identity = crate::test_support::signed_test_identity("event-source-node");
+    Arc::new(
+        defra_node::EmbeddedNode::builder()
+            .with_node_identity_did(identity.did())
+            .build()
+            .await
+            .unwrap(),
+    )
+}
+
+async fn ensure_snapshot_trigger_docs(
+    node: &defra_node::EmbeddedNode,
+    snapshot: &ActiveRuntimeSnapshot,
+) {
+    for trigger in snapshot.active_event_triggers().values() {
+        let existing = node
+            .execute(&format!(
+                r#"{{ EventTrigger(filter: {{ trigger_id: {{ _eq: "{}" }} }}) {{ _docID }} }}"#,
+                escape_graphql_string(&trigger.trigger_id)
+            ))
+            .await;
+        let present = existing
+            .data
+            .as_ref()
+            .and_then(|data| data.get("EventTrigger"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|rows| !rows.is_empty());
+        if present {
+            continue;
+        }
+        let filter = trigger
+            .filter
+            .as_ref()
+            .map(|value| format!(r#"filter: "{}""#, escape_graphql_string(value)))
+            .unwrap_or_default();
+        let response = node
+            .execute(&format!(
+                r#"mutation {{ create_EventTrigger(input: {{
+                    trigger_id: "{}"
+                    task_id: "{}"
+                    source_collection: "{}"
+                    event_kind: "{}"
+                    {filter}
+                    enabled: true
+                    concurrency: "serial"
+                }}) {{ _docID }} }}"#,
+                escape_graphql_string(&trigger.trigger_id),
+                escape_graphql_string(&trigger.task_id),
+                escape_graphql_string(&trigger.source_collection),
+                escape_graphql_string(&trigger.event_kind),
+            ))
+            .await;
+        assert!(!response.has_errors(), "{:?}", response.errors);
+    }
+}
+
+async fn persist_materialized_event_request(node: &defra_node::EmbeddedNode, intent: &FireIntent) {
+    let request_id = intent
+        .materialization_request_id
+        .as_deref()
+        .expect("event intent must carry deterministic request id");
+    let trigger_id = intent.trigger_id.as_deref().unwrap();
+    let did = node.node_identity_did().unwrap();
+    let mutation = format!(
+        r#"mutation {{ create_AgentRequest(input: {{
+            request_id: "{}" agent_did: "{}" source_author_did: "{}"
+            behavior_id: "general" session_id: "session-{}"
+            retry_parent_request: "" retry_root_request: "{}" superseded_by_request: ""
+            content: "test" status: "pending" lifecycle_state: "pending" backend_id: ""
+            execution_origin: "scheduled" caused_by_trigger_id: "{}"
+            caused_by_trigger_kind: "event" failure_reason: ""
+            created_at: "2026-08-08T00:00:00Z" retry_count: 0 max_retries: 3
+        }}) {{ _docID }} }}"#,
+        escape_graphql_string(request_id),
+        escape_graphql_string(did),
+        escape_graphql_string(did),
+        escape_graphql_string(request_id),
+        escape_graphql_string(request_id),
+        escape_graphql_string(trigger_id),
+    );
+    let response = node.execute(&mutation).await;
+    assert!(!response.has_errors(), "{:?}", response.errors);
+}
+
 /// Build a `ResolvedEventTrigger` pointing at the named source collection.
 /// Matches the empty-defaults pattern used by `resolved_schedule`.
 fn resolved_event_trigger(
@@ -70,7 +155,7 @@ async fn event_source_reconciles_subscriptions_on_generation_bump() {
     // A real embedded node is required because `reconcile_subscriptions`
     // opens the global `node.subscribe(&[EventName::Update])` subscription
     // on the first non-empty desired set.
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    let node = event_source_test_node().await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     // Snapshot generation 1: one trigger on CollectionA.
@@ -90,6 +175,7 @@ async fn event_source_reconciles_subscriptions_on_generation_bump() {
     // Drive reconciliation against snapshot 1. `reconcile_subscriptions` is
     // called directly here — Task 19 tests the method; the `next_fire`
     // tick-boundary integration is the subject of Task 20.
+    ensure_snapshot_trigger_docs(node.as_ref(), snap1.as_ref()).await;
     source.reconcile_subscriptions(snap1.as_ref()).await;
 
     assert_eq!(
@@ -111,6 +197,7 @@ async fn event_source_reconciles_subscriptions_on_generation_bump() {
     );
     snapshot_tx.send(snap2.clone()).expect("snapshot_rx alive");
 
+    ensure_snapshot_trigger_docs(node.as_ref(), snap2.as_ref()).await;
     source.reconcile_subscriptions(snap2.as_ref()).await;
 
     assert_eq!(
@@ -119,6 +206,180 @@ async fn event_source_reconciles_subscriptions_on_generation_bump() {
         "after reconciling against snapshot 2 CollectionA should be dropped \
          and only CollectionB should remain in the filter set",
     );
+}
+
+#[tokio::test]
+async fn event_source_config_edit_creates_a_new_transactional_activation() {
+    let node = event_source_test_node().await;
+    ensure_runtime_schemas(node.as_ref()).await.unwrap();
+    node.add_schema("type ConfigEditEvent { value: String }")
+        .await
+        .unwrap();
+
+    let task = resolved_task("ignored");
+    let first_trigger =
+        resolved_event_trigger("trigger-config-edit", "ConfigEditEvent", task.clone());
+    let first = snapshot_with_event_triggers(
+        1,
+        HashMap::from([("trigger-config-edit".to_string(), first_trigger)]),
+    );
+    let (snapshot_tx, snapshot_rx) = watch::channel(first.clone());
+    let cancel = CancellationToken::new();
+    let mut source = EventSource::new(snapshot_rx, node.clone(), cancel.clone());
+    ensure_snapshot_trigger_docs(node.as_ref(), first.as_ref()).await;
+    source.reconcile_subscriptions(first.as_ref()).await;
+
+    let update = node
+        .execute(
+            r#"mutation {
+                update_EventTrigger(
+                    filter: { trigger_id: { _eq: "trigger-config-edit" } },
+                    input: { filter: "{ value: { _eq: \"v2\" } }" }
+                ) { _docID }
+            }"#,
+        )
+        .await;
+    assert!(!update.has_errors(), "{:?}", update.errors);
+
+    let second_trigger = resolved_event_trigger_with_filter(
+        "trigger-config-edit",
+        "ConfigEditEvent",
+        task,
+        r#"{ value: { _eq: "v2" } }"#,
+    );
+    let second = snapshot_with_event_triggers(
+        2,
+        HashMap::from([("trigger-config-edit".to_string(), second_trigger)]),
+    );
+    snapshot_tx.send(second.clone()).unwrap();
+    source.reconcile_subscriptions(second.as_ref()).await;
+
+    let activations = node
+        .execute(
+            r#"{
+                EventTriggerActivation(
+                    filter: { trigger_id: { _eq: "trigger-config-edit" } },
+                    order: { created_at: ASC }
+                ) { activation_key trigger_commit_cid }
+            }"#,
+        )
+        .await;
+    assert!(!activations.has_errors(), "{:?}", activations.errors);
+    let rows = activations.data.unwrap()["EventTriggerActivation"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        rows.len(),
+        2,
+        "each exact trigger CID needs its own baseline"
+    );
+    assert_ne!(rows[0]["activation_key"], rows[1]["activation_key"]);
+    assert_ne!(rows[0]["trigger_commit_cid"], rows[1]["trigger_commit_cid"]);
+
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn event_source_restart_repairs_admission_without_request() {
+    let node = event_source_test_node().await;
+    ensure_runtime_schemas(node.as_ref()).await.unwrap();
+    node.add_schema("type RestartEvent { value: String }")
+        .await
+        .unwrap();
+
+    let trigger = resolved_event_trigger(
+        "trigger-restart-repair",
+        "RestartEvent",
+        resolved_task("ignored"),
+    );
+    let snapshot = snapshot_with_event_triggers(
+        1,
+        HashMap::from([("trigger-restart-repair".to_string(), trigger)]),
+    );
+    let (_snapshot_tx, snapshot_rx) = watch::channel(snapshot.clone());
+    let cancel = CancellationToken::new();
+    let mut first = EventSource::new(snapshot_rx.clone(), node.clone(), cancel.clone())
+        .with_rescan_interval(Duration::from_millis(20));
+    ensure_snapshot_trigger_docs(node.as_ref(), snapshot.as_ref()).await;
+    first.reconcile_subscriptions(snapshot.as_ref()).await;
+
+    let create = node
+        .execute(
+            r#"mutation { create_RestartEvent(input: { value: "after-activation" }) { _docID } }"#,
+        )
+        .await;
+    assert!(!create.has_errors(), "{:?}", create.errors);
+    let admitted = tokio::time::timeout(Duration::from_secs(2), first.next_fire())
+        .await
+        .expect("initial admission timed out")
+        .expect("initial admission returned no intent");
+    let request_id = admitted
+        .materialization_request_id
+        .clone()
+        .expect("durable event intent must carry a deterministic request id");
+    drop(admitted);
+    drop(first);
+
+    let mut restarted = EventSource::new(snapshot_rx, node.clone(), cancel.clone())
+        .with_rescan_interval(Duration::from_millis(20));
+    restarted.reconcile_subscriptions(snapshot.as_ref()).await;
+    let recovered = tokio::time::timeout(Duration::from_secs(2), restarted.next_fire())
+        .await
+        .expect("restart repair timed out")
+        .expect("restart repair returned no intent");
+    assert_eq!(
+        recovered.materialization_request_id.as_deref(),
+        Some(request_id.as_str()),
+        "admission-without-request must replay the same deterministic request id"
+    );
+
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn event_source_rescan_discovers_source_created_without_subscription_wake() {
+    let node = event_source_test_node().await;
+    ensure_runtime_schemas(node.as_ref()).await.unwrap();
+    node.add_schema("type OfflineEvent { value: String }")
+        .await
+        .unwrap();
+
+    let trigger = resolved_event_trigger(
+        "trigger-offline-rescan",
+        "OfflineEvent",
+        resolved_task("ignored"),
+    );
+    let snapshot = snapshot_with_event_triggers(
+        1,
+        HashMap::from([("trigger-offline-rescan".to_string(), trigger)]),
+    );
+    let (_snapshot_tx, snapshot_rx) = watch::channel(snapshot.clone());
+    let cancel = CancellationToken::new();
+    let mut activation_owner = EventSource::new(snapshot_rx.clone(), node.clone(), cancel.clone());
+    ensure_snapshot_trigger_docs(node.as_ref(), snapshot.as_ref()).await;
+    activation_owner
+        .reconcile_subscriptions(snapshot.as_ref())
+        .await;
+    drop(activation_owner);
+
+    // There is deliberately no live EventSource subscription for this write.
+    let create = node
+        .execute(r#"mutation { create_OfflineEvent(input: { value: "no-wake" }) { _docID } }"#)
+        .await;
+    assert!(!create.has_errors(), "{:?}", create.errors);
+
+    let mut recovered = EventSource::new(snapshot_rx, node, cancel.clone())
+        .with_rescan_interval(Duration::from_millis(20));
+    recovered.reconcile_subscriptions(snapshot.as_ref()).await;
+    let intent = tokio::time::timeout(Duration::from_secs(2), recovered.next_fire())
+        .await
+        .expect("durable rescan timed out")
+        .expect("durable rescan returned no intent");
+    assert_eq!(intent.trigger_id.as_deref(), Some("trigger-offline-rescan"));
+    assert!(intent.materialization_request_id.is_some());
+
+    cancel.cancel();
 }
 
 /// Drive `EventSource::next_fire` end-to-end against a real event stream.
@@ -140,7 +401,7 @@ async fn event_source_reconciles_subscriptions_on_generation_bump() {
 ///    bounded 2s deadline.
 #[tokio::test]
 async fn event_source_next_fire_emits_intent_on_matching_real_event() {
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    let node = event_source_test_node().await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     // Register the source collection we'll trigger on. Kept intentionally
@@ -176,6 +437,7 @@ async fn event_source_next_fire_emits_intent_on_matching_real_event() {
     // Open the subscription BEFORE writing the doc. The bus only buffers
     // messages for already-connected subscribers — a mutation that lands
     // before subscribe() returns leaves the subscription starved.
+    ensure_snapshot_trigger_docs(node.as_ref(), snapshot.as_ref()).await;
     source.reconcile_subscriptions(snapshot.as_ref()).await;
     assert_eq!(
         source.subscribed_collections(),
@@ -259,7 +521,7 @@ async fn event_source_next_fire_emits_intent_on_matching_real_event() {
 /// `next_fire` times out (no second intent) before we cancel the source.
 #[tokio::test]
 async fn event_source_filter_probe_gates_fire_on_operator_filter() {
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    let node = event_source_test_node().await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     // Register a WebhookEvent schema that includes the `kind` field the
@@ -299,6 +561,7 @@ async fn event_source_filter_probe_gates_fire_on_operator_filter() {
 
     let cancel = CancellationToken::new();
     let mut source = EventSource::new(rx, node.clone(), cancel.clone());
+    ensure_snapshot_trigger_docs(node.as_ref(), snapshot.as_ref()).await;
     source.reconcile_subscriptions(snapshot.as_ref()).await;
 
     // Write BOTH docs on a detached task. A small delay gives `next_fire`
@@ -384,7 +647,7 @@ async fn event_source_filter_probe_gates_fire_on_operator_filter() {
 /// the operator-visible scalars we wrote into the mutation.
 #[tokio::test]
 async fn event_source_hydrates_doc_vars_from_source_doc_fields() {
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    let node = event_source_test_node().await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     let webhook_sdl = r#"
@@ -415,6 +678,7 @@ async fn event_source_hydrates_doc_vars_from_source_doc_fields() {
 
     let cancel = CancellationToken::new();
     let mut source = EventSource::new(rx, node.clone(), cancel.clone());
+    ensure_snapshot_trigger_docs(node.as_ref(), snapshot.as_ref()).await;
     source.reconcile_subscriptions(snapshot.as_ref()).await;
 
     let node_for_mutation = node.clone();
@@ -508,15 +772,11 @@ async fn create_event_trigger_doc(
     );
 }
 
-/// Task 22: a Fired result dispatched through the `on_result` callback must
-/// write the runtime-owned bookkeeping fields back onto the `EventTrigger`
-/// document: `last_status = "fired"`, `fire_count += 1`,
-/// `last_fired_source_doc_id` set to the source doc id that caused the fire,
-/// and `last_attempt_at` populated. Apply-owned fields (`enabled`, `task_id`,
-/// `source_collection`, `event_kind`, `concurrency`) must be untouched.
+/// Dispatch results do not mutate the trigger configuration document. Durable
+/// delivery admission is the audit/correctness surface.
 #[tokio::test]
-async fn event_source_on_result_writes_runtime_fields_on_fired() {
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+async fn event_source_on_result_preserves_trigger_and_admission_on_fired() {
+    let node = event_source_test_node().await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     // Register the source collection the trigger will observe.
@@ -557,6 +817,7 @@ async fn event_source_on_result_writes_runtime_fields_on_fired() {
     let mut source = EventSource::new(rx, node.clone(), cancel.clone());
     // Open the subscription BEFORE writing the source doc so the mutation
     // lands after the bus has a listener. Otherwise the event is dropped.
+    ensure_snapshot_trigger_docs(node.as_ref(), snapshot.as_ref()).await;
     source.reconcile_subscriptions(snapshot.as_ref()).await;
 
     let node_for_mutation = node.clone();
@@ -590,65 +851,50 @@ async fn event_source_on_result_writes_runtime_fields_on_fired() {
         .expect("event_vars.source_doc_id must be a string")
         .to_string();
 
-    // Dispatch a synthetic Fired result into the callback. The callback
-    // spawns a background write, so poll the DB until it lands (bounded
-    // retry). This mirrors the ScheduleSource Fired test pattern.
+    // Dispatch a synthetic result. The callback is observability-only.
     (intent.on_result)(FireResult::Fired {
         request_id: "req-0".to_string(),
     });
 
-    let mut fired_trigger = None;
-    for _ in 0..40 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let records = list_event_trigger_records(node.as_ref()).await.unwrap();
-        let (_doc_id, trig) = records
-            .iter()
-            .find(|(_d, t)| t.trigger_id == "trigger-fired")
-            .cloned()
-            .expect("EventTrigger doc disappeared");
-        if trig.last_status.as_deref() == Some("fired") {
-            fired_trigger = Some(trig);
-            break;
-        }
-    }
-    let fired = fired_trigger.expect("EventTrigger.last_status never became \"fired\"");
-    assert_eq!(fired.last_status.as_deref(), Some("fired"));
-    assert_eq!(fired.fire_count, Some(1));
-    assert_eq!(
-        fired.last_fired_source_doc_id.as_deref(),
-        Some(fired_source_doc_id.as_str()),
-        "last_fired_source_doc_id should match the source doc id carried \
-         by the intent",
-    );
-    assert!(
-        fired.last_attempt_at.is_some(),
-        "last_attempt_at should be set after a fire",
-    );
-    assert_eq!(
-        fired.last_error, None,
-        "last_error must be cleared on a successful fire",
-    );
-    // Apply-owned fields must not be clobbered by the runtime writeback.
+    let records = list_event_trigger_records(node.as_ref()).await.unwrap();
+    let (_doc_id, fired) = records
+        .iter()
+        .find(|(_d, t)| t.trigger_id == "trigger-fired")
+        .cloned()
+        .expect("EventTrigger doc disappeared");
+    assert_eq!(fired.last_status, None);
+    assert_eq!(fired.fire_count, Some(0));
+    assert_eq!(fired.last_fired_source_doc_id, None);
+    assert_eq!(fired.last_attempt_at, None);
+    assert_eq!(fired.last_error, None);
     assert_eq!(fired.task_id.as_deref(), Some("task-webhook"));
     assert_eq!(fired.source_collection.as_deref(), Some("WebhookEvent"));
     assert_eq!(fired.event_kind.as_deref(), Some("created"));
     assert_eq!(fired.enabled, Some(true));
     assert_eq!(fired.concurrency.as_deref(), Some("serial"));
 
+    let admissions = node
+        .execute(&format!(
+            r#"{{ EventDeliveryAdmission(filter: {{ source_doc_id: {{ _eq: "{}" }} }}) {{ _docID }} }}"#,
+            escape_graphql_string(&fired_source_doc_id)
+        ))
+        .await;
+    assert!(!admissions.has_errors(), "{:?}", admissions.errors);
+    assert_eq!(
+        admissions.data.unwrap()["EventDeliveryAdmission"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
     cancel.cancel();
 }
 
-/// Task 22: a Skipped result writes `last_status = "skipped"` and records
-/// the skip reason in `last_error` without advancing `fire_count`. A
-/// subsequent Errored result flips `last_status` to `"error"` and replaces
-/// `last_error` with the failure string. Both writes must go through a
-/// single source instance (and a single intent) to exercise the callback
-/// directly without re-driving `next_fire` for each phase — per the spec,
-/// the callback is a pure synthesizer of runtime-field updates from a
-/// `FireResult` value.
+/// Skipped results likewise leave trigger configuration untouched.
 #[tokio::test]
-async fn event_source_on_result_writes_runtime_fields_on_skipped_or_errored() {
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+async fn event_source_on_result_preserves_trigger_on_skipped() {
+    let node = event_source_test_node().await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     let webhook_sdl = r#"
@@ -685,6 +931,7 @@ async fn event_source_on_result_writes_runtime_fields_on_skipped_or_errored() {
 
     let cancel = CancellationToken::new();
     let mut source = EventSource::new(rx, node.clone(), cancel.clone());
+    ensure_snapshot_trigger_docs(node.as_ref(), snapshot.as_ref()).await;
     source.reconcile_subscriptions(snapshot.as_ref()).await;
 
     let node_for_mutation = node.clone();
@@ -709,102 +956,24 @@ async fn event_source_on_result_writes_runtime_fields_on_skipped_or_errored() {
         .expect("next_fire timed out waiting for WebhookEvent")
         .expect("next_fire returned None instead of emitting a FireIntent");
 
-    // ---- Skipped phase ----
-    // The callback is a `FnOnce` closure so we can only invoke it once per
-    // intent. To drive two phases in one test we'd need two intents. The
-    // simpler path: invoke with Skipped here, then synthesize a second
-    // writeback by calling `spawn_runtime_field_write` directly for the
-    // Errored case below. That mirrors exactly what the intent closure does
-    // internally, and keeps the test focused on the writeback shape.
-    let trigger_id = "trigger-skip-err".to_string();
-    let source_doc_id = intent
-        .event_vars
-        .get("source_doc_id")
-        .and_then(|v| v.as_str())
-        .expect("event_vars.source_doc_id must be a string")
-        .to_string();
-
     (intent.on_result)(FireResult::Skipped {
         reason: "serial: prior fire still in-flight".to_string(),
     });
 
-    let mut skipped_trigger = None;
-    for _ in 0..40 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let records = list_event_trigger_records(node.as_ref()).await.unwrap();
-        let (_doc_id, trig) = records
-            .iter()
-            .find(|(_d, t)| t.trigger_id == "trigger-skip-err")
-            .cloned()
-            .expect("EventTrigger doc disappeared");
-        if trig.last_status.as_deref() == Some("skipped") {
-            skipped_trigger = Some(trig);
-            break;
-        }
-    }
-    let skipped = skipped_trigger.expect("EventTrigger.last_status never became \"skipped\"");
-    assert_eq!(skipped.last_status.as_deref(), Some("skipped"));
-    // fire_count MUST NOT advance on skip.
+    let records = list_event_trigger_records(node.as_ref()).await.unwrap();
+    let (_doc_id, skipped) = records
+        .iter()
+        .find(|(_d, t)| t.trigger_id == "trigger-skip-err")
+        .cloned()
+        .expect("EventTrigger doc disappeared");
+    assert_eq!(skipped.last_status, None);
     assert_eq!(skipped.fire_count, Some(0));
-    assert_eq!(
-        skipped.last_error.as_deref(),
-        Some("serial: prior fire still in-flight"),
-        "last_error should carry the skip reason for operator visibility",
-    );
-    assert!(
-        skipped.last_attempt_at.is_some(),
-        "last_attempt_at should be set on a skip",
-    );
-    assert_eq!(
-        skipped.last_fired_source_doc_id.as_deref(),
-        Some(source_doc_id.as_str()),
-        "last_fired_source_doc_id should record the candidate even on skip",
-    );
-    // Apply-owned fields intact.
+    assert_eq!(skipped.last_error, None);
+    assert_eq!(skipped.last_attempt_at, None);
+    assert_eq!(skipped.last_fired_source_doc_id, None);
     assert_eq!(skipped.task_id.as_deref(), Some("task-webhook"));
     assert_eq!(skipped.enabled, Some(true));
     assert_eq!(skipped.concurrency.as_deref(), Some("serial"));
-
-    // ---- Errored phase ----
-    // Drive the same writeback path with an Errored result. The helper is
-    // an inherent `fn` on EventSource so we can call it directly — this is
-    // exactly the path the `on_result` closure takes internally.
-    EventSource::spawn_runtime_field_write(
-        node.clone(),
-        trigger_id.clone(),
-        source_doc_id.clone(),
-        FireResult::Errored {
-            error: "materializer failed: backend timeout".to_string(),
-        },
-    );
-
-    let mut errored_trigger = None;
-    for _ in 0..40 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let records = list_event_trigger_records(node.as_ref()).await.unwrap();
-        let (_doc_id, trig) = records
-            .iter()
-            .find(|(_d, t)| t.trigger_id == "trigger-skip-err")
-            .cloned()
-            .expect("EventTrigger doc disappeared");
-        if trig.last_status.as_deref() == Some("error") {
-            errored_trigger = Some(trig);
-            break;
-        }
-    }
-    let errored = errored_trigger.expect("EventTrigger.last_status never became \"error\"");
-    assert_eq!(errored.last_status.as_deref(), Some("error"));
-    // fire_count MUST still not advance on error.
-    assert_eq!(errored.fire_count, Some(0));
-    assert_eq!(
-        errored.last_error.as_deref(),
-        Some("materializer failed: backend timeout"),
-        "last_error should carry the failure string on Errored",
-    );
-    // Apply-owned fields intact.
-    assert_eq!(errored.task_id.as_deref(), Some("task-webhook"));
-    assert_eq!(errored.enabled, Some(true));
-    assert_eq!(errored.concurrency.as_deref(), Some("serial"));
 
     cancel.cancel();
 }
@@ -814,17 +983,15 @@ async fn event_source_on_result_writes_runtime_fields_on_skipped_or_errored() {
 // The DefraDB event bus emits a single `EventName::Update` variant for
 // creates, updates, and deletes; v1 event triggers ship `event_kind =
 // "created"` only. The event source enforces that forward-only contract via
-// a first-seen gate seeded at subscription open, and fans out a single
-// observation across every matching trigger.
+// transactional activation baselines and durable delivery facts across
+// restarts, and fans out one observation across every matching trigger.
 // ---------------------------------------------------------------------------
 
-/// Finding 1: a pre-existing source doc whose first observation arrives
-/// AFTER the subscription opens must NOT fire — the seed populated by
-/// `reconcile_subscriptions` registers it as already-seen. This is the
-/// "don't fire on update" half of the forward-only semantic.
+/// A source doc present at activation is baselined and must not fire merely
+/// because a later update wake names the same physical document.
 #[tokio::test]
 async fn event_source_skips_event_for_doc_already_seen_at_subscribe() {
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    let node = event_source_test_node().await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     let webhook_sdl = r#"
@@ -837,10 +1004,7 @@ async fn event_source_skips_event_for_doc_already_seen_at_subscribe() {
         .await
         .expect("add_schema for WebhookEvent");
 
-    // Seed a doc BEFORE the trigger + subscription exist. The first-seen
-    // seed query at reconcile time will pick this doc up and mark it as
-    // already-observed so any subsequent Update for it is treated as an
-    // update (and dropped under v1 semantics).
+    // Seed a doc before activation so its exact version enters the baseline.
     let seed_mutation = r#"mutation {
         create_WebhookEvent(input: {
             external_id: "wh-preexisting",
@@ -877,9 +1041,7 @@ async fn event_source_skips_event_for_doc_already_seen_at_subscribe() {
         .expect("WebhookEvent query returned no _docID")
         .to_string();
 
-    // Open the trigger + subscription AFTER the seed doc exists. Reconcile
-    // should run the seed query and capture `preexisting_doc_id` into
-    // seen_docs so the next Update is treated as a non-first observation.
+    // Reconcile after the seed; activation records it in the durable manifest.
     let task = resolved_task("ignored");
     let trigger = resolved_event_trigger("trigger-noupdate", "WebhookEvent", task);
     let snapshot = snapshot_with_event_triggers(
@@ -889,10 +1051,10 @@ async fn event_source_skips_event_for_doc_already_seen_at_subscribe() {
     let (_tx, rx) = watch::channel(snapshot.clone());
     let cancel = CancellationToken::new();
     let mut source = EventSource::new(rx, node.clone(), cancel.clone());
+    ensure_snapshot_trigger_docs(node.as_ref(), snapshot.as_ref()).await;
     source.reconcile_subscriptions(snapshot.as_ref()).await;
 
-    // Now drive an UPDATE to the pre-existing doc. Events flow, but the
-    // first-seen gate should drop this one — it's a non-first observation.
+    // An update wake cannot reclassify a baseline document as newly created.
     let escaped = escape_graphql_string(&preexisting_doc_id);
     let update_mutation = format!(
         r#"mutation {{
@@ -913,14 +1075,11 @@ async fn event_source_skips_event_for_doc_already_seen_at_subscribe() {
         );
     });
 
-    // next_fire MUST time out — the update was suppressed by the first-seen
-    // gate. A short window is sufficient because the event bus round-trip
-    // is milliseconds; anything above that window would mean we got a fire.
+    // A short timeout proves neither the wake nor the rescan emitted it.
     let result = tokio::time::timeout(Duration::from_millis(500), source.next_fire()).await;
     assert!(
         result.is_err(),
-        "next_fire yielded an intent for a pre-seeded doc's update; seed seen_docs \
-         did not suppress the non-first observation",
+        "next_fire yielded an intent for a document in the activation baseline",
     );
 
     cancel.cancel();
@@ -928,11 +1087,10 @@ async fn event_source_skips_event_for_doc_already_seen_at_subscribe() {
 
 /// Finding 1: the first observation of a newly-created doc fires; the next
 /// observation (an update to the same doc) must NOT fire. Complements the
-/// pre-existing test by exercising the runtime-maintained first-seen set
-/// rather than the seed.
+/// pre-existing test by exercising durable delivery admission.
 #[tokio::test]
 async fn event_source_fires_for_first_seen_doc_then_skips_updates() {
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    let node = event_source_test_node().await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     let webhook_sdl = r#"
@@ -954,6 +1112,7 @@ async fn event_source_fires_for_first_seen_doc_then_skips_updates() {
     let (_tx, rx) = watch::channel(snapshot.clone());
     let cancel = CancellationToken::new();
     let mut source = EventSource::new(rx, node.clone(), cancel.clone());
+    ensure_snapshot_trigger_docs(node.as_ref(), snapshot.as_ref()).await;
     source.reconcile_subscriptions(snapshot.as_ref()).await;
 
     // Create a brand-new doc; first observation should fire.
@@ -985,9 +1144,9 @@ async fn event_source_fires_for_first_seen_doc_then_skips_updates() {
         .and_then(|v| v.as_str())
         .expect("source_doc_id must be a string")
         .to_string();
+    persist_materialized_event_request(node.as_ref(), &intent).await;
 
-    // Update the same doc. Second observation; the first-seen set records
-    // the doc, so the update must not fire.
+    // Once admission and request both exist, the update must not fire.
     let escaped = escape_graphql_string(&doc_id);
     let update_mutation = format!(
         r#"mutation {{
@@ -1011,8 +1170,7 @@ async fn event_source_fires_for_first_seen_doc_then_skips_updates() {
     let result = tokio::time::timeout(Duration::from_millis(500), source.next_fire()).await;
     assert!(
         result.is_err(),
-        "next_fire yielded an intent for a doc's update; first-seen gate failed to \
-         suppress the second observation",
+        "next_fire yielded an intent after durable delivery completed",
     );
 
     cancel.cancel();
@@ -1024,7 +1182,7 @@ async fn event_source_fires_for_first_seen_doc_then_skips_updates() {
 /// intents out of the source in deterministic (lex by trigger_id) order.
 #[tokio::test]
 async fn event_source_fans_out_one_event_across_multiple_matching_triggers() {
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    let node = event_source_test_node().await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     let webhook_sdl = r#"
@@ -1051,6 +1209,7 @@ async fn event_source_fans_out_one_event_across_multiple_matching_triggers() {
     let (_tx, rx) = watch::channel(snapshot.clone());
     let cancel = CancellationToken::new();
     let mut source = EventSource::new(rx, node.clone(), cancel.clone());
+    ensure_snapshot_trigger_docs(node.as_ref(), snapshot.as_ref()).await;
     source.reconcile_subscriptions(snapshot.as_ref()).await;
 
     // Single doc — both triggers must fire, one intent per trigger.
@@ -1110,7 +1269,7 @@ async fn event_source_fans_out_one_event_across_multiple_matching_triggers() {
 /// denying every other matching trigger a chance to fire.
 #[tokio::test]
 async fn event_source_tries_all_triggers_when_first_filter_misses() {
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    let node = event_source_test_node().await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     let webhook_sdl = r#"
@@ -1151,6 +1310,7 @@ async fn event_source_tries_all_triggers_when_first_filter_misses() {
     let (_tx, rx) = watch::channel(snapshot.clone());
     let cancel = CancellationToken::new();
     let mut source = EventSource::new(rx, node.clone(), cancel.clone());
+    ensure_snapshot_trigger_docs(node.as_ref(), snapshot.as_ref()).await;
     source.reconcile_subscriptions(snapshot.as_ref()).await;
 
     // Write a doc whose kind is "other" — misses trigger-a, matches trigger-b.
@@ -1206,7 +1366,7 @@ async fn event_source_tries_all_triggers_when_first_filter_misses() {
 /// / probe query is ever built from it.
 #[tokio::test]
 async fn event_source_reconcile_excludes_invalid_source_collection_identifiers() {
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    let node = event_source_test_node().await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     let task = resolved_task("ignored");
@@ -1235,6 +1395,7 @@ async fn event_source_reconcile_excludes_invalid_source_collection_identifiers()
 
     let cancel = CancellationToken::new();
     let mut source = EventSource::new(rx, node.clone(), cancel.clone());
+    ensure_snapshot_trigger_docs(node.as_ref(), snapshot.as_ref()).await;
     source.reconcile_subscriptions(snapshot.as_ref()).await;
 
     assert_eq!(

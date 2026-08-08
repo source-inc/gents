@@ -45,3 +45,17 @@ pub(crate) struct LeanEventDeliveryConvergenceTrace {
     pub(crate) final_world: LeanEventDeliveryWorld,
     pub(crate) status: String,
 }
+
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct LeanDurableEventAdmissionCase {
+    pub(crate) name: String,
+    pub(crate) operation: String,
+    pub(crate) disposition: String,
+    pub(crate) activation_twins: usize,
+    pub(crate) delivery_twins: usize,
+    pub(crate) baseline_contains_source: bool,
+    pub(crate) trigger_cid: u64,
+    pub(crate) source_cid: u64,
+    pub(crate) durable_activations: usize,
+    pub(crate) durable_deliveries: usize,
+}

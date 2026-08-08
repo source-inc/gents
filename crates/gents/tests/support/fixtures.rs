@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use gents::__test_internals::run_subagent_source_for_test;
+use gents::__test_internals::run_subagent_source_for_test_with_ready;
 use gents::compaction::CompactionStrategy;
 use gents::defra_node::EmbeddedNode;
 use gents::graphql::escape_graphql_string;
@@ -18,10 +18,37 @@ pub struct SubagentSourceGuard {
     cancel: CancellationToken,
     handle: Option<tokio::task::JoinHandle<()>>,
     _snapshot_tx: watch::Sender<Arc<ActiveRuntimeSnapshot>>,
+    ready: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+impl SubagentSourceGuard {
+    pub async fn wait_ready(&mut self) {
+        let ready = self
+            .ready
+            .take()
+            .expect("subagent source readiness may only be awaited once");
+        ready
+            .await
+            .expect("subagent source task exited before opening its subscription");
+        assert!(
+            self.handle
+                .as_ref()
+                .is_some_and(|handle| !handle.is_finished()),
+            "subagent source task exited immediately after readiness"
+        );
+    }
 }
 
 impl Drop for SubagentSourceGuard {
     fn drop(&mut self) {
+        if !std::thread::panicking()
+            && self
+                .handle
+                .as_ref()
+                .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            panic!("subagent source task exited before its fixture guard was dropped");
+        }
         self.cancel.cancel();
         if let Some(handle) = &self.handle {
             handle.abort();
@@ -70,6 +97,8 @@ pub fn spawn_subagent_source_with_paired_peers(
         paired_peer_dids,
         default_behavior_id: parent_behavior_id.to_string(),
         behaviors,
+        config_provenance_scope: gents::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+        behavior_config_provenance: HashMap::new(),
         tool_surfaces: HashMap::new(),
         backend_admission_configs: HashMap::new(),
         unavailable_behaviors: HashMap::new(),
@@ -84,15 +113,18 @@ pub fn spawn_subagent_source_with_paired_peers(
     };
     let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(snapshot));
     let cancel = CancellationToken::new();
-    let handle = tokio::spawn(run_subagent_source_for_test(
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(run_subagent_source_for_test_with_ready(
         node,
         snapshot_rx,
         cancel.clone(),
+        ready_tx,
     ));
     SubagentSourceGuard {
         cancel,
         handle: Some(handle),
         _snapshot_tx: snapshot_tx,
+        ready: Some(ready_rx),
     }
 }
 

@@ -27,6 +27,8 @@ fn snapshot() -> Arc<ActiveRuntimeSnapshot> {
         paired_peer_dids: HashSet::new(),
         default_behavior_id: support::AGENT_NAME.to_string(),
         behaviors: HashMap::new(),
+        config_provenance_scope: gents::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+        behavior_config_provenance: HashMap::new(),
         tool_surfaces: HashMap::new(),
         backend_admission_configs: HashMap::new(),
         unavailable_behaviors: HashMap::new(),

@@ -76,7 +76,10 @@ async fn drive_generated_request_recovery_reachable_case(case: &LeanLifecycleTra
     );
 
     // Leave the row persisted `claimed`, as a crashed executor would.
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     let snap = fetch_request_snapshot(&db.node, &doc_id).await;
     assert_eq!(snap.lifecycle_state, "claimed");
 
@@ -140,7 +143,10 @@ async fn ordinary_complete_also_takes_the_claimed_to_completed_edge() {
     );
 
     // No begin_execution: the row stays persisted `claimed`.
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.complete().await.unwrap();
 
@@ -190,7 +196,10 @@ async fn drive_generated_request_legal_case(case: &LeanLifecycleTransitionCase) 
 
     match action {
         "claim" => {
-            assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+            assert_eq!(
+                lifecycle.claim_without_identity_for_test().await.unwrap(),
+                ClaimOutcome::Claimed
+            );
         }
         "dedupLose" => {
             // Drive the PRODUCTION supersede writer. This arm used to issue its
@@ -222,12 +231,18 @@ async fn drive_generated_request_legal_case(case: &LeanLifecycleTransitionCase) 
             .expect("coalesce reconcile must succeed");
         }
         "beginInference" => {
-            assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+            assert_eq!(
+                lifecycle.claim_without_identity_for_test().await.unwrap(),
+                ClaimOutcome::Claimed
+            );
             lifecycle.prepare_session_with_identity().await.unwrap();
             lifecycle.begin_execution().await.unwrap();
         }
         "advance" => {
-            assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+            assert_eq!(
+                lifecycle.claim_without_identity_for_test().await.unwrap(),
+                ClaimOutcome::Claimed
+            );
             lifecycle.prepare_session_with_identity().await.unwrap();
             lifecycle.begin_execution().await.unwrap();
             let response_doc_id = create_response_with_status(
@@ -238,44 +253,65 @@ async fn drive_generated_request_legal_case(case: &LeanLifecycleTransitionCase) 
                 "streaming",
             )
             .await;
-            lifecycle.set_response_doc_id(&response_doc_id);
+            lifecycle.set_response_doc_id(&response_doc_id).unwrap();
             lifecycle.advance().await.unwrap();
         }
         "finish" => {
-            assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+            assert_eq!(
+                lifecycle.claim_without_identity_for_test().await.unwrap(),
+                ClaimOutcome::Claimed
+            );
             lifecycle.prepare_session_with_identity().await.unwrap();
             lifecycle.begin_execution().await.unwrap();
             lifecycle.complete().await.unwrap();
         }
         "fail" => {
-            assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+            assert_eq!(
+                lifecycle.claim_without_identity_for_test().await.unwrap(),
+                ClaimOutcome::Claimed
+            );
             lifecycle.prepare_session_with_identity().await.unwrap();
             lifecycle.begin_execution().await.unwrap();
             lifecycle.fail().await.unwrap();
         }
         "failBeforeStream" => {
-            assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+            assert_eq!(
+                lifecycle.claim_without_identity_for_test().await.unwrap(),
+                ClaimOutcome::Claimed
+            );
             lifecycle.prepare_session_with_identity().await.unwrap();
             lifecycle.fail().await.unwrap();
         }
         "expire" => {
             let past = (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
             set_valid_until(&db.node, &doc_id, &past).await;
-            assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Expired);
+            assert_eq!(
+                lifecycle.claim_without_identity_for_test().await.unwrap(),
+                ClaimOutcome::Expired
+            );
         }
         "interruptBeforeClaim" => {
             let interrupt_at = chrono::Utc::now().to_rfc3339();
             set_interrupt_requested_at(&db.node, &doc_id, &interrupt_at).await;
-            assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Interrupted);
+            assert_eq!(
+                lifecycle.claim_without_identity_for_test().await.unwrap(),
+                ClaimOutcome::Interrupted
+            );
         }
         "interruptClaimed" => {
-            assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+            assert_eq!(
+                lifecycle.claim_without_identity_for_test().await.unwrap(),
+                ClaimOutcome::Claimed
+            );
             let interrupt_at = chrono::Utc::now().to_rfc3339();
             set_interrupt_requested_at(&db.node, &doc_id, &interrupt_at).await;
             lifecycle.transition_to_interrupted().await.unwrap();
         }
         "interruptProcessing" => {
-            assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+            assert_eq!(
+                lifecycle.claim_without_identity_for_test().await.unwrap(),
+                ClaimOutcome::Claimed
+            );
             lifecycle.prepare_session_with_identity().await.unwrap();
             lifecycle.begin_execution().await.unwrap();
             let interrupt_at = chrono::Utc::now().to_rfc3339();
@@ -640,7 +676,10 @@ async fn production_request_writers_only_reach_contracted_edges() {
                 | "coalesce_pending"
                 | "subagent_liveness" => {}
                 _ => {
-                    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+                    assert_eq!(
+                        lifecycle.claim_without_identity_for_test().await.unwrap(),
+                        ClaimOutcome::Claimed
+                    );
                     lifecycle.prepare_session_with_identity().await.unwrap();
                 }
             }
@@ -713,14 +752,14 @@ async fn production_request_writers_only_reach_contracted_edges() {
 
             match writer {
                 "claim" => {
-                    let _ = lifecycle.claim().await;
+                    let _ = lifecycle.claim_without_identity_for_test().await;
                 }
                 "claim_after_ttl_lapse" => {
                     // The expiry writer is reached THROUGH claim(): a pre-claim
                     // request whose TTL has lapsed terminalizes to `dead`.
                     let past = (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
                     set_valid_until(&db.node, &doc_id, &past).await;
-                    let _ = lifecycle.claim().await;
+                    let _ = lifecycle.claim_without_identity_for_test().await;
                 }
                 "begin_execution" => {
                     let _ = lifecycle.begin_execution().await;
@@ -868,7 +907,10 @@ async fn terminal_persisted_requests_reject_request_mutating_lifecycle_writers()
             // is driven from a fresh lifecycle so it exercises the claim filter
             // itself rather than a re-claim.
             if writer != "claim" {
-                assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+                assert_eq!(
+                    lifecycle.claim_without_identity_for_test().await.unwrap(),
+                    ClaimOutcome::Claimed
+                );
                 lifecycle.prepare_session_with_identity().await.unwrap();
             }
 
@@ -893,7 +935,7 @@ async fn terminal_persisted_requests_reject_request_mutating_lifecycle_writers()
             // about the persisted document, not the return value.
             match writer {
                 "claim" => {
-                    let outcome = lifecycle.claim().await;
+                    let outcome = lifecycle.claim_without_identity_for_test().await;
                     if let Ok(outcome) = outcome {
                         assert_ne!(
                             outcome,
@@ -965,7 +1007,10 @@ async fn interactive_claim_snapshot_matches_claimed_waiting() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     assert_lean_transition_is_legal("Request", "pending", "claimed");
 
     assert_eq!(
@@ -1017,7 +1062,10 @@ async fn interactive_prepare_session_pins_behavior() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     lifecycle.prepare_session_with_identity().await.unwrap();
 
     assert_eq!(
@@ -1065,7 +1113,10 @@ async fn interactive_admission_and_progress_snapshots_match_execution_flow() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
     assert_lean_transition_is_legal("Request", "claimed", "processing");
@@ -1077,7 +1128,7 @@ async fn interactive_admission_and_progress_snapshots_match_execution_flow() {
         "streaming",
     )
     .await;
-    lifecycle.set_response_doc_id(&response_doc_id);
+    lifecycle.set_response_doc_id(&response_doc_id).unwrap();
     lifecycle.advance().await.unwrap();
     assert_lean_transition_is_legal("Request", "processing", "processing");
 
@@ -1153,7 +1204,10 @@ async fn interactive_fail_before_stream_snapshot_matches_failed_released() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.fail().await.unwrap();
     assert_lean_transition_is_legal("Request", "claimed", "failed");
@@ -1199,11 +1253,12 @@ async fn interactive_fail_before_stream_snapshot_matches_failed_released() {
 
 #[tokio::test]
 async fn scheduled_materialization_snapshot_matches_claimed_waiting() {
-    let db = test_db("scheduled-materialize").await;
+    let db = signed_materializer_test_db("scheduled-materialize").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
     let lifecycle = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "scheduled prompt body",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -1254,7 +1309,8 @@ async fn scheduled_materialization_snapshot_matches_claimed_waiting() {
 
 #[tokio::test]
 async fn scheduled_materialization_persists_trigger_lineage() {
-    let db = test_db("scheduled-materialize-lineage").await;
+    let db = signed_materializer_test_db("scheduled-materialize-lineage").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
     let lineage = TriggerLineage {
         trigger_id: Some("sched-1".into()),
         trigger_kind: Some("schedule".into()),
@@ -1263,7 +1319,7 @@ async fn scheduled_materialization_persists_trigger_lineage() {
     let lifecycle = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "scheduled prompt body with lineage",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -1302,7 +1358,8 @@ async fn scheduled_materialization_persists_trigger_lineage() {
 
 #[tokio::test]
 async fn serial_skip_does_not_create_request() {
-    let db = test_db("transition-serial-skip").await;
+    let db = signed_materializer_test_db("transition-serial-skip").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
 
     let lineage = TriggerLineage {
         trigger_id: Some("sched-serial".into()),
@@ -1311,7 +1368,7 @@ async fn serial_skip_does_not_create_request() {
     let seeded = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "serial seed",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -1393,7 +1450,8 @@ async fn serial_skip_does_not_create_request() {
 
 #[tokio::test]
 async fn latest_only_transition_to_superseded() {
-    let db = test_db("transition-latest-only").await;
+    let db = signed_materializer_test_db("transition-latest-only").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
 
     let lineage = TriggerLineage {
         trigger_id: Some("sched-latest".into()),
@@ -1402,7 +1460,7 @@ async fn latest_only_transition_to_superseded() {
     let seeded = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "latest seed",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -1471,7 +1529,8 @@ async fn latest_only_transition_to_superseded() {
 
 #[tokio::test]
 async fn active_runtime_trigger_filters_ignore_input_required() {
-    let db = test_db("transition-input-required-active-filter").await;
+    let db = signed_materializer_test_db("transition-input-required-active-filter").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
 
     let lineage = TriggerLineage {
         trigger_id: Some("sched-input-required".into()),
@@ -1480,7 +1539,7 @@ async fn active_runtime_trigger_filters_ignore_input_required() {
     let seeded = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "reserved inputRequired seed",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -1662,7 +1721,8 @@ async fn fire_errored_does_not_create_request() {
 
 #[tokio::test]
 async fn serial_skip_event_does_not_create_request() {
-    let db = test_db("transition-event-serial-skip").await;
+    let db = signed_materializer_test_db("transition-event-serial-skip").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
 
     let lineage = TriggerLineage {
         trigger_id: Some("trigger-event-serial".into()),
@@ -1671,7 +1731,7 @@ async fn serial_skip_event_does_not_create_request() {
     let seeded = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "event serial seed",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -1752,7 +1812,8 @@ async fn serial_skip_event_does_not_create_request() {
 
 #[tokio::test]
 async fn latest_only_event_transition_to_superseded() {
-    let db = test_db("transition-event-latest-only").await;
+    let db = signed_materializer_test_db("transition-event-latest-only").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
 
     let lineage = TriggerLineage {
         trigger_id: Some("trigger-event-latest".into()),
@@ -1761,7 +1822,7 @@ async fn latest_only_event_transition_to_superseded() {
     let seeded = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "event latest seed",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -1941,7 +2002,7 @@ use gents::background_completion::{
     project_background_subagent_completion, BackgroundCompletionOutcome,
 };
 use gents::tool_call_lifecycle::{
-    create_subagent_request_with_request_id, AwaitMode, CancelPolicy, ToolCallLifecycle,
+    create_subagent_request_with_request_id_for_test, AwaitMode, CancelPolicy, ToolCallLifecycle,
 };
 use gents::{AgentBehaviorDocument, ToolSelectionDocument};
 
@@ -2289,7 +2350,7 @@ fn lifecycle_for(
 async fn drive_active_request_blocks_later_same_session_claim(
     case: &lean_vocab_test::LeanQueueDeadlineConformanceCase,
 ) {
-    let db = test_db("queue-deadline-active-blocks").await;
+    let db = signed_materializer_test_db("queue-deadline-active-blocks").await;
     let session_id = case.session_id.to_string();
     let active_id = case.pre_active_request_id.expect("active request id");
     let pending_id = case
@@ -2326,7 +2387,10 @@ async fn drive_active_request_blocks_later_same_session_claim(
     );
     let mut active_lifecycle = lifecycle_for(&db.node, active_request, DEADLINE_SECS);
     assert_eq!(
-        active_lifecycle.claim().await.unwrap(),
+        active_lifecycle
+            .claim_without_identity_for_test()
+            .await
+            .unwrap(),
         ClaimOutcome::Claimed
     );
 
@@ -2343,7 +2407,10 @@ async fn drive_active_request_blocks_later_same_session_claim(
     );
     let mut pending_lifecycle = lifecycle_for(&db.node, pending_request, DEADLINE_SECS);
     assert_eq!(
-        pending_lifecycle.claim().await.unwrap(),
+        pending_lifecycle
+            .claim_without_identity_for_test()
+            .await
+            .unwrap(),
         ClaimOutcome::Queued
     );
     assert_eq!(case.claimed_request_id, None);
@@ -2355,7 +2422,7 @@ async fn drive_active_request_blocks_later_same_session_claim(
 async fn drive_terminal_active_allows_next_pending_same_session_claim(
     case: &lean_vocab_test::LeanQueueDeadlineConformanceCase,
 ) {
-    let db = test_db("queue-deadline-terminal-allows").await;
+    let db = signed_materializer_test_db("queue-deadline-terminal-allows").await;
     let session_id = case.session_id.to_string();
     let active_id = case.pre_active_request_id.expect("active request id");
     let pending_id = case.claimed_request_id.expect("claimed request id");
@@ -2388,7 +2455,10 @@ async fn drive_terminal_active_allows_next_pending_same_session_claim(
     );
     let mut active_lifecycle = lifecycle_for(&db.node, active_request, DEADLINE_SECS);
     assert_eq!(
-        active_lifecycle.claim().await.unwrap(),
+        active_lifecycle
+            .claim_without_identity_for_test()
+            .await
+            .unwrap(),
         ClaimOutcome::Claimed
     );
 
@@ -2407,7 +2477,10 @@ async fn drive_terminal_active_allows_next_pending_same_session_claim(
     );
     let mut pending_lifecycle = lifecycle_for(&db.node, pending_request, DEADLINE_SECS);
     assert_eq!(
-        pending_lifecycle.claim().await.unwrap(),
+        pending_lifecycle
+            .claim_without_identity_for_test()
+            .await
+            .unwrap(),
         ClaimOutcome::Claimed
     );
 
@@ -2418,7 +2491,7 @@ async fn drive_terminal_active_allows_next_pending_same_session_claim(
 async fn drive_background_completion_notification_creates_no_agent_request(
     case: &lean_vocab_test::LeanQueueDeadlineConformanceCase,
 ) {
-    let db = test_db("queue-deadline-coalesce").await;
+    let db = signed_materializer_test_db("queue-deadline-coalesce").await;
     let session_id = case.session_id.to_string();
     let parent_request_id = "queue-deadline-coalesce-parent";
     install_background_completion_fixture(db.node.as_ref()).await;
@@ -2504,7 +2577,7 @@ async fn drive_background_completion_notification_creates_no_agent_request(
 async fn drive_cancel_drains_automated_wakeups_preserves_user_pending(
     case: &lean_vocab_test::LeanQueueDeadlineConformanceCase,
 ) {
-    let db = test_db("queue-deadline-cancel-drain").await;
+    let db = signed_materializer_test_db("queue-deadline-cancel-drain").await;
     let session_id = case.session_id.to_string();
     let parent_request_id = "queue-deadline-cancel-parent";
     create_queue_request(
@@ -2579,7 +2652,7 @@ async fn drive_cancel_drains_automated_wakeups_preserves_user_pending(
 async fn drive_claim_preserves_explicit_deadline(
     case: &lean_vocab_test::LeanQueueDeadlineConformanceCase,
 ) {
-    let db = test_db("queue-deadline-explicit-deadline").await;
+    let db = signed_materializer_test_db("queue-deadline-explicit-deadline").await;
     let session_id = case.session_id.to_string();
     let request_id = case.claimed_request_id.expect("claimed request id");
     let created_at = chrono::Utc::now().to_rfc3339();
@@ -2611,7 +2684,10 @@ async fn drive_claim_preserves_explicit_deadline(
         request,
         case.synthesized_claim_deadline.unwrap() as u64,
     );
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
 
     let row = fetch_deadline_runtime_row(db.node.as_ref(), request_id).await;
     assert_eq!(row.status, "processing");
@@ -2813,7 +2889,7 @@ async fn create_background_child_bridge(
     const CHILD_BEHAVIOR_ID: &str = "queue-deadline-child";
 
     let child_request_id = format!("{parent_request_id}-{tool_call_id}-child");
-    create_subagent_request_with_request_id(
+    create_subagent_request_with_request_id_for_test(
         node.as_ref(),
         child_request_id.clone(),
         parent_request_id.to_string(),

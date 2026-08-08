@@ -685,10 +685,9 @@ where
                             }
                             _ => {
                                 let live_output = match hook.as_ref() {
-                                    Some(hook) => Some(
-                                        hook.foreground_live_output_writer(&internal_call_id)
-                                            .await,
-                                    ),
+                                    Some(hook) => {
+                                        hook.foreground_live_output_writer(&internal_call_id).await
+                                    }
                                     None => None,
                                 };
                                 let outcome = dispatch_tool(

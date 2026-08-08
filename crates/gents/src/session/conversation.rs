@@ -109,6 +109,7 @@ async fn write_conversation_doc(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) async fn upsert_conversation_from_request_with_identity(
     node: &EmbeddedNode,
     session_id: &str,

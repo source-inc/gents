@@ -1,12 +1,16 @@
 type AgentMessage @branchable {
-    message_key: String @index(unique: true)
-    session_id: String @index
+    message_key: String @index @immutable
+    session_id: String @index @immutable
     agent_did: String @index @immutable
     requester_did: String @index @immutable
-    request_id: String @index
-    sequence: Int @index
-    role: String
-    content: String
-    reasoning: String
-    timestamp: DateTime
+    request_id: String @index @immutable
+    request_doc_id: String @index @immutable
+    sequence: Int @index @immutable
+    role: String @immutable
+    content: String @immutable
+    reasoning: String @immutable
+    timestamp: DateTime @immutable
+    fork_source_doc_id: String @index @immutable
+    fork_source_composite_commit_cid: String @immutable
+    fork_source_signer_did: String @immutable
 }

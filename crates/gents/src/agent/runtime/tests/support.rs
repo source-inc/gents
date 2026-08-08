@@ -17,7 +17,26 @@ pub(super) use crate::watcher::AgentRequest;
 pub(super) use serde_json::Value;
 
 pub(super) async fn test_node() -> Arc<defra_node::EmbeddedNode> {
-    Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap())
+    let node_identity = test_identity("agent-runtime-node");
+    Arc::new(
+        defra_node::EmbeddedNode::builder()
+            .with_node_identity_did(node_identity.did())
+            .build()
+            .await
+            .unwrap(),
+    )
+}
+
+pub(super) async fn test_node_with_identity(
+    identity: &dyn AgentIdentity,
+) -> Arc<defra_node::EmbeddedNode> {
+    Arc::new(
+        defra_node::EmbeddedNode::builder()
+            .with_node_identity_did(identity.did())
+            .build()
+            .await
+            .unwrap(),
+    )
 }
 
 pub(super) fn test_identity(name: &str) -> KeyIdentity {
@@ -77,21 +96,47 @@ pub(super) async fn fetch_runtime_status(
             }}
         }}"#
     );
-    let response = node.execute(&query).await;
-    assert!(
-        !response.has_errors(),
-        "AgentRuntime query failed: {:?}",
-        response.errors
-    );
-    let value = response
-        .data
-        .as_ref()
-        .and_then(|data| data.get("AgentRuntime"))
-        .and_then(|rows| rows.as_array())
-        .and_then(|rows| rows.first())
-        .cloned()
-        .expect("AgentRuntime row");
-    serde_json::from_value(value).expect("decode AgentRuntime row")
+    // Signed exact-config loading adds several asynchronous verification reads
+    // before the control watcher can publish its first phase. These paused-time
+    // tests must wait for scheduler progress without sleeping: a timer would
+    // advance the logical clock and could accidentally fire the debounce under
+    // test. Bound the polling loop so a genuinely missing status row still
+    // fails promptly.
+    for _ in 0..512 {
+        let response = node.execute(&query).await;
+        assert!(
+            !response.has_errors(),
+            "AgentRuntime query failed: {:?}",
+            response.errors
+        );
+        if let Some(value) = response
+            .data
+            .as_ref()
+            .and_then(|data| data.get("AgentRuntime"))
+            .and_then(|rows| rows.as_array())
+            .and_then(|rows| rows.first())
+            .cloned()
+        {
+            return serde_json::from_value(value).expect("decode AgentRuntime row");
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("AgentRuntime row did not become visible after bounded scheduler progress")
+}
+
+pub(super) async fn wait_for_runtime_reconcile_result(
+    node: &defra_node::EmbeddedNode,
+    agent_did: &str,
+    expected: &str,
+) -> RuntimeStatusRow {
+    for _ in 0..512 {
+        let status = fetch_runtime_status(node, agent_did).await;
+        if status.last_reconcile_result == expected {
+            return status;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("AgentRuntime did not publish reconcile result {expected:?}")
 }
 
 pub(super) async fn wait_for_runtime_process_state(
@@ -398,6 +443,7 @@ pub(super) async fn create_agent_request_for_behavior(
 ) -> String {
     let escaped_request_id = escape_graphql_string(request_id);
     let escaped_agent_did = escape_graphql_string(agent_did);
+    let escaped_source_author_did = escape_graphql_string(agent_did);
     let escaped_behavior_id = escape_graphql_string(behavior_id.unwrap_or_default());
     let escaped_session_id = escape_graphql_string(session_id);
     let escaped_content = escape_graphql_string(content);
@@ -407,6 +453,7 @@ pub(super) async fn create_agent_request_for_behavior(
             create_AgentRequest(input: {{
                 request_id: "{escaped_request_id}",
                 agent_did: "{escaped_agent_did}",
+                source_author_did: "{escaped_source_author_did}",
                 behavior_id: "{escaped_behavior_id}",
                 session_id: "{escaped_session_id}",
                 retry_parent_request: "",
@@ -465,7 +512,10 @@ pub(super) async fn wait_for_inference_call_state(
     loop {
         let query = format!(
             r#"{{
-                InferenceCall(filter: {{ request_id: {{ _eq: "{escaped_request_id}" }} }}, limit: 1) {{
+                InferenceCall(filter: {{
+                    request_id: {{ _eq: "{escaped_request_id}" }},
+                    call_kind: {{ _eq: "inference" }}
+                }}, limit: 1) {{
                     call_state
                     failure_reason
                 }}
@@ -494,7 +544,7 @@ pub(super) async fn wait_for_inference_call_state(
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "timed out waiting for InferenceCall request_id={} to reach call_state={}, last row={:?}",
+            "timed out waiting for inference-kind InferenceCall request_id={} to reach call_state={}, last row={:?}",
             request_id,
             expected_state,
             row

@@ -13,6 +13,7 @@
 //! loads `Skill` documents and feeds these results into `prompt.rs` and
 //! `tool_surface` is layered on top of it.
 
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +60,7 @@ pub fn effective_skills<'a>(
 ) -> Vec<&'a Skill> {
     let refs: BTreeSet<&str> = skill_refs.iter().map(String::as_str).collect();
     let excludes: BTreeSet<&str> = skill_excludes.iter().map(String::as_str).collect();
-    skills
+    let mut effective = skills
         .iter()
         .filter(|skill| {
             skill.agent_did == behavior_principal
@@ -67,7 +68,35 @@ pub fn effective_skills<'a>(
                 && (skill.scope == SkillScope::Principal || refs.contains(skill.skill_id.as_str()))
                 && !excludes.contains(skill.skill_id.as_str())
         })
-        .collect()
+        .collect::<Vec<_>>();
+    effective.sort_by(|left, right| canonical_skill_order(left, right));
+    effective
+}
+
+/// Canonicalize a resolved skill set before it crosses a rendering or
+/// fingerprint boundary.
+///
+/// Document-backed resolution starts from a `HashMap`, whose iteration order is
+/// intentionally unspecified. Ordering by the complete render-relevant value
+/// makes equal source sets produce equal provider preambles even if rows arrive
+/// in a different order on another host. `skill_id` remains the primary key for
+/// readability; the remaining fields make replicated logical-ID conflicts
+/// deterministic until the config loader can reject them explicitly.
+pub(crate) fn sort_skills_canonically(skills: &mut [Skill]) {
+    skills.sort_by(canonical_skill_order);
+}
+
+fn canonical_skill_order(left: &Skill, right: &Skill) -> Ordering {
+    left.skill_id
+        .cmp(&right.skill_id)
+        .then_with(|| left.agent_did.cmp(&right.agent_did))
+        .then_with(|| left.scope.as_str().cmp(right.scope.as_str()))
+        .then_with(|| left.name.cmp(&right.name))
+        .then_with(|| left.description.cmp(&right.description))
+        .then_with(|| left.instructions.cmp(&right.instructions))
+        .then_with(|| left.tool_refs.cmp(&right.tool_refs))
+        .then_with(|| left.display_name.cmp(&right.display_name))
+        .then_with(|| left.enabled.cmp(&right.enabled))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -143,7 +172,9 @@ pub fn render_skill_catalog(skills: &[Skill]) -> Option<String> {
          to the task, call the `load_skill` tool with its name and follow the returned \
          instructions. Skip skills only when none are relevant.\n",
     );
-    for skill in skills {
+    let mut ordered = skills.iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| canonical_skill_order(left, right));
+    for skill in ordered {
         out.push_str(&format!(
             "\n- {}: {}",
             skill_label(skill),
@@ -502,6 +533,36 @@ mod tests {
             assert_eq!(got.agent_did, "did:p");
             assert!(got.enabled);
         }
+    }
+
+    #[test]
+    fn effective_skill_order_and_catalog_are_source_order_independent() {
+        let alpha = skill("alpha", "did:p", SkillScope::Principal, &["read"]);
+        let beta = skill("beta", "did:p", SkillScope::Behavior, &["bash"]);
+        let gamma = skill("gamma", "did:p", SkillScope::Principal, &[]);
+        let refs = vec!["beta".to_string()];
+
+        let forward = vec![alpha.clone(), beta.clone(), gamma.clone()];
+        let permuted = vec![gamma, alpha, beta];
+        let forward_effective = effective_skills(&forward, "did:p", &refs, &[]);
+        let permuted_effective = effective_skills(&permuted, "did:p", &refs, &[]);
+
+        assert_eq!(ids(&forward_effective), vec!["alpha", "beta", "gamma"]);
+        assert_eq!(ids(&forward_effective), ids(&permuted_effective));
+
+        let forward_owned = forward_effective.into_iter().cloned().collect::<Vec<_>>();
+        let permuted_owned = permuted_effective.into_iter().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            render_skill_catalog(&forward_owned),
+            render_skill_catalog(&permuted_owned)
+        );
+
+        // Rendering is also canonical when a programmatic caller bypasses
+        // `effective_skills` and supplies the same set in a different order.
+        assert_eq!(
+            render_skill_catalog(&forward),
+            render_skill_catalog(&permuted)
+        );
     }
 
     /// S-Skill-1 (activation_subset_ceiling): the union of every active skill's

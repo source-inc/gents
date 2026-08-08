@@ -331,7 +331,7 @@ async fn schedule_source_next_fire_honors_cancellation_token() {
 /// enqueue boundary that Task 39 is restoring under the engine.
 #[tokio::test]
 async fn trigger_engine_enqueues_agent_request_for_due_schedule_e2e() {
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    let node = signed_test_node("schedule-materializer-node").await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     // Seed a Schedule whose next_run_at is 1s in the past — the ScheduleSource

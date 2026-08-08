@@ -481,13 +481,14 @@ fn load_or_create_home_identity(options: HomeIdentityOptions<'_>) -> Result<Home
                 KeyIdentity::load_or_create(&key_path, None)
                     .context("creating or loading agent identity key")?,
             );
+            let node_identity_did = identity.did().to_string();
             Ok(HomeIdentity {
                 identity,
                 key_path: Some(key_path.to_string_lossy().to_string()),
                 identity_backend: None,
                 keychain_label: None,
                 secure_enclave_label: None,
-                node_identity_did: None,
+                node_identity_did: Some(node_identity_did),
             })
         }
         IdentityBackendArg::MacosKeychain => {

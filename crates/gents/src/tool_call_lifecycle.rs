@@ -276,8 +276,8 @@ pub use recovery::{
 };
 pub use runtime::ToolOutcome;
 pub use subagent_request::{
-    create_subagent_request, create_subagent_request_with_request_id,
-    create_subagent_request_with_trusted_parent_request_id, MAX_SUBAGENT_DEPTH,
+    create_subagent_request, create_subagent_request_with_request_id_for_test,
+    create_subagent_request_with_trusted_parent_request_id_for_test, MAX_SUBAGENT_DEPTH,
 };
 pub use transition::IllegalToolCallTransition;
 
@@ -508,6 +508,15 @@ impl ToolCallLifecycle {
 
     pub(crate) fn tool_call_id(&self) -> &str {
         &self.tool_call_id
+    }
+
+    /// Physical DefraDB identity of the persisted AgentToolCall row.
+    ///
+    /// Runtime side channels such as live-output telemetry must retain this
+    /// identity instead of re-resolving a row from the provider call id, which
+    /// is only a logical identifier and may collide in another session.
+    pub(crate) fn doc_id(&self) -> Option<&str> {
+        self.doc_id.as_deref()
     }
 
     pub(crate) fn is_running(&self) -> bool {

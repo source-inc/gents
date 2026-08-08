@@ -22,6 +22,7 @@ pub struct GraphqlSubmittedRequest {
 pub struct CreateAgentRequestInput<'a> {
     pub request_id: &'a str,
     pub agent_did: &'a str,
+    pub source_author_did: &'a str,
     pub content: &'a str,
     pub session_id: &'a str,
     pub behavior_id: Option<&'a str>,
@@ -299,6 +300,7 @@ pub fn create_agent_request_mutation(input: &CreateAgentRequestInput<'_>) -> Str
             create_AgentRequest(input: {{
                 request_id: "{request_id}",
                 agent_did: "{agent_did}",
+                source_author_did: "{source_author_did}",
                 {behavior_field}
                 session_id: "{session_id}",
                 retry_parent_request: "",
@@ -318,6 +320,7 @@ pub fn create_agent_request_mutation(input: &CreateAgentRequestInput<'_>) -> Str
         }}"#,
         request_id = escape_graphql_string(input.request_id),
         agent_did = escape_graphql_string(input.agent_did),
+        source_author_did = escape_graphql_string(input.source_author_did),
         behavior_field = behavior_field,
         session_id = escape_graphql_string(input.session_id),
         content = escape_graphql_string(input.content),
@@ -878,12 +881,17 @@ pub fn session_shape_query(session_id: &str) -> String {
                 latency_ms
             }}
             AgentToolResult(filter: {{ session_id: {{ _eq: "{escaped_session_id}" }} }}, order: {{ created_at: ASC }}) {{
+                result_key
+                tool_call_key
+                tool_call_doc_id
+                tool_call_composite_commit_cid
+                tool_call_signer_did
                 agent_did
                 session_id
                 tool_name
                 tool_input
                 output_text
-                truncated
+                model_output_truncated
                 truncation_metadata
                 conversation_doc_id
                 created_at
@@ -1116,6 +1124,7 @@ mod tests {
         let mutation = create_agent_request_mutation(&CreateAgentRequestInput {
             request_id: "req-1",
             agent_did: "did:test:amy",
+            source_author_did: "did:test:amy",
             content: "hello",
             session_id: "session-1",
             behavior_id: Some("amy-default"),
@@ -1133,6 +1142,7 @@ mod tests {
         assert!(mutation.contains("top_p: 0.95"));
         assert!(mutation.contains("top_k: 40"));
         assert!(mutation.contains("max_tokens: 512"));
+        assert!(mutation.contains("source_author_did: \"did:test:amy\""));
         assert!(mutation.contains(r#"metadata: "{\"run_id\":\"run-1\"}""#));
     }
 

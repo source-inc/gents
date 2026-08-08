@@ -162,7 +162,9 @@ and either tested at the Rust boundary or treated as an external assumption.
 | `Proofs/Basic.lean` | Shared opaque ids, `Time`, and terminal-state helpers |
 | `Proofs/Process.lean` | Process lifecycle model plus executable `Action`, `step?`, and `replay?` |
 | `Proofs/Request.lean` | Barrel for request state, transitions, executable semantics, and local properties |
-| `Proofs/InferenceCall.lean` | Barrel for inference-call state, transitions, slot accounting, cancellation properties, and in-memory controller bookkeeping (#1001) |
+| `Proofs/InferenceCall.lean` | Barrel for inference-call state, transitions, exact-document persistence fencing (#1076), slot accounting, cancellation properties, and in-memory controller bookkeeping (#1001) |
+| `Proofs/InferenceRenderedCapture.lean` | Composition fence for inference-call and rendered-request provenance (#1075): exact running call V1 → immutable render R → reverse-bound pre-send call V2 → one HTTP send → terminal call V3 preserving R; capture failure and crash-before-send cannot claim a send. Generated cases include fresh/idempotent capture, conflict rejection, recovery, network failure, and the one-shot path. |
+| `Proofs/Transcript.lean` | Barrel for transcript ordering/pairing plus split mutable-draft and immutable finalized-fact semantics (#1073) |
 | `Proofs/Persistence.lean` | Persistence lifecycle model plus executable `Action`, `step?`, and `replay?` |
 | `Proofs/StorageObservation.lean` | Daemon-visible storage observation model and persistence bridge |
 | `Proofs/CrossMachineComposed.lean` | Cross-machine composition and guards; global `WellFormed` (list-level coherence, detached persistence/linkage, unique call ids, no early tools, invFG) established at `initial` and preserved by every transition (#555) |
@@ -185,7 +187,8 @@ and either tested at the Rust boundary or treated as an external assumption.
 | `Proofs/Recovery/` | Recovery sweep contracts (`RecoverySweep`, outcome accounting #693, equivalence-to-uninterrupted), the registered sweep registry, per-collection sweeps including subagent liveness (#465) and the startup restart-disposition classifier (#937), and the startup sweep ordering contract (`StartupOrder.lean`, #1001: the parent-gated inference-call sweep converges only after request repair) |
 | `Proofs/Session/` | Session queue model: queue sources (`background_completion`, steering), coalesce policy/keys, automated wake-up drain |
 | `Proofs/Compaction/` | Transcript reduction (#993): the payload-stubbing `strip`, the canonical `providerView = sanitize ∘ strip` with `strip_sanitize_commute` and idempotence, prefix stability under append and the compacted-prefix index correspondence, and the `summarize` reducer parameterised over the production split policy with pair closure proven over it. Fences: `tests/conformance/streaming_compaction.rs`. |
-| `Proofs/RenderedCapture.lean` | Persist-before-send at the provider boundary (#840/#523): the five-component capture key, the opaque canonical request, `assembled → durablyCaptured → sent`, and the capture decision (fresh / idempotent / rejected). Proves `sent_implies_durably_captured`, `sent_requires_a_capture_step`, `capture_key_determines_request`, `capture_idempotent`, `capture_rejects_rebinding`, and `capture_failure_blocks_send`. The key's third component is the exact signed request document identity plus provider-call scope, encoded as the injective pair `[request_doc_id, capture_scope]`, because one request runs several completion loops and each starts its turn and attempt counters at zero. Fences: `agent::loop_stream::tests::generated_rendered_capture_cases_fence_persist_before_send` (ordering, driven through the real owned loop), `tests/conformance/rendered_capture.rs` (key identity), and `tests/e2e_runtime/rendered_request_capture.rs` (the persisted payload equals the body a real HTTP backend received, and a failing sink issues zero provider requests). Scope: `boundary.rendered-capture.assembled-request-artifact`, `boundary.rendered-capture.key-encoding-injectivity`. |
+| `Proofs/RenderedCapture.lean` | Persist-before-send at the provider boundary (#840/#523): the five-component capture key, opaque provider body, exact signed source/claim request provenance, and a bounded direct resolved-config bundle scoped to reconciled document-runtime requests. For that scope the bundle requires signed exact document/CID refs for principal, behavior, inference backend, and inference profile; tool selection is optional; skills are a possibly empty list strictly ordered by logical identity. Every present source carries a nonzero DID from its verified commit signature (authorship evidence, not an authorization claim). Missing reconciled config, empty refs/signers, invalid optional tool evidence, non-canonical/duplicate skills, or rebound config rejects before send. Static, legacy, and one-shot requests explicitly occupy a different scope and may honestly send without config evidence. Proves `sent_implies_durably_captured`, `reconciled_document_send_implies_exact_config_provenance`, `sent_requires_a_capture_step`, `capture_key_determines_request`, `capture_idempotent`, `capture_rejects_rebinding`, `capture_rejects_request_provenance_rebinding`, `capture_rejects_config_provenance_rebinding`, and `capture_failure_blocks_send`. This checkpoint does **not** claim a separately persisted `ResolvedAgentGeneration`; production provenance therefore remains honestly `CapturedOnly`. The key's third component is the exact signed request document identity plus provider-call scope, encoded as the injective JSON pair `[request_doc_id, capture_scope]`. Fences: `agent::loop_stream::tests::generated_rendered_capture_cases_fence_persist_before_send` (ordering and scope-aware config fail-closed behavior), `tests/conformance/rendered_capture.rs` (key identity, source/claim equality, reconciled config cases, and the static/one-shot omission case), and `tests/e2e_runtime/rendered_request_capture.rs` (persisted payload equals the body a real HTTP backend received). Scope: `boundary.rendered-capture.assembled-request-artifact`, `boundary.rendered-capture.key-encoding-injectivity`. |
+| `Proofs/RequestIngest.lean` | Signed-ingest provenance gate: an explicit immutable source author, valid source signature, one logical request document, exact `_docID` and source CID selection, first-claim/replay fencing, a valid target-agent claim signature, exact parent-CID binding, and payload preservation. Requester attribution is distinct from document authorship; a consumed source cannot be re-admitted after redelivery, crash, or restart. ACP policy and encryption are explicitly deferred. Fence: `tests/conformance/request_ingest.rs`. |
 | `Proofs/Properties/Safety.lean` | Request/process/persistence safety properties S1-S6 |
 | `Proofs/Properties/Liveness.lean` | Request/process liveness properties L1-L3 |
 | `Proofs/Properties/SchedulingSafety.lean` | Scheduler/fleet safety properties S7-S9 |
@@ -205,7 +208,9 @@ Semantic submodules:
 | Barrel | Submodules |
 |--------|------------|
 | `Proofs.Request` | `State`, `Transition`, `Executable`, `Properties` |
-| `Proofs.InferenceCall` | `State`, `Transition`, `Executable`, `Properties`, `SlotAccounting`, `ControllerBookkeeping` |
+| `Proofs.InferenceCall` | `State`, `Transition`, `Executable`, `Properties`, `ExactTarget`, `SlotAccounting`, `ControllerBookkeeping` |
+| `Proofs.InferenceRenderedCapture` | `State`, `Transition`, `Properties` |
+| `Proofs.Transcript` | `State`, `Transition`, `Properties`, `Dedupe`, `Executable`, `Finalization` |
 | `Proofs.RuntimeReconcile` | `State`, `Transition`, `Executable` |
 | `Proofs.ApplyReconcile` | `Collections`, `Manifest`, `Diff`, `Apply`, `ApplyProperties`, `Prefix`, `RuntimeBridge`, `Convergence` |
 | `Proofs.Triggers` | `Types`, `Dispatch`, `Reachability`, `SerialSupport`, `Serial`, `LatestOnly`, `Lineage` |
@@ -770,6 +775,32 @@ Model → conformance → Rust bindings:
 
 ### Compaction
 
+### Transcript Fact Finalization
+
+`Proofs/Transcript/Finalization.lean` separates mutable assistant assembly
+checkpoints from immutable finalized transcript facts. A checkpoint is
+explicitly non-authoritative: it may be replaced by physical document identity,
+never enters provider history, and is not a provenance ancestor of the final
+fact. Post-checkpoint publication and direct publication use the same
+create-and-observe rule over desired order/payload plus the resulting exact
+composite CID and cryptographically verified signer. Signer authorization is a
+deferred ACP assumption and deliberately does not require the node signer DID
+to equal an application `agent_did` attribution field. Identical replay is a
+non-mutating observation, while payload, order, or authoritative-final-fact
+rebinding is rejected.
+
+The model does not treat a unique-index winner as consensus. The complete
+visible fact set for `(session_id, sequence)` must be empty before create or
+exactly the selected fact on replay and read. Replicated logical twins fail
+closed even if an index happens to return one deterministic winner. Provider
+assembly is structurally limited to finalized facts and requires exact
+`_docID`/composite-CID references in strict sequence order. The generated
+checkpoint cases pin mutability and publication independence; the publication
+cases pin non-empty final CID/signer evidence, valid signatures, the explicit
+policy-authorization assumption, immutable replay, and conflict rejection.
+Generated fences:
+`generated_transcript_finalization_and_provider_history_cases_pin_split_contract`.
+
 `Proofs/Compaction` models transcript reduction — the one place where the
 durable transcript and the provider view diverge on purpose, and therefore the
 place where "everything persisted can be projected back out" is most at risk.
@@ -990,6 +1021,35 @@ unrelated concurrent calls live.
 System-generated `InferenceCall.failure_reason` values used by admission and
 interrupt/drop paths are mirrored by `InferenceCallTerminalReason`; provider
 error strings remain open and are not treated as a closed Lean vocabulary.
+
+`Proofs/InferenceCall/ExactTarget.lean` lifts those lifecycle edges onto a
+physical-document store. A persisted transition names the DefraDB `_docID`
+returned by creation, requires the expected source state plus owner/epoch
+fences, and delegates the requested edge to the executable lifecycle step. It
+proves missing/stale writes are rejected, a successful write is legal, sibling
+documents are unchanged even when they share logical call identity, and
+terminal documents cannot be reopened or rebound to another terminal outcome.
+Strict CAS success and an idempotent reload that merely observes the desired
+state are distinct outcomes.
+
+Physical isolation is not logical admission: if replication exposes two
+physical documents for one logical call, exact `_docID` CAS could advance each
+independently. The model therefore requires the complete visible logical
+conflict set to contain exactly the selected target; a sibling conflict rejects
+both admission and idempotent observation before mutation. The generated finite
+and two-write cases are driven against real `InferenceCall` rows by
+`generated_inference_call_exact_target_cases_drive_fenced_updates`.
+
+The concurrent conformance witness pins the storage-engine refinement used by
+that model. DefraDB's query-plan update revalidates the mutation filter and
+captures the expected document (`crates/query-plan/src/plan/mutation/update.rs`);
+the auto-commit mutator then acquires the per-document write queue, reloads
+under the guard, and compares the complete expected document
+(`crates/db/src/auto_commit_mutator/update.rs`). Transaction-conflict retry
+reruns the filter. The test races same-row queued-to-running writes and
+different terminal outcomes, requiring exactly one winner and an absorbing
+terminal result. Subscription delivery and cross-host conflict-set discovery
+remain outside this per-document refinement and may require broader design.
 
 ## What Is Not Proven
 

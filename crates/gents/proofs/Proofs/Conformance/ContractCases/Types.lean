@@ -93,6 +93,61 @@ structure InferenceSlotAccountingCase where
   boundedByMaxConcurrent : Bool
   deriving Repr
 
+/-- Executable persistence witness for issue #1076.  The target/sibling labels
+    stand for physical DefraDB `_docID`s; logical call identity is intentionally
+    equal in the model fixture so sibling isolation cannot be attributed to a
+    logical-id filter. -/
+structure InferenceCallExactTargetCase where
+  name : String
+  action : String
+  writeTarget : String
+  targetPresent : Bool
+  expectedState : String
+  targetOwner : Nat
+  targetEpoch : Nat
+  expectedOwner : Nat
+  expectedEpoch : Nat
+  requestedPostState : String
+  targetPreState : Option String
+  targetPostState : Option String
+  siblingPreState : String
+  siblingPostState : String
+  writeMatched : Bool
+  siblingIsolated : Bool
+  sameLogicalCallId : Bool
+  terminalPreState : Bool
+  terminalIrreversible : Bool
+  deriving Repr
+
+/-- Two-write traces distinguish strict CAS failure from a higher-level
+    idempotent observation and make independent sibling targeting explicit. -/
+structure InferenceCallExactTargetTraceCase where
+  name : String
+  scenario : String
+  targetPreState : String
+  siblingPreState : String
+  visibleLogicalDocumentCount : Nat
+  uniqueAdmissionRequired : Bool
+  rawIndependentCasPossible : Bool
+  firstTarget : String
+  firstAction : String
+  firstExpectedState : String
+  firstExpectedOwner : Nat
+  firstExpectedEpoch : Nat
+  firstRequestedPostState : String
+  firstCasMatched : Bool
+  secondTarget : String
+  secondAction : String
+  secondExpectedState : String
+  secondExpectedOwner : Nat
+  secondExpectedEpoch : Nat
+  secondRequestedPostState : String
+  secondCasMatched : Bool
+  secondDisposition : String
+  finalTargetState : String
+  finalSiblingState : String
+  deriving Repr
+
 structure FleetSlotAccountingCase where
   name : String
   property : String
@@ -580,6 +635,39 @@ structure TranscriptCase where
   expectedOrdered : Bool
   expectedDuplicateReusedSequence : Bool
   expectedStrongDrain : Bool
+  deriving Repr
+
+/-- Generated checkpoint/publication witnesses for the draft/fact split. -/
+structure TranscriptFinalizationCase where
+  name : String
+  action : String
+  visibleLogicalFactCount : Nat
+  checkpointPresent : Bool
+  factPresentBefore : Bool
+  factPresentAfter : Bool
+  factCommitCid : Option Nat
+  checkpointPayloadHash : Option Nat
+  writePayloadHash : Nat
+  factPayloadHash : Option Nat
+  writeSignerDid : Option Nat
+  writeSignatureValid : Option Bool
+  writePolicyAuthorized : Option Bool
+  factSignerDid : Option Nat
+  disposition : String
+  checkpointPreserved : Bool
+  siblingIsolated : Bool
+  deriving Repr
+
+/-- Exact provider-history reconstruction witnesses. -/
+structure TranscriptProviderHistoryCase where
+  name : String
+  referenceCount : Nat
+  visibleConflictCount : Nat
+  accepted : Bool
+  outputCount : Nat
+  outputPayloadHashes : List Nat
+  exactFinalizedDomainOnly : Bool
+  strictlyIncreasing : Bool
   deriving Repr
 
 def boolString (value : Bool) : String :=

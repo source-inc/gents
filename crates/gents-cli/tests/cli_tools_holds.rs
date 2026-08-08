@@ -114,7 +114,11 @@ async fn tools_holds_lists_and_approve_writes_decision() -> Result<()> {
         .get("approval_id")
         .and_then(Value::as_str)
         .context("approve output missing approval_id")?;
-    assert!(approval_id.starts_with("approval-call-held-1-"));
+    let held_doc_id = held
+        .pointer("/held/0/_docID")
+        .and_then(Value::as_str)
+        .context("held call missing physical _docID")?;
+    assert_eq!(approval_id, format!("approval-{held_doc_id}"));
 
     let response = graphql_query(
         &graphql,

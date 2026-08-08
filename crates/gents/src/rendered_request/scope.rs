@@ -368,6 +368,9 @@ pub(crate) enum CaptureFailureStage {
     BuildFact,
     /// The durable write failed or was rejected as an integrity violation.
     Persist,
+    /// The exact RenderedRequest was durable, but binding it back to the
+    /// running InferenceCall failed. The provider send is still refused.
+    BindAdmission,
 }
 
 impl CaptureFailureStage {
@@ -376,6 +379,7 @@ impl CaptureFailureStage {
             Self::DecodeBody => "decode_body",
             Self::BuildFact => "build_fact",
             Self::Persist => "persist",
+            Self::BindAdmission => "bind_admission",
         }
     }
 }
@@ -388,14 +392,42 @@ pub(crate) async fn capture_body(
     scope: &RequestCaptureScope,
     pending: PendingCapture,
     source: super::RenderedRequestSource,
+    running_call: Option<crate::admission::RunningInferenceCallProvenance>,
     provider_endpoint: Option<String>,
     body: &[u8],
 ) -> std::result::Result<(), (CaptureFailureStage, anyhow::Error)> {
+    let running_call = match scope.context().inference_call_provenance_scope {
+        super::InferenceCallProvenanceScope::AdmittedProviderCall => {
+            Some(running_call.ok_or_else(|| {
+                (
+                    CaptureFailureStage::BuildFact,
+                    anyhow::anyhow!(
+                        "admitted provider-call capture has no running InferenceCall provenance handle"
+                    ),
+                )
+            })?)
+        }
+        super::InferenceCallProvenanceScope::StaticOrTest => {
+            if running_call.is_some() {
+                return Err((
+                    CaptureFailureStage::BuildFact,
+                    anyhow::anyhow!(
+                        "static/test rendered-request capture was used inside an admitted provider call"
+                    ),
+                ));
+            }
+            None
+        }
+    };
+    let inference_call_provenance = running_call
+        .as_ref()
+        .map(|handle| handle.call_version().clone());
     let request_json: serde_json::Value = serde_json::from_slice(body)
         .map_err(|error| (CaptureFailureStage::DecodeBody, anyhow::Error::from(error)))?;
     let components = super::RenderedRequestComponents::from_provider_body(request_json, source);
     let rendered = super::build_rendered_completion_request(
         scope.context(),
+        inference_call_provenance,
         &pending.capture_scope,
         source,
         provider_endpoint,
@@ -408,9 +440,15 @@ pub(crate) async fn capture_body(
 
     let capture_key = rendered.capture_key.clone();
     let request_id = rendered.request_id.clone();
-    (scope.sink())(rendered)
+    let rendered_request_provenance = (scope.sink())(rendered)
         .await
         .map_err(|error| (CaptureFailureStage::Persist, error))?;
+    if let Some(running_call) = running_call {
+        running_call
+            .bind_rendered_request(rendered_request_provenance)
+            .await
+            .map_err(|error| (CaptureFailureStage::BindAdmission, error))?;
+    }
 
     tracing::debug!(
         capture_key = %capture_key,
@@ -475,6 +513,16 @@ mod tests {
     fn context() -> RenderedRequestContext {
         RenderedRequestContext {
             request_doc_id: "doc-1".to_string(),
+            request_provenance: Some(crate::document_version::test_request_execution_provenance(
+                "doc-1",
+                "did:key:agent",
+            )),
+            inference_call_provenance_scope:
+                crate::rendered_request::InferenceCallProvenanceScope::StaticOrTest,
+            transcript_snapshot: Vec::new(),
+            config_provenance_scope:
+                crate::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+            config_provenance: None,
             request_id: "req-1".to_string(),
             agent_did: "did:key:agent".to_string(),
             requester_did: String::new(),
@@ -489,7 +537,9 @@ mod tests {
     }
 
     fn noop_sink() -> RenderedRequestCaptureSink {
-        Arc::new(|_| Box::pin(async { Ok(()) }))
+        Arc::new(|_| {
+            Box::pin(async { Ok(crate::rendered_request::test_static_rendered_request_version()) })
+        })
     }
 
     /// Every completion loop in a request starts at `(0, 0)`, so a fresh label

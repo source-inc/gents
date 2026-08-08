@@ -1,0 +1,32 @@
+# Immutable terminal truth for one exact AgentRequest execution.
+#
+# AgentResponse remains the replaceable live projection during this breaking
+# schema generation. Correctness readers must use this collection: a complete
+# outcome names the exact signed assistant message fact, while error and
+# interrupted outcomes carry only a typed reason and optional partial message
+# reference. Response bodies and reasoning never belong here.
+type AgentResponseOutcome @branchable {
+    # Ordinary, deliberately non-unique index. Replicated logical twins must be
+    # observable so readers can reject the complete conflict set.
+    request_doc_id: String @index @immutable
+    request_id: String @index @immutable
+    session_id: String @index @immutable
+    agent_did: String @index @immutable
+    requester_did: String @index @immutable
+    behavior_id: String @index @immutable
+
+    request_source_composite_commit_cid: String @immutable
+    request_source_signer_did: String @immutable
+    request_claim_composite_commit_cid: String @immutable
+    request_claim_signer_did: String @immutable
+
+    outcome_kind: String @index @immutable
+    reason_code: String @immutable
+
+    final_message_doc_id: String @immutable
+    final_message_composite_commit_cid: String @immutable
+    final_message_signer_did: String @immutable
+    final_message_sequence: Int @immutable
+
+    terminalized_at: DateTime @immutable
+}

@@ -1,6 +1,11 @@
 type AgentRequest @branchable {
     request_id: String @index
     agent_did: String @index @immutable
+    # DID expected to match the cryptographically verified signer of the
+    # source composite commit. This is authorship, not requester attribution or
+    # an ACP authorization decision. Runtime ingest fails closed when it is
+    # absent, malformed, or does not match the commit signer.
+    source_author_did: String @index @immutable
     requester_did: String @index @immutable
     behavior_id: String @index
     session_id: String @index

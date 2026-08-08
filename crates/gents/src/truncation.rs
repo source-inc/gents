@@ -31,6 +31,7 @@ pub struct TruncationResult {
     pub original_lines: usize,
     pub original_bytes: usize,
     pub spill_doc_id: Option<String>,
+    pub spill_ref: Option<crate::SignedDocumentVersionRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +74,7 @@ pub struct DefraSpillTruncator {
     agent_did: String,
     requester_did: Option<String>,
     session_id: String,
+    tool_call_id: Option<String>,
 }
 
 impl DefraSpillTruncator {
@@ -82,6 +84,7 @@ impl DefraSpillTruncator {
             agent_did: agent_did.to_string(),
             requester_did: None,
             session_id: session_id.to_string(),
+            tool_call_id: None,
         }
     }
 
@@ -90,6 +93,11 @@ impl DefraSpillTruncator {
             let did = did.trim();
             (!did.is_empty()).then(|| did.to_string())
         });
+        self
+    }
+
+    pub(crate) fn with_tool_call_id(mut self, tool_call_id: &str) -> Self {
+        self.tool_call_id = Some(tool_call_id.to_string());
         self
     }
 }

@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::Parser;
 use gents::defra_node::{EmbeddedNode, NodeBuilder, StorageBackend};
+use gents::{
+    load_macos_keychain_identity, load_macos_secure_enclave_identity, AgentIdentity, KeyIdentity,
+};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -571,12 +574,14 @@ pub(crate) async fn resolve_config_access(
     }
 
     let data_dir = default_data_dir(&home_dir);
+    let node_identity_did = load_offline_config_node_identity(&home_dir)?;
     fs::create_dir_all(&data_dir)
         .with_context(|| format!("creating data directory {}", data_dir.display()))?;
     let node = {
         use std::sync::Arc;
         let node_arc = Arc::new(
             persistent_node_builder(&data_dir)
+                .with_node_identity_did(node_identity_did)
                 .build()
                 .await
                 .with_context(|| {
@@ -589,6 +594,97 @@ pub(crate) async fn resolve_config_access(
         })
     };
     Ok((ConfigAccess::Local(std::sync::Arc::new(node)), home_dir))
+}
+
+fn load_offline_config_node_identity(home_dir: &Path) -> Result<String> {
+    let config = read_init_config(home_dir)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "offline configuration access requires an initialized signing identity in {}; run `gents init --home {}` first or use --graphql with a running signed node",
+            home_dir.display(),
+            home_dir.display()
+        )
+    })?;
+    let expected_did = config.agent_did.trim();
+    if expected_did.is_empty() {
+        anyhow::bail!(
+            "offline configuration access requires a non-empty agent_did in {}",
+            init_config_path(home_dir).display()
+        );
+    }
+
+    let identity: std::sync::Arc<dyn AgentIdentity> = match config
+        .identity_backend
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        None | Some("file") => {
+            let key_path = config
+                .key_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_key_path(home_dir, &config.agent_name));
+            if !key_path.exists() {
+                anyhow::bail!(
+                    "offline configuration signing key {} does not exist; refusing unsigned local access",
+                    key_path.display()
+                );
+            }
+            std::sync::Arc::new(KeyIdentity::load_or_create(&key_path, None).with_context(
+                || {
+                    format!(
+                        "loading offline configuration signing key {}",
+                        key_path.display()
+                    )
+                },
+            )?)
+        }
+        Some("macos-keychain") => {
+            let label = config
+                .keychain_label
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "offline configuration access requires keychain_label for macos-keychain identity"
+                    )
+                })?;
+            std::sync::Arc::new(
+                load_macos_keychain_identity(label, None)
+                    .with_context(|| format!("loading offline macOS keychain identity {label}"))?,
+            )
+        }
+        Some("macos-secure-enclave") => {
+            let label = config
+                .secure_enclave_label
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "offline configuration access requires secure_enclave_label for macos-secure-enclave identity"
+                    )
+                })?;
+            std::sync::Arc::new(
+                load_macos_secure_enclave_identity(label, None).with_context(|| {
+                    format!("loading offline macOS Secure Enclave identity {label}")
+                })?,
+            )
+        }
+        Some(other) => anyhow::bail!(
+            "offline configuration access does not support identity_backend {other:?}"
+        ),
+    };
+    if identity.did() != expected_did {
+        anyhow::bail!(
+            "offline configuration signing identity {} does not match initialized agent DID {expected_did}",
+            identity.did()
+        );
+    }
+    Ok(identity.did().to_string())
 }
 
 pub(crate) fn persistent_node_builder(data_dir: &Path) -> NodeBuilder {
@@ -646,6 +742,52 @@ pub(crate) fn server_start_failure_hint(home_dir: &Path) -> String {
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    fn write_file_identity_init(home: &Path) -> String {
+        let key_path = default_key_path(home, "test-agent");
+        fs::create_dir_all(key_path.parent().unwrap()).unwrap();
+        let identity = KeyIdentity::load_or_create(&key_path, None).unwrap();
+        let did = identity.did().to_string();
+        write_init_config(
+            home,
+            &StoredInitConfig {
+                home: home.to_string_lossy().to_string(),
+                agent_name: "test-agent".to_string(),
+                agent_did: did.clone(),
+                key_path: Some(key_path.to_string_lossy().to_string()),
+                identity_backend: None,
+                keychain_label: None,
+                secure_enclave_label: None,
+                tool_package: None,
+                tool_ceiling: ToolCeilingArg::Readonly,
+                tool_root: None,
+            },
+        )
+        .unwrap();
+        did
+    }
+
+    #[tokio::test]
+    async fn offline_config_access_uses_initialized_signing_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let expected_did = write_file_identity_init(temp.path());
+        let (access, _) = resolve_config_access(Some(temp.path()), None)
+            .await
+            .unwrap();
+        let ConfigAccess::Local(node) = access else {
+            panic!("offline access must open a local node");
+        };
+        assert_eq!(node.node_identity_did(), Some(expected_did.as_str()));
+    }
+
+    #[test]
+    fn offline_config_access_refuses_missing_initialized_signer() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = load_offline_config_node_identity(temp.path()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("requires an initialized signing identity"));
+    }
 
     #[test]
     fn default_codex_remote_matches_shim_port() {

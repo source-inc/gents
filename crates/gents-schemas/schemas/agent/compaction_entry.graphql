@@ -1,14 +1,25 @@
 type CompactionEntry @branchable {
-    compaction_key: String @index(unique: true)
-    session_id: String @index
+    # Finalized compaction facts are create-only. This ordinary index is
+    # intentionally non-unique: replicated logical twins must remain visible
+    # so runtime admission can reject the complete conflict set.
+    compaction_key: String @index @immutable
+    session_id: String @index @immutable
     agent_did: String @index @immutable
     requester_did: String @index @immutable
-    sequence: Int @index
-    summary: String
-    files_read: String
-    files_modified: String
-    messages_compacted: Int
-    original_tokens: Int
-    compacted_tokens: Int
-    created_at: DateTime
+    sequence: Int @index @immutable
+    summary: String @immutable
+    files_read: String @immutable
+    files_modified: String @immutable
+    messages_compacted: Int @immutable
+    original_tokens: Int @immutable
+    compacted_tokens: Int @immutable
+    # Versioned canonical JSON pins the exact transcript, resolved config, and
+    # prior compaction document versions consumed by this finalized summary.
+    # Mutable/in-flight compaction progress does not belong in this collection.
+    source_manifest_version: Int @immutable
+    source_manifest_json: String @immutable
+    created_at: DateTime @immutable
+    fork_source_doc_id: String @index @immutable
+    fork_source_composite_commit_cid: String @immutable
+    fork_source_signer_did: String @immutable
 }

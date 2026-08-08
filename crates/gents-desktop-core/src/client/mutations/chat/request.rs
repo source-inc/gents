@@ -64,6 +64,11 @@ pub async fn submit_request(
     let session_id = normalize_required("session_id", session_id)?;
     let agent_did = normalize_required("agent_did", agent_did)?;
     let requester_did = normalize_required("requester_did", requester_did)?;
+    let source_author_did = normalize_required(
+        "node_identity_did",
+        node.node_identity_did()
+            .context("submit_request requires a signed embedded node")?,
+    )?;
     let content = normalize_required("content", content)?;
     let (content, options) = prepare_prompt_submission(content, options)?;
     let request_id = Uuid::new_v4().to_string();
@@ -97,6 +102,7 @@ pub async fn submit_request(
         &request_id,
         agent_did,
         requester_did,
+        source_author_did,
         binding.behavior_id.as_deref().unwrap_or(""),
         session_id,
         &retry_parent_request,
@@ -214,6 +220,11 @@ async fn retry_request_with_request_id(
             .context("retry parent request must have an agent_did")?,
     )?;
     let requester_did = normalize_required("requester_did", requester_did)?;
+    let source_author_did = normalize_required(
+        "node_identity_did",
+        node.node_identity_did()
+            .context("retry_request requires a signed embedded node")?,
+    )?;
 
     let mut last_error = None;
     for attempt in 0..RETRY_TRANSACTION_ATTEMPTS {
@@ -224,6 +235,7 @@ async fn retry_request_with_request_id(
             parent_request_id,
             agent_did,
             requester_did,
+            source_author_did,
             &request_id,
         )
         .await
@@ -257,6 +269,7 @@ async fn retry_request_in_txn(
     parent_request_id: &str,
     agent_did: &str,
     requester_did: &str,
+    source_author_did: &str,
     candidate_request_id: &str,
 ) -> Result<SubmittedRequest> {
     let retry_key = retry_successor_key(agent_did, requester_did, parent_request_id);
@@ -332,6 +345,7 @@ async fn retry_request_in_txn(
         candidate_request_id,
         agent_did,
         requester_did,
+        source_author_did,
         binding.behavior_id.as_deref().unwrap_or(""),
         parent_session_id,
         parent_request_id,
@@ -788,6 +802,7 @@ fn build_add_agent_request_field(
     request_id: &str,
     agent_did: &str,
     requester_did: &str,
+    source_author_did: &str,
     behavior_id: &str,
     session_id: &str,
     retry_parent_request: &str,
@@ -803,6 +818,7 @@ fn build_add_agent_request_field(
     let escaped_request_id = escape_graphql_string(request_id);
     let escaped_agent_did = escape_graphql_string(agent_did);
     let escaped_requester_did = escape_graphql_string(requester_did);
+    let escaped_source_author_did = escape_graphql_string(source_author_did);
     let escaped_behavior_id = escape_graphql_string(behavior_id);
     let escaped_session_id = escape_graphql_string(session_id);
     let escaped_retry_parent = escape_graphql_string(retry_parent_request);
@@ -816,6 +832,7 @@ fn build_add_agent_request_field(
         r#"{alias}: add_AgentRequest(input: {{
                 request_id: "{escaped_request_id}",
                 agent_did: "{escaped_agent_did}",
+                source_author_did: "{escaped_source_author_did}",
                 requester_did: "{escaped_requester_did}",
                 behavior_id: "{escaped_behavior_id}",
                 session_id: "{escaped_session_id}",
@@ -1039,6 +1056,32 @@ mod tests {
 
     const RECOVERY_AGENT_DID: &str = "did:test:amy";
     const RECOVERY_BEHAVIOR_ID: &str = "amy-code";
+
+    #[test]
+    fn request_mutation_keeps_signer_authorship_separate_from_target() {
+        let field = build_add_agent_request_field(
+            "request",
+            "req-1",
+            "did:test:target-agent",
+            "did:test:desktop-principal",
+            "did:test:desktop-node",
+            "behavior-1",
+            "session-1",
+            "",
+            "req-1",
+            "hello",
+            "2026-08-07T00:00:00Z",
+            0,
+            3,
+            "",
+            "interactive",
+            "",
+        );
+
+        assert!(field.contains("agent_did: \"did:test:target-agent\""));
+        assert!(field.contains("source_author_did: \"did:test:desktop-node\""));
+        assert!(field.contains("requester_did: \"did:test:desktop-principal\""));
+    }
 
     #[derive(Debug)]
     struct RecoveryPreState {
@@ -2285,11 +2328,15 @@ mod tests {
         behavior_id: &str,
     ) -> Result<()> {
         let created_at = Utc::now().to_rfc3339();
+        let source_author_did = node
+            .node_identity_did()
+            .expect("duplicate request fixture requires a signed node");
         let request_field = build_add_agent_request_field(
             "duplicate",
             request_id,
             agent_did,
             "did:test:desktop",
+            source_author_did,
             behavior_id,
             session_id,
             "",

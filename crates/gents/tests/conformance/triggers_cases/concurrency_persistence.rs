@@ -2,7 +2,8 @@ use super::*;
 
 #[tokio::test]
 async fn serial_skips_when_prior_active_runtime() {
-    let db = test_db("trigger-conformance-event-serial-skip").await;
+    let db = signed_materializer_test_db("trigger-conformance-event-serial-skip").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
 
     let lineage = TriggerLineage {
         trigger_id: Some("trigger-event-serial".into()),
@@ -11,7 +12,7 @@ async fn serial_skips_when_prior_active_runtime() {
     RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "seed event in-flight",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -24,7 +25,7 @@ async fn serial_skips_when_prior_active_runtime() {
     assert!(
         has_active_runtime_request_for_trigger(
             db.node.as_ref(),
-            AGENT_DID,
+            &agent_did,
             "trigger-event-serial",
             "event"
         )
@@ -47,7 +48,8 @@ async fn serial_skips_when_prior_active_runtime() {
 
 #[tokio::test]
 async fn latest_only_supersedes_prior_fire() {
-    let db = test_db("trigger-conformance-event-latest-only").await;
+    let db = signed_materializer_test_db("trigger-conformance-event-latest-only").await;
+    let agent_did = signed_materializer_agent_did(&db).to_string();
 
     let lineage = TriggerLineage {
         trigger_id: Some("trigger-event-latest".into()),
@@ -56,7 +58,7 @@ async fn latest_only_supersedes_prior_fire() {
     let prior = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "seed prior",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -69,7 +71,7 @@ async fn latest_only_supersedes_prior_fire() {
 
     let superseded = supersede_active_runtime_requests_for_trigger(
         db.node.as_ref(),
-        AGENT_DID,
+        &agent_did,
         "trigger-event-latest",
         "event",
     )
@@ -94,7 +96,7 @@ async fn latest_only_supersedes_prior_fire() {
     let new_fire = RequestLifecycle::materialize_claimed_with_execution_binding(
         db.node.clone(),
         AGENT_NAME,
-        AGENT_DID,
+        &agent_did,
         "latest event fire",
         DEADLINE_SECS,
         ExecutionOrigin::Scheduled,
@@ -115,7 +117,7 @@ async fn latest_only_supersedes_prior_fire() {
     assert!(
         has_active_runtime_request_for_trigger(
             db.node.as_ref(),
-            AGENT_DID,
+            &agent_did,
             "trigger-event-latest",
             "event"
         )

@@ -462,12 +462,18 @@ fn json_value_has_control_char(value: &serde_json::Value) -> bool {
     }
 }
 
-async fn test_hook() -> (Arc<defra_node::EmbeddedNode>, DefraSessionHook) {
+async fn test_hook() -> (
+    Arc<defra_node::EmbeddedNode>,
+    DefraSessionHook,
+    crate::test_support::SignedTestIdentity,
+) {
     let data_path =
         std::env::temp_dir().join(format!("agent-loop-stream-{}", uuid::Uuid::new_v4()));
+    let identity = crate::test_support::signed_test_identity("agent-loop-stream-identity");
     let node = Arc::new(
         defra_node::EmbeddedNode::builder()
             .data_path(&data_path)
+            .with_node_identity_did(identity.did())
             .build()
             .await
             .unwrap(),
@@ -476,15 +482,15 @@ async fn test_hook() -> (Arc<defra_node::EmbeddedNode>, DefraSessionHook) {
     let hook = DefraSessionHook::with_identity(
         node.clone(),
         "general",
-        "did:test:test",
+        identity.did(),
         FailurePolicy::default(),
     );
-    (node, hook)
+    (node, hook, identity)
 }
 
 #[tokio::test]
 async fn single_turn_no_tools_yields_text_then_final() {
-    let (_node, hook) = test_hook().await;
+    let (_node, hook, _identity) = test_hook().await;
     let model = ScriptedModel::new(vec![
         RawStreamingChoice::Message("Hello ".to_string()),
         RawStreamingChoice::Message("world".to_string()),
@@ -523,7 +529,7 @@ async fn single_turn_no_tools_yields_text_then_final() {
 
 #[tokio::test]
 async fn rendered_request_sink_runs_before_provider_stream() {
-    let (_node, hook) = test_hook().await;
+    let (_node, hook, _identity) = test_hook().await;
     let model = ScriptedModel::new(vec![
         RawStreamingChoice::Message("unreached".to_string()),
         RawStreamingChoice::FinalResponse(()),
@@ -574,22 +580,108 @@ async fn rendered_request_sink_runs_before_provider_stream() {
 /// request stored under it.
 type CaptureKey = (u64, u64, u64, usize, u32);
 
+type ConfigSourceRef = (String, Option<u64>, u64, u64, u64);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CanonicalCapture {
+    provider_body: u64,
+    config_scope: String,
+    config: Option<Vec<ConfigSourceRef>>,
+}
+
+fn config_bundle(
+    present: bool,
+    sources: &[crate::lean_vocab_test::LeanRenderedConfigSourceRef],
+) -> Option<Vec<ConfigSourceRef>> {
+    present.then(|| {
+        sources
+            .iter()
+            .map(|source| {
+                (
+                    source.source_class.clone(),
+                    source.logical_id,
+                    source.doc_id,
+                    source.composite_commit_cid,
+                    source.signer_did,
+                )
+            })
+            .collect()
+    })
+}
+
+fn config_bundle_is_complete(config: &Option<Vec<ConfigSourceRef>>) -> bool {
+    const REQUIRED_CLASSES: [&str; 4] = [
+        "principal",
+        "behavior",
+        "inference_backend",
+        "inference_profile",
+    ];
+    let Some(sources) = config else {
+        return false;
+    };
+    if sources.len() < REQUIRED_CLASSES.len() {
+        return false;
+    }
+    let exact = |source: &ConfigSourceRef| source.2 != 0 && source.3 != 0 && source.4 != 0;
+    if !sources
+        .iter()
+        .take(REQUIRED_CLASSES.len())
+        .zip(REQUIRED_CLASSES)
+        .all(|(source, expected)| source.0 == expected && source.1.is_none() && exact(source))
+    {
+        return false;
+    }
+
+    let mut index = REQUIRED_CLASSES.len();
+    if sources
+        .get(index)
+        .is_some_and(|source| source.0 == "tool_selection")
+    {
+        let tool = &sources[index];
+        if tool.1.is_some() || !exact(tool) {
+            return false;
+        }
+        index += 1;
+    }
+
+    let mut previous_skill_id = 0;
+    sources[index..].iter().all(|skill| {
+        let Some(logical_id) = skill.1 else {
+            return false;
+        };
+        let canonical = skill.0 == "skill" && exact(skill) && previous_skill_id < logical_id;
+        previous_skill_id = logical_id;
+        canonical
+    })
+}
+
+fn config_bundle_is_admitted(scope: &str, config: &Option<Vec<ConfigSourceRef>>) -> bool {
+    match scope {
+        "reconciled_document_runtime" => config_bundle_is_complete(config),
+        "static_or_one_shot" => config.is_none() || config_bundle_is_complete(config),
+        _ => false,
+    }
+}
+
 /// `RenderedCapture.capture`, mirrored. This is deliberately the *only* hand
 /// written thing in the fence below, and it is the shape PR2's
 /// `rendered_request::sink` has to implement: missing key writes, identical
 /// canonical value succeeds without a write, conflicting canonical value is an
 /// integrity error. Everything else the test asserts is generated.
 fn mirror_capture(
-    store: &mut std::collections::HashMap<CaptureKey, u64>,
+    store: &mut std::collections::HashMap<CaptureKey, CanonicalCapture>,
     key: CaptureKey,
-    request: u64,
+    request: CanonicalCapture,
 ) -> &'static str {
-    match store.get(&key).copied() {
+    if !config_bundle_is_admitted(&request.config_scope, &request.config) {
+        return "rejected";
+    }
+    match store.get(&key) {
         None => {
             store.insert(key, request);
             "fresh"
         }
-        Some(stored) if stored == request => "idempotent",
+        Some(stored) if stored == &request => "idempotent",
         Some(_) => "rejected",
     }
 }
@@ -627,19 +719,31 @@ async fn generated_rendered_capture_cases_fence_persist_before_send() {
         );
         let mut seeded = std::collections::HashMap::new();
         if let Some(prior) = case.prior_binding {
-            seeded.insert(key, prior);
+            seeded.insert(
+                key,
+                CanonicalCapture {
+                    provider_body: prior,
+                    config_scope: case.config_scope.clone(),
+                    config: config_bundle(case.prior_config_present, &case.prior_config_sources),
+                },
+            );
         }
         let store = Arc::new(Mutex::new(seeded));
         let outcomes = Arc::new(Mutex::new(Vec::<&'static str>::new()));
 
         let store_for_sink = store.clone();
         let outcomes_for_sink = outcomes.clone();
-        let request_value = case.request;
+        let request_value = CanonicalCapture {
+            provider_body: case.request,
+            config_scope: case.config_scope.clone(),
+            config: config_bundle(case.config_present, &case.config_sources),
+        };
         let mut loop_config = config(0);
         loop_config.on_rendered_request =
             Some(Arc::new(move |_turn_index, _attempt, _request, _trace| {
                 let store = store_for_sink.clone();
                 let outcomes = outcomes_for_sink.clone();
+                let request_value = request_value.clone();
                 Box::pin(async move {
                     let outcome = mirror_capture(&mut *store.lock().await, key, request_value);
                     outcomes.lock().await.push(outcome);
@@ -673,10 +777,15 @@ async fn generated_rendered_capture_cases_fence_persist_before_send() {
             "{}: the sink decision drifted from RenderedCapture.capture",
             case.name
         );
+        let expected_durable = case.durable_after.map(|provider_body| CanonicalCapture {
+            provider_body,
+            config_scope: case.config_scope.clone(),
+            config: config_bundle(case.durable_config_present, &case.durable_config_sources),
+        });
         assert_eq!(
-            store.lock().await.get(&key).copied(),
-            case.durable_after,
-            "{}: the durable binding drifted from the Lean model",
+            store.lock().await.get(&key).cloned(),
+            expected_durable,
+            "{}: the durable canonical binding drifted from the Lean model",
             case.name
         );
         assert_eq!(
@@ -1385,6 +1494,15 @@ async fn a_provider_response_with_the_capture_still_armed_fails_the_turn() {
 
     let context = RenderedRequestContext {
         request_doc_id: "doc-1".to_string(),
+        request_provenance: Some(crate::document_version::test_request_execution_provenance(
+            "doc-1",
+            "did:key:agent",
+        )),
+        inference_call_provenance_scope:
+            crate::rendered_request::InferenceCallProvenanceScope::StaticOrTest,
+        transcript_snapshot: Vec::new(),
+        config_provenance_scope: crate::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+        config_provenance: None,
         request_id: "req-1".to_string(),
         agent_did: "did:key:agent".to_string(),
         requester_did: String::new(),
@@ -1392,7 +1510,9 @@ async fn a_provider_response_with_the_capture_still_armed_fails_the_turn() {
         session_id: "session-1".to_string(),
         model_name: "model".to_string(),
     };
-    let sink: RenderedRequestCaptureSink = Arc::new(|_| Box::pin(async { Ok(()) }));
+    let sink: RenderedRequestCaptureSink = Arc::new(|_| {
+        Box::pin(async { Ok(crate::rendered_request::test_static_rendered_request_version()) })
+    });
     let scope = test_scope(context, sink);
 
     let mut loop_config = config(0);
@@ -1440,6 +1560,15 @@ async fn an_empty_provider_stream_with_the_capture_still_armed_fails_the_turn() 
     let model = ScriptedModel::new(Vec::new());
     let context = RenderedRequestContext {
         request_doc_id: "doc-empty".to_string(),
+        request_provenance: Some(crate::document_version::test_request_execution_provenance(
+            "doc-empty",
+            "did:key:agent",
+        )),
+        inference_call_provenance_scope:
+            crate::rendered_request::InferenceCallProvenanceScope::StaticOrTest,
+        transcript_snapshot: Vec::new(),
+        config_provenance_scope: crate::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+        config_provenance: None,
         request_id: "req-empty".to_string(),
         agent_did: "did:key:agent".to_string(),
         requester_did: String::new(),
@@ -1447,7 +1576,9 @@ async fn an_empty_provider_stream_with_the_capture_still_armed_fails_the_turn() 
         session_id: "session-empty".to_string(),
         model_name: "model".to_string(),
     };
-    let sink: RenderedRequestCaptureSink = Arc::new(|_| Box::pin(async { Ok(()) }));
+    let sink: RenderedRequestCaptureSink = Arc::new(|_| {
+        Box::pin(async { Ok(crate::rendered_request::test_static_rendered_request_version()) })
+    });
     let scope = test_scope(context, sink);
     let mut loop_config = config(0);
     loop_config.on_rendered_request = Some(crate::rendered_request::scope::ambient_arming_sink(
@@ -1846,7 +1977,7 @@ async fn context_message_is_sent_before_prompt() {
 
 #[tokio::test]
 async fn tool_call_turn_executes_threads_result_and_completes() {
-    let (node, hook) = test_hook().await;
+    let (node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
     let prompt = Message::user("use the echo tool");
 
@@ -1947,7 +2078,7 @@ async fn tool_executes_before_provider_stalls_mid_stream() {
     // stall; the daemon liveness timeout then has something to cancel. The old
     // design collected tool calls and dispatched only after the stream drained,
     // so a mid-stream stall left the tool unrun with nothing to mark.
-    let (node, hook) = test_hook().await;
+    let (node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
     let prompt = Message::user("use the echo tool then stall");
 
@@ -2021,7 +2152,7 @@ async fn tool_executes_before_provider_stalls_mid_stream() {
 async fn tool_definition_receives_prompt_rag_text() {
     // P3/compat: tool definitions must be built with the prompt's rag text (rig
     // parity), not String::new(), so prompt-aware tools keep the task context.
-    let (_node, hook) = test_hook().await;
+    let (_node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
     let seen = Arc::new(Mutex::new(None));
     let tool: Box<dyn ToolDyn> = Box::new(RecordingDefinitionTool {
@@ -2054,7 +2185,7 @@ async fn tool_definition_receives_prompt_rag_text() {
 
 #[tokio::test]
 async fn exceeding_max_turns_terminates_with_error() {
-    let (_node, hook) = test_hook().await;
+    let (_node, hook, _identity) = test_hook().await;
     let prompt = Message::user("loop");
     ready_hook_for(&hook).await;
 
@@ -2109,7 +2240,7 @@ async fn exceeding_max_turns_terminates_with_error() {
 
 #[tokio::test]
 async fn managed_terminal_tool_result_terminates_loop() {
-    let (_node, hook) = test_hook().await;
+    let (_node, hook, _identity) = test_hook().await;
     let prompt = Message::user("run the slow tool");
     ready_hook_for(&hook).await;
 
@@ -2163,7 +2294,7 @@ async fn threaded_assistant_turn_carries_provider_message_id() {
     // follow-up requests reference prior `msg_` ids). Turn 1 emits a MessageId
     // plus a tool call; the tool result drives turn 2, whose request history must
     // contain the assistant tool-call message tagged with that id.
-    let (_node, hook) = test_hook().await;
+    let (_node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
 
     let model = ScriptedModel::new_turns(vec![
@@ -2217,7 +2348,7 @@ async fn toolset_is_attached_to_every_completion_request_in_the_loop() {
     // list on every turn; the owned loop must too. The follow-up request after a
     // tool result is folded in (turn 2) must still advertise the toolset, or the
     // provider sees a tool-result conversation with no tools.
-    let (_node, hook) = test_hook().await;
+    let (_node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
 
     // Turn 1: the model calls `echo`. Turn 2: it answers with text.
@@ -2328,7 +2459,7 @@ async fn every_request_in_a_tool_loop_satisfies_provider_invariants() {
     // Conformance guard for the loop's own threading: across a multi-tool,
     // multi-turn run, every request's history must pair calls with results and
     // keep assistant content provider-ordered — by construction, no sanitizer.
-    let (_node, hook) = test_hook().await;
+    let (_node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
 
     let model = ScriptedModel::new_turns(vec![
@@ -2386,7 +2517,7 @@ async fn dirty_caller_history_is_sanitized_at_loop_entry() {
     // — no call site can forget the sanitizer. Feed a dirty history (unpaired
     // call, orphaned result, text-after-call ordering) and assert the request
     // on the wire satisfies the provider invariants.
-    let (_node, hook) = test_hook().await;
+    let (_node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
 
     let unpaired_call = crate::llm::message::ToolCall {
@@ -2481,7 +2612,7 @@ async fn dirty_caller_history_is_sanitized_at_loop_entry() {
 
 #[tokio::test]
 async fn oversized_tool_result_is_bounded_before_threading() {
-    let (_node, hook) = test_hook().await;
+    let (_node, hook, _identity) = test_hook().await;
     let prompt = Message::user("read the big thing");
     ready_hook_for(&hook).await;
 
@@ -2542,7 +2673,7 @@ async fn oversized_tool_result_is_bounded_before_threading() {
 async fn run_loop_to_text_persists_assistant_reply() {
     // Regression: one-shot (run_loop_to_text) must persist the assistant reply,
     // not just the user prompt.
-    let (node, hook) = test_hook().await;
+    let (node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
     let model = ScriptedModel::new(vec![
         RawStreamingChoice::Message("the answer".to_string()),
@@ -2579,7 +2710,7 @@ async fn run_loop_to_text_persists_tool_using_transcript() {
     // Regression: for tool-using one-shots, both the assistant tool-call turn and
     // the tool-result message must be persisted (tool-result persistence gates on
     // the assistant turn being persisted first).
-    let (node, hook) = test_hook().await;
+    let (node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
     let model = ScriptedModel::new_turns(vec![
         echo_tool_turn(),
@@ -2629,7 +2760,7 @@ async fn run_loop_to_text_retract_persists_only_the_resample() {
     // durable assistant message becomes "Based onThe answer is 42" — corrupting
     // the transcript that feeds future history and training capture, even though
     // the returned string is correct. This fences that exact regression.
-    let (node, hook) = test_hook().await;
+    let (node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
     let model = ScriptedModel::new_calls(vec![
         ScriptedCall::TurnWithMidStreamError(
@@ -2862,7 +2993,7 @@ async fn unparseable_tool_args_notify_model_and_terminalize_failed() {
         }
     }
 
-    let (node, hook) = test_hook().await;
+    let (node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
 
     // Valid JSON, but missing the required `findings` field: a Malformed parse
@@ -2985,7 +3116,7 @@ async fn corrupt_589_tool_args_salvage_runs_and_history_stays_object_shaped() {
         }
     }
 
-    let (node, hook) = test_hook().await;
+    let (node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
 
     // The wire parser could not parse the corrupt bytes, so rig carries them as
@@ -3083,7 +3214,7 @@ async fn nonobject_tool_args_never_reach_durable_history_or_provider() {
         }
     }
 
-    let (node, hook) = test_hook().await;
+    let (node, hook, _identity) = test_hook().await;
     ready_hook_for(&hook).await;
 
     let model = ScriptedModel::new_turns(vec![

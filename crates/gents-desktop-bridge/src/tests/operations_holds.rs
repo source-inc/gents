@@ -6,7 +6,7 @@ use crate::types::{DesktopListHoldsRequest, DesktopResolveHoldRequest};
 
 const AGENT_DID: &str = "did:test:holds-agent";
 
-async fn seed_held_tool_call(core: &gents_desktop_core::client::ClientCore) {
+async fn seed_held_tool_call(core: &gents_desktop_core::client::ClientCore) -> String {
     let deadline = (chrono::Utc::now() + chrono::Duration::seconds(120)).to_rfc3339();
     let mutation = format!(
         r#"mutation {{
@@ -33,12 +33,20 @@ async fn seed_held_tool_call(core: &gents_desktop_core::client::ClientCore) {
         "seed held tool call failed: {:?}",
         response.errors
     );
+    response
+        .data
+        .as_ref()
+        .and_then(|data| data.get("create_AgentToolCall"))
+        .and_then(|row| row.get("_docID"))
+        .and_then(serde_json::Value::as_str)
+        .expect("seed held call physical _docID")
+        .to_string()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn list_holds_returns_seeded_awaiting_approval_row() {
     let (core, _tmp) = boot_core().await;
-    seed_held_tool_call(core.as_ref()).await;
+    let _call_doc_id = seed_held_tool_call(core.as_ref()).await;
 
     let held = list_tool_call_holds_for_core(
         core.clone(),
@@ -67,7 +75,7 @@ async fn list_holds_returns_seeded_awaiting_approval_row() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn resolve_hold_writes_decision_signed_by_desktop_principal() {
     let (core, _tmp) = boot_core().await;
-    seed_held_tool_call(core.as_ref()).await;
+    let call_doc_id = seed_held_tool_call(core.as_ref()).await;
 
     let result = resolve_tool_call_hold_for_core(
         core.clone(),
@@ -82,7 +90,7 @@ async fn resolve_hold_writes_decision_signed_by_desktop_principal() {
     .expect("resolve hold");
     assert_eq!(result.decision, "denied");
     assert_eq!(result.tool_call_id, "call_held");
-    assert!(result.approval_id.starts_with("approval-call_held-"));
+    assert_eq!(result.approval_id, format!("approval-{call_doc_id}"));
 
     let response = core
         .node()

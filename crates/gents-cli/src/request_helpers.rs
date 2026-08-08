@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use gents::{graphql::escape_graphql_string, skills::prompt_slash_skill_selection};
+use gents::{
+    config_client::ConfigAccess, graphql::escape_graphql_string,
+    skills::prompt_slash_skill_selection,
+};
 use gents_protocol::transcript::present_persisted_message;
 use serde_json::Value;
 
@@ -227,6 +230,10 @@ pub(crate) async fn create_agent_request(
     behavior_id: Option<&str>,
     options: RequestSubmitOptions,
 ) -> Result<SubmittedRequest> {
+    let source_author_did = ConfigAccess::Graphql(graphql.to_string())
+        .node_identity_did()
+        .await
+        .context("creating an AgentRequest requires a signed database endpoint")?;
     let (request_content, request_metadata) =
         content_and_metadata_with_prompt_selected_skill_ids(options.metadata.as_deref(), content);
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -288,6 +295,8 @@ pub(crate) async fn create_agent_request(
             create_AgentRequest(input: {{
                 request_id: "{request_id}",
                 agent_did: "{agent_did}",
+                source_author_did: "{source_author_did}",
+                requester_did: "{agent_did}",
                 {behavior_field}
                 session_id: "{session_id}",
                 retry_parent_request: "{retry_parent}",
@@ -306,6 +315,7 @@ pub(crate) async fn create_agent_request(
         }}"#,
         request_id = escape_graphql_string(&request_id),
         agent_did = escape_graphql_string(agent_did),
+        source_author_did = escape_graphql_string(&source_author_did),
         behavior_field = behavior_field,
         session_id = escape_graphql_string(&session_id),
         retry_parent = escape_graphql_string(retry_parent_value),

@@ -56,6 +56,7 @@ impl ClientCore {
                 .data_path(paths.node_data_dir())
                 .with_storage_backend(StorageBackend::RocksDb)
                 .with_p2p(desktop_p2p_config(&paths, &options))
+                .with_node_identity_did(principal.did())
                 .build()
                 .await
                 .context("starting embedded desktop node")?,

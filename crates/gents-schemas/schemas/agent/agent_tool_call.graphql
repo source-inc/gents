@@ -1,14 +1,20 @@
 type AgentToolCall @branchable {
-    tool_call_key: String @index(unique: true)
-    request_id: String @index
-    session_id: String @index
+    tool_call_key: String @index(unique: true) @immutable
+    request_id: String @index @immutable
+    session_id: String @index @immutable
     agent_did: String @index @immutable
     requester_did: String @index @immutable
-    message_sequence: Int
-    tool_name: String @index
-    tool_call_id: String @index
-    args: String
+    message_sequence: Int @immutable
+    tool_name: String @index @immutable
+    tool_call_id: String @index @immutable
+    args: String @immutable
     result: String
+    result_doc_id: String @index
+    result_composite_commit_cid: String
+    result_signer_did: String
+    approval_doc_id: String @index
+    approval_composite_commit_cid: String
+    approval_signer_did: String
     status: String
     lifecycle_state: String @index
     started_at: DateTime
@@ -40,4 +46,7 @@ type AgentToolCall @branchable {
     partial_output_tail: String
     partial_output_seq: Int
     completion_notification_delivered_at: DateTime
+    fork_source_doc_id: String @index @immutable
+    fork_source_composite_commit_cid: String @immutable
+    fork_source_signer_did: String @immutable
 }

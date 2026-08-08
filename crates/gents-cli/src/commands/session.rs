@@ -298,6 +298,7 @@ fn print_fork_outcome(args: &SessionForkArgs, outcome: ForkOutcome) -> Result<()
         "copied_messages": outcome.copied_messages,
         "copied_tool_calls": outcome.copied_tool_calls,
         "copied_tool_results": outcome.copied_tool_results,
+        "copied_tool_approvals": outcome.copied_tool_approvals,
         "copied_compaction_entries": outcome.copied_compaction_entries,
     }))?;
     Ok(())

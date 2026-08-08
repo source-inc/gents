@@ -21,6 +21,15 @@ type InferenceCall {
     controller_generation: Int
     backend_config_fingerprint: String
 
+    # Exact pre-send fence. RenderedRequest pins the running V1 commit below;
+    # the runtime then atomically writes the exact signed RenderedRequest back
+    # onto this call before forwarding bytes to the provider. Terminal writes
+    # preserve and fence on all four fields.
+    rendered_from_call_commit_cid: String
+    rendered_request_doc_id: String @index
+    rendered_request_composite_commit_cid: String
+    rendered_request_signer_did: String
+
     prompt_tokens: Int
     completion_tokens: Int
     cached_input_tokens: Int

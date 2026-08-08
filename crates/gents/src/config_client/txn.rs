@@ -101,7 +101,7 @@ impl<'a> ConfigApplyTxn<'a> {
                 identity,
             } => {
                 let request = QueryRequest::new(query).with_identity(identity.clone());
-                let response = node.runner().execute_in_txn(request, handle).await;
+                let response = node.execute_request_in_txn(request, handle).await;
                 if response.has_errors() {
                     anyhow::bail!("graphql returned errors: {:?}", response.errors);
                 }
@@ -251,5 +251,65 @@ impl ConfigAccess {
                 })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::identity::{AgentIdentity, KeyIdentity};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn local_transaction_uses_the_configured_node_signer() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let identity = KeyIdentity::load_or_create(tempdir.path().join("node.key"), None).unwrap();
+        let did = identity.did().to_string();
+        let expected_signer = defra_core::signing::get_identity(&did)
+            .expect("KeyIdentity registers a DefraDB signer")
+            .public_key_hex
+            .clone();
+        let node = EmbeddedNode::builder()
+            .with_node_identity_did(&did)
+            .build()
+            .await
+            .unwrap();
+        node.add_schema("type Widget { name: String }")
+            .await
+            .unwrap();
+
+        let txn = ConfigApplyTxn::begin_local(&node, None).await.unwrap();
+        let created = txn
+            .execute(r#"mutation { create_Widget(input: {name: "signed"}) { _docID } }"#)
+            .await
+            .unwrap();
+        let doc_id = created
+            .pointer("/data/add_Widget/0/_docID")
+            .or_else(|| created.pointer("/data/create_Widget/0/_docID"))
+            .and_then(Value::as_str)
+            .expect("created document id")
+            .to_string();
+        txn.commit().await.unwrap();
+
+        let response = node
+            .execute(&format!(
+                r#"query {{ _commits(docID: "{doc_id}", filter: {{fieldName: {{_eq: "_C"}}}}) {{ signature {{ type identity }} }} }}"#
+            ))
+            .await;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        let commits = response
+            .data
+            .as_ref()
+            .and_then(|data| data.get("_commits"))
+            .and_then(Value::as_array)
+            .expect("composite commit rows");
+        assert!(commits.iter().any(|commit| {
+            commit
+                .pointer("/signature/identity")
+                .and_then(Value::as_str)
+                == Some(expected_signer.as_str())
+        }));
+
+        node.shutdown().await;
     }
 }

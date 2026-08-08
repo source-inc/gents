@@ -21,6 +21,8 @@ async fn integration_can_construct_event_source_and_mock_delivers_updates() {
         paired_peer_dids: HashSet::new(),
         default_behavior_id: "test".to_string(),
         behaviors: HashMap::new(),
+        config_provenance_scope: gents::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+        behavior_config_provenance: HashMap::new(),
         tool_surfaces: HashMap::new(),
         backend_admission_configs: HashMap::new(),
         unavailable_behaviors: HashMap::new(),

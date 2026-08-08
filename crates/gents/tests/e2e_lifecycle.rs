@@ -18,3 +18,5 @@ mod merge_parked_unique_boot_e2e;
 mod p2p_admission_backpressure_e2e;
 #[path = "e2e_lifecycle/replicated_request_convergence_p2p_e2e.rs"]
 mod replicated_request_convergence_p2p_e2e;
+#[path = "e2e_lifecycle/signed_claim_restart.rs"]
+mod signed_claim_restart;

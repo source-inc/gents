@@ -1,6 +1,12 @@
 import Proofs.Conformance.Contracts.Json.Core
 import Proofs.Conformance.Contracts.Json.Runtime
 import Proofs.Conformance.Contracts.Json.Scheduling
+import Proofs.Conformance.Contracts.Json.InferenceCall
+import Proofs.Conformance.Contracts.Json.InferenceRenderedCapture
+import Proofs.Conformance.Contracts.Json.ToolFact
+import Proofs.Conformance.Contracts.Json.ForkProvenance
+import Proofs.Conformance.Contracts.Json.CompactionSourceManifest
+import Proofs.Conformance.Contracts.Json.ResponseOutcome
 import Proofs.Conformance.Contracts.Json.ToolExecution
 import Proofs.Conformance.Contracts.Json.CommandPolicy
 import Proofs.Conformance.Contracts.Json.ToolPolicy
@@ -13,6 +19,9 @@ import Proofs.Conformance.Contracts.Json.SelfConfig
 import Proofs.Conformance.Contracts.Json.Goal
 import Proofs.Conformance.Contracts.Json.PromptAssembly
 import Proofs.Conformance.Contracts.Json.RenderedCapture
+import Proofs.Conformance.Contracts.Json.RequestIngest
+import Proofs.Conformance.Contracts.Json.SubagentBridgeAdmission
+import Proofs.Conformance.Contracts.Json.TranscriptFinalization
 import Proofs.CompletionRetry.Contracts
 import Proofs.Conformance.Triggers.Contracts
 import Proofs.Conformance.ClientShell.Contracts
@@ -71,6 +80,26 @@ def snapshotJson : String :=
       ++ jsonArray (sessionRecoveryCases.map sessionRecoveryCaseJson) ++ ","
     ++ "\"inference_slot_accounting_cases\":"
       ++ jsonArray (inferenceSlotAccountingCases.map inferenceSlotAccountingCaseJson) ++ ","
+    ++ "\"inference_call_exact_target_cases\":"
+      ++ jsonArray
+        (inferenceCallExactTargetCases.map inferenceCallExactTargetCaseJson) ++ ","
+    ++ "\"inference_call_exact_target_trace_cases\":"
+      ++ jsonArray
+        (inferenceCallExactTargetTraceCases.map inferenceCallExactTargetTraceCaseJson) ++ ","
+    ++ "\"inference_rendered_capture_cases\":"
+      ++ inferenceRenderedCaptureCasesJson ++ ","
+    ++ "\"tool_fact_cases\":"
+      ++ toolFactCasesJson ++ ","
+    ++ "\"fork_provenance_cases\":"
+      ++ forkProvenanceCasesJson ++ ","
+    ++ "\"compaction_source_manifest_cases\":"
+      ++ compactionSourceManifestCasesJson ++ ","
+    ++ "\"response_outcome_cases\":"
+      ++ responseOutcomeCasesJson ++ ","
+    ++ "\"response_persistence_cut_cases\":"
+      ++ responsePersistenceCutCasesJson ++ ","
+    ++ "\"response_recovery_cut_cases\":"
+      ++ responseRecoveryCutCasesJson ++ ","
     ++ "\"fleet_slot_accounting_cases\":"
       ++ jsonArray (fleetSlotAccountingCases.map fleetSlotAccountingCaseJson) ++ ","
     ++ "\"persistence_failure_policy_cases\":"
@@ -199,6 +228,12 @@ def snapshotJson : String :=
     ++ "\"transcript_conformance_cases\":"
       ++ jsonArray
         (transcriptConformanceCases.map transcriptCaseJson) ++ ","
+    ++ "\"transcript_finalization_cases\":"
+      ++ jsonArray
+        (transcriptFinalizationCases.map transcriptFinalizationCaseJson) ++ ","
+    ++ "\"transcript_provider_history_cases\":"
+      ++ jsonArray
+        (transcriptProviderHistoryCases.map transcriptProviderHistoryCaseJson) ++ ","
     ++ "\"streaming_response_cases\":"
       ++ jsonArray
         (StreamingResponse.responseTransitionCases.map responseTransitionCaseJson) ++ ","
@@ -219,6 +254,10 @@ def snapshotJson : String :=
       ++ renderedCaptureCasesJson ++ ","
     ++ "\"rendered_capture_key_cases\":"
       ++ renderedCaptureKeyCasesJson ++ ","
+    ++ "\"request_ingest_cases\":"
+      ++ requestIngestCasesJson ++ ","
+    ++ "\"subagent_bridge_admission_cases\":"
+      ++ subagentBridgeAdmissionCasesJson ++ ","
     ++ "\"compaction_reducer_cases\":"
       ++ jsonArray
         (Compaction.compactionReducerCases.map compactionReducerCaseJson) ++ ","
@@ -238,6 +277,8 @@ def snapshotJson : String :=
       ++ Conformance.EventDelivery.sourceInstancesJson ++ ","
     ++ "\"event_delivery_convergence_traces\":"
       ++ Conformance.EventDelivery.convergenceTracesJson ++ ","
+    ++ "\"event_delivery_durable_admission_cases\":"
+      ++ Conformance.EventDelivery.durableAdmissionCasesJson ++ ","
     ++ "\"coverage_ledger\":"
       ++ coverageLedgerJson
     ++ ",\"feature_surface_requirements\":"

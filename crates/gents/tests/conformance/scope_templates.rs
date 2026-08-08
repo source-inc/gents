@@ -25,9 +25,11 @@ fn conversation_scope_filters_transcript_and_grants_unfiltered_config() {
     for col in [
         "AgentRequest",
         "AgentResponse",
+        "AgentResponseOutcome",
         "AgentMessage",
         "AgentToolCall",
         "AgentToolResult",
+        "AgentToolApproval",
         "AgentSession",
         "AgentConversation",
         "CompactionEntry",
@@ -83,9 +85,11 @@ fn machine_scope_covers_conversation_and_home_owned_directory() {
     for collection in [
         "AgentRequest",
         "AgentResponse",
+        "AgentResponseOutcome",
         "AgentMessage",
         "AgentToolCall",
         "AgentToolResult",
+        "AgentToolApproval",
         "AgentSession",
         "AgentConversation",
         "CompactionEntry",
@@ -126,8 +130,10 @@ fn subagent_templates_resolve_to_exact_directional_filters() {
     const RETURN_PROJECTION: &[&str] = &[
         "AgentRequest",
         "AgentResponse",
+        "AgentResponseOutcome",
         "AgentMessage",
         "AgentToolCall",
+        "AgentToolApproval",
     ];
 
     let coord = resolve_template("subagent-coordinator").expect("coordinator template");

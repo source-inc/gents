@@ -83,6 +83,51 @@ impl ConfigAccess {
             }
         }
     }
+
+    /// Resolve the DID that will cryptographically sign mutations issued
+    /// through this access path. Request documents persist this separately
+    /// from requester attribution and the target agent DID.
+    pub async fn node_identity_did(&self) -> Result<String> {
+        match self {
+            Self::Graphql(graphql) => {
+                #[derive(serde::Deserialize)]
+                struct NodeIdentityResponse {
+                    #[serde(rename = "DID", alias = "NodeDID")]
+                    did: Option<String>,
+                }
+
+                let api_base = graphql_api_base(graphql)?;
+                let response = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .build()?
+                    .get(format!("{api_base}/node/identity"))
+                    .send()
+                    .await
+                    .map_err(|error| anyhow::anyhow!("fetching node signing identity: {error}"))?;
+                let status = response.status();
+                let bytes = response.bytes().await.map_err(|error| {
+                    anyhow::anyhow!("reading node signing identity response: {error}")
+                })?;
+                if !status.is_success() {
+                    anyhow::bail!(
+                        "node signing identity returned HTTP {status}: {}",
+                        String::from_utf8_lossy(&bytes)
+                    );
+                }
+                let identity: NodeIdentityResponse = serde_json::from_slice(&bytes)
+                    .map_err(|error| anyhow::anyhow!("decoding node signing identity: {error}"))?;
+                identity
+                    .did
+                    .filter(|did| !did.trim().is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("database endpoint has no signing identity"))
+            }
+            Self::Local(node) => node
+                .node_identity_did()
+                .filter(|did| !did.trim().is_empty())
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| anyhow::anyhow!("embedded database has no signing identity")),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

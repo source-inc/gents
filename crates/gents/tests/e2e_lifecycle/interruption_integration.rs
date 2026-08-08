@@ -58,7 +58,10 @@ async fn offline_replay_of_stale_requests_does_not_call_backend() {
             ExecutionOrigin::Interactive,
             BACKEND_ID,
         );
-        assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Expired);
+        assert_eq!(
+            lifecycle.claim_without_identity_for_test().await.unwrap(),
+            ClaimOutcome::Expired
+        );
     }
 
     for (doc_id, _, _) in &request_doc_ids {
@@ -110,7 +113,10 @@ async fn resend_from_stale_populates_retry_chain() {
         ExecutionOrigin::Interactive,
         BACKEND_ID,
     );
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Expired);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Expired
+    );
 
     let resend_1_id = uuid::Uuid::new_v4().to_string();
     let resend_1_created_at = chrono::Utc::now().to_rfc3339();
@@ -145,7 +151,10 @@ async fn resend_from_stale_populates_retry_chain() {
         ExecutionOrigin::Interactive,
         BACKEND_ID,
     );
-    assert_eq!(lifecycle_1.claim().await.unwrap(), ClaimOutcome::Expired);
+    assert_eq!(
+        lifecycle_1.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Expired
+    );
 
     let resend_2_id = uuid::Uuid::new_v4().to_string();
     let resend_2_created_at = chrono::Utc::now().to_rfc3339();

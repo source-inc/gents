@@ -40,7 +40,8 @@ use gents::graphql::escape_graphql_string;
 use gents::write_manual_agent_request;
 use serde_json::Value;
 
-use crate::support::{test_db, AGENT_DID, AGENT_NAME};
+use crate::signed_materializer_test_db as test_db;
+use crate::support::{AGENT_DID, AGENT_NAME};
 
 async fn fetch_manual_row(node: &gents::defra_node::EmbeddedNode, doc_id: &str) -> Value {
     let escaped = escape_graphql_string(doc_id);

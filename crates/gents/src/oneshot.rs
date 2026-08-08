@@ -228,7 +228,12 @@ where
     C::CompletionModel: 'static,
     <C::CompletionModel as CompletionModel>::StreamingResponse: 'static,
 {
-    let model = client.completion_model(&behavior.model_name);
+    // One-shot calls are still provider calls. Give them the same durable
+    // admission/send fence as document-backed runtime calls instead of using
+    // the absence of an AgentRequest as an excuse to omit InferenceCall
+    // provenance.
+    let admission = crate::admission::AdmissionRegistry::new_direct_oneshot(node.clone());
+    let model = crate::completion_factory::build_admitted_model(client, admission, behavior);
     let config = loop_config(
         behavior,
         preamble,
@@ -272,7 +277,14 @@ where
     let capture_scope = crate::rendered_request::scope::scope_from_factory(
         crate::rendered_request::RenderedRequestContext {
             request_doc_id: String::new(),
-            request_id,
+            request_provenance: None,
+            inference_call_provenance_scope:
+                crate::rendered_request::InferenceCallProvenanceScope::AdmittedProviderCall,
+            transcript_snapshot: Vec::new(),
+            config_provenance_scope:
+                crate::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+            config_provenance: None,
+            request_id: request_id.clone(),
             agent_did: behavior.agent_did().to_string(),
             requester_did: String::new(),
             behavior_id: behavior.behavior_id.clone(),
@@ -301,11 +313,32 @@ where
         tools,
         config,
     );
-    let response = match capture_scope {
-        Some(scope) => crate::rendered_request::scope::scope_request(scope, inference).await,
-        None => inference.await,
-    }
-    .map_err(|error| anyhow!("one-shot inference failed: {error}"));
+    let backend_id = behavior
+        .backend_id
+        .as_deref()
+        .filter(|backend_id| !backend_id.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "one-shot behavior {} has no backend binding",
+                behavior.behavior_id
+            )
+        })?;
+    let admission_scope = crate::admission::AdmissionCallContext::for_oneoff(
+        &request_id,
+        &session_id,
+        &behavior.behavior_id,
+        backend_id,
+        behavior.agent_did(),
+    );
+    let admitted_inference = async move {
+        match capture_scope {
+            Some(scope) => crate::rendered_request::scope::scope_request(scope, inference).await,
+            None => inference.await,
+        }
+    };
+    let response = crate::admission::scope_request(admission_scope, admitted_inference)
+        .await
+        .map_err(|error| anyhow!("one-shot inference failed: {error}"));
 
     let session_id = hook.session_id().await;
     let close_result = hook.close().await;

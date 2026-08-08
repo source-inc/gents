@@ -39,34 +39,44 @@ fn trigger_lineage_graphql_fields(trigger_lineage: &TriggerLineage) -> String {
 
 async fn resolve_created_agent_request_doc_id(
     node: &EmbeddedNode,
-    mutation_response: &defra_node::QueryResponse,
-    mutation_field: &str,
+    identity: identity::Did,
+    _mutation_response: &defra_node::QueryResponse,
+    _mutation_field: &str,
     escaped_request_id: &str,
     lookup_error: &str,
     missing_doc_id_error: &str,
 ) -> Result<String> {
-    if let Some(doc_id) = extract_single_doc_id(mutation_response, mutation_field) {
-        return Ok(doc_id);
-    }
-
     let query = format!(
         r#"{{ AgentRequest(filter: {{ request_id: {{ _eq: "{escaped_request_id}" }} }}) {{ _docID }} }}"#
     );
-    let query_resp = node.execute(&query).await;
+    let query_resp = node
+        .execute_request_with_retry(
+            defra_node::QueryRequest::new(query).with_identity(Some(identity)),
+            defra_node::ExecuteRetryPolicy::default(),
+        )
+        .await;
     if query_resp.has_errors() {
         anyhow::bail!("{lookup_error}: {:?}", query_resp.errors);
     }
 
-    query_resp
+    let rows = query_resp
         .data
         .as_ref()
         .and_then(|data| data.get("AgentRequest"))
         .and_then(|value| value.as_array())
-        .and_then(|rows| rows.first())
-        .and_then(|row| row.get("_docID"))
-        .and_then(|doc_id| doc_id.as_str())
-        .ok_or_else(|| anyhow::anyhow!("{missing_doc_id_error}"))
-        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("{missing_doc_id_error}"))?;
+    match rows.as_slice() {
+        [row] => row
+            .get("_docID")
+            .and_then(|doc_id| doc_id.as_str())
+            .ok_or_else(|| anyhow::anyhow!("{missing_doc_id_error}"))
+            .map(str::to_string),
+        [] => anyhow::bail!("{missing_doc_id_error}"),
+        rows => anyhow::bail!(
+            "AgentRequest request_id lookup observed {} logical twins",
+            rows.len()
+        ),
+    }
 }
 
 pub(crate) async fn write_pending_agent_request_with_lineage_and_conversation_title(
@@ -77,6 +87,7 @@ pub(crate) async fn write_pending_agent_request_with_lineage_and_conversation_ti
     execution_origin: ExecutionOrigin,
     trigger_lineage: TriggerLineage,
     conversation_title: Option<&str>,
+    requested_request_id: Option<&str>,
 ) -> Result<EnqueuedAgentRequest> {
     if trigger_lineage.trigger_kind.as_deref() == Some("manual")
         && trigger_lineage.trigger_id.is_some()
@@ -85,16 +96,94 @@ pub(crate) async fn write_pending_agent_request_with_lineage_and_conversation_ti
     }
 
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let request_id = uuid::Uuid::new_v4().to_string();
+    let request_id = requested_request_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let session_id = uuid::Uuid::new_v4().to_string();
 
     let escaped_request_id = escape_graphql_string(&request_id);
     let escaped_agent_did = escape_graphql_string(agent_did);
+    let source_author_did = node.node_identity_did().ok_or_else(|| {
+        anyhow::anyhow!("pending AgentRequest creation requires a configured node signing identity")
+    })?;
+    let escaped_source_author_did = escape_graphql_string(source_author_did);
     let escaped_behavior_id = escape_graphql_string(behavior_id);
     let escaped_session_id = escape_graphql_string(&session_id);
     let prompt_selection = crate::skills::prompt_slash_skill_selection(content);
     let content = prompt_selection.prompt.as_str();
     let escaped_content = escape_graphql_string(content);
+    let query_identity = identity::Did::new(source_author_did)?;
+
+    if requested_request_id.is_some() {
+        let existing_query = format!(
+            r#"{{ AgentRequest(filter: {{ request_id: {{ _eq: "{escaped_request_id}" }} }}) {{
+                _docID request_id agent_did behavior_id session_id content
+                caused_by_trigger_id caused_by_trigger_kind
+            }} }}"#
+        );
+        let existing = node
+            .execute_request_with_retry(
+                defra_node::QueryRequest::new(existing_query)
+                    .with_identity(Some(query_identity.clone())),
+                defra_node::ExecuteRetryPolicy::default(),
+            )
+            .await;
+        if existing.has_errors() {
+            anyhow::bail!(
+                "query deterministic AgentRequest failed: {:?}",
+                existing.errors
+            );
+        }
+        let rows = existing
+            .data
+            .as_ref()
+            .and_then(|data| data.get("AgentRequest"))
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("deterministic AgentRequest query returned no rows"))?;
+        match rows.as_slice() {
+            [row] => {
+                let matches = row.get("request_id").and_then(serde_json::Value::as_str)
+                    == Some(request_id.as_str())
+                    && row.get("agent_did").and_then(serde_json::Value::as_str) == Some(agent_did)
+                    && row.get("behavior_id").and_then(serde_json::Value::as_str)
+                        == Some(behavior_id)
+                    && row.get("content").and_then(serde_json::Value::as_str) == Some(content)
+                    && row
+                        .get("caused_by_trigger_id")
+                        .and_then(serde_json::Value::as_str)
+                        == trigger_lineage.trigger_id.as_deref()
+                    && row
+                        .get("caused_by_trigger_kind")
+                        .and_then(serde_json::Value::as_str)
+                        == trigger_lineage.trigger_kind.as_deref();
+                if !matches {
+                    anyhow::bail!("deterministic AgentRequest {request_id} conflicts with the requested materialization");
+                }
+                return Ok(EnqueuedAgentRequest {
+                    doc_id: row
+                        .get("_docID")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("deterministic AgentRequest has no _docID"))?
+                        .to_owned(),
+                    request_id,
+                    session_id: row
+                        .get("session_id")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("deterministic AgentRequest has no session_id")
+                        })?
+                        .to_owned(),
+                });
+            }
+            [] => {}
+            rows => anyhow::bail!(
+                "deterministic AgentRequest {request_id} has {} visible logical twins",
+                rows.len()
+            ),
+        }
+    }
     let escaped_created_at = escape_graphql_string(&now);
     let execution_origin = execution_origin.as_str();
     let lineage_fields = trigger_lineage_graphql_fields(&trigger_lineage);
@@ -121,6 +210,7 @@ pub(crate) async fn write_pending_agent_request_with_lineage_and_conversation_ti
             create_AgentRequest(input: {{
                 request_id: "{escaped_request_id}",
                 agent_did: "{escaped_agent_did}",
+                source_author_did: "{escaped_source_author_did}",
                 behavior_id: "{escaped_behavior_id}",
                 session_id: "{escaped_session_id}",
                 retry_parent_request: "",
@@ -140,7 +230,12 @@ pub(crate) async fn write_pending_agent_request_with_lineage_and_conversation_ti
         max_retries = DEFAULT_REQUEST_MAX_RETRIES,
     );
 
-    let response = node.execute(&mutation).await;
+    let response = node
+        .execute_request_with_retry(
+            defra_node::QueryRequest::new(mutation).with_identity(Some(query_identity.clone())),
+            defra_node::ExecuteRetryPolicy::default(),
+        )
+        .await;
     if response.has_errors() {
         anyhow::bail!(
             "create pending AgentRequest with trigger lineage failed: {:?}",
@@ -150,6 +245,7 @@ pub(crate) async fn write_pending_agent_request_with_lineage_and_conversation_ti
 
     let doc_id = resolve_created_agent_request_doc_id(
         node,
+        query_identity,
         &response,
         "create_AgentRequest",
         &escaped_request_id,
@@ -240,6 +336,8 @@ impl RequestLifecycle {
             backend_id: backend_id.into(),
             failure_reason: None,
             request,
+            request_version: None,
+            execution_provenance: None,
             response_doc_id: None,
             progress_seq: 0,
             deadline_duration_secs,
@@ -262,147 +360,44 @@ impl RequestLifecycle {
     ) -> Result<Self> {
         let backend_id = backend_id.into();
         let behavior_id = agent_name.to_string();
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Utc::now();
-        let created_at = now.to_rfc3339();
-        let claimed_at = created_at.clone();
-        let deadline_at = now + chrono::Duration::seconds(deadline_duration_secs as i64);
-        let deadline = deadline_at.to_rfc3339();
-
-        session::create_session_with_behavior_id(
+        let enqueued = write_pending_agent_request_with_lineage_and_conversation_title(
             node.as_ref(),
-            &session_id,
-            agent_name,
             agent_did,
             &behavior_id,
-        )
-        .await?;
-
-        let escaped_request_id = escape_graphql_string(&request_id);
-        let escaped_agent_did = escape_graphql_string(agent_did);
-        let escaped_behavior_id = escape_graphql_string(&behavior_id);
-        let escaped_session_id = escape_graphql_string(&session_id);
-        let escaped_content = escape_graphql_string(content);
-        let escaped_backend_id = escape_graphql_string(&backend_id);
-        let escaped_retry_root_request = graphql_retry_root_request(None, &request_id);
-        let escaped_created_at = escape_graphql_string(&created_at);
-        let escaped_claimed_at = escape_graphql_string(&claimed_at);
-        let escaped_deadline = escape_graphql_string(&deadline);
-        let execution_origin_str = execution_origin.as_str();
-        let lineage_fields = trigger_lineage_graphql_fields(&trigger_lineage);
-
-        let mutation = format!(
-            r#"mutation {{
-                add_AgentRequest(input: {{
-                    request_id: "{escaped_request_id}",
-                    agent_did: "{escaped_agent_did}",
-                    behavior_id: "{escaped_behavior_id}",
-                    session_id: "{escaped_session_id}",
-                    retry_parent_request: "",
-                    retry_root_request: "{escaped_retry_root_request}",
-                    superseded_by_request: "",
-                    content: "{escaped_content}",
-                    status: "processing",
-                    lifecycle_state: "{lifecycle_state}",
-                    backend_id: "{escaped_backend_id}",
-                    execution_origin: "{execution_origin_str}",{lineage_fields}
-                    failure_reason: "",
-                    created_at: "{escaped_created_at}",
-                    claimed_at: "{escaped_claimed_at}",
-                    deadline: "{escaped_deadline}",
-                    retry_count: 0,
-                    max_retries: {max_retries}
-                }}) {{ _docID }}
-            }}"#,
-            lifecycle_state = PersistedLifecycleState::Claimed.as_str(),
-            max_retries = DEFAULT_REQUEST_MAX_RETRIES,
-        );
-
-        let resp = node.execute(&mutation).await;
-        if resp.has_errors() {
-            anyhow::bail!("creating claimed AgentRequest failed: {:?}", resp.errors);
-        }
-
-        let doc_id = resolve_created_agent_request_doc_id(
-            node.as_ref(),
-            &resp,
-            "add_AgentRequest",
-            &escaped_request_id,
-            "querying created AgentRequest doc id failed",
-            "add_AgentRequest returned no _docID",
-        )
-        .await?;
-
-        let lineage_mutation = format!(
-            r#"mutation {{
-                update_AgentRequest(
-                    filter: {{ _docID: {{ _eq: "{doc_id}" }} }},
-                    input: {{
-                        retry_parent_request: "",
-                        retry_root_request: "{escaped_retry_root_request}",
-                        superseded_by_request: ""
-                    }}
-                ) {{ _docID }}
-            }}"#,
-        );
-        let lineage_resp = node.execute(&lineage_mutation).await;
-        if lineage_resp.has_errors() {
-            anyhow::bail!(
-                "persisting request lineage for materialized AgentRequest failed: {:?}",
-                lineage_resp.errors
-            );
-        }
-
-        let request = AgentRequest {
-            doc_id,
-            request_id: request_id.clone(),
-            agent_did: agent_did.to_string(),
-            requester_did: None,
-            behavior_id: Some(behavior_id.clone()),
-            session_id: session_id.clone(),
-            content: content.to_string(),
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            max_tokens: None,
-            metadata: None,
-            execution_origin: Some(execution_origin_str.to_string()),
-            created_at,
-            deadline: Some(deadline),
-            subagent_depth: 0,
-            caused_by_parent_request_id: None,
-            caused_by_parent_tool_call_id: None,
-        };
-
-        session::upsert_conversation_from_request_with_identity(
-            node.as_ref(),
-            &session_id,
-            agent_name,
-            agent_did,
-            &behavior_id,
-            &request_id,
             content,
-            "processing",
+            execution_origin,
+            trigger_lineage,
+            None,
+            None,
         )
         .await?;
-
-        Ok(Self {
+        let request = crate::watcher::DefraWatcher::new(Arc::clone(&node), agent_did)
+            .try_fetch_request(&enqueued.doc_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "new pending AgentRequest {} was not claimable",
+                    enqueued.request_id
+                )
+            })?;
+        let mut lifecycle = Self::new_with_execution_binding(
             node,
-            agent_name: agent_name.to_string(),
-            agent_did: agent_did.to_string(),
-            behavior_id,
+            agent_name,
+            agent_did,
+            request,
+            deadline_duration_secs,
             execution_origin,
             backend_id,
-            failure_reason: None,
-            request,
-            response_doc_id: None,
-            progress_seq: 0,
-            deadline_duration_secs,
-            claimed_deadline_at: Some(deadline_at),
-            state: LocalLifecycleState::Claimed,
-            valid_until_at_claim: None,
-        })
+        );
+        match lifecycle.claim_with_identity().await? {
+            ClaimOutcome::Claimed => {}
+            outcome => anyhow::bail!(
+                "new pending AgentRequest {} was not claimed: {outcome:?}",
+                enqueued.request_id
+            ),
+        }
+        lifecycle.prepare_session_with_identity().await?;
+        Ok(lifecycle)
     }
 
     pub fn request(&self) -> &AgentRequest {
@@ -423,6 +418,7 @@ impl RequestLifecycle {
 
     pub async fn prepare_session_with_identity(&self) -> Result<()> {
         self.ensure_state(&[LocalLifecycleState::Claimed], "prepare_session")?;
+        self.require_execution_provenance("prepare the execution session")?;
         session::ensure_session_with_behavior_id_and_requester_did(
             &self.node,
             &self.request.session_id,

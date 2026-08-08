@@ -8,7 +8,7 @@ async fn fork_does_not_transition_parent_lifecycle_state() {
         create_agent_session,
     };
 
-    let db = test_db("fork-no-lifecycle-transition").await;
+    let db = signed_materializer_test_db("fork-no-lifecycle-transition").await;
 
     let parent_session = uuid::Uuid::new_v4().to_string();
     create_agent_session(
@@ -132,7 +132,10 @@ async fn pending_interrupted_via_interrupt_before_claim() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Interrupted);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Interrupted
+    );
     assert_lean_transition_is_legal("Request", "pending", "interrupted");
 
     let snap = fetch_request_snapshot(&db.node, &doc_id).await;
@@ -167,7 +170,10 @@ async fn pending_dead_stale_via_expire() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Expired);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Expired
+    );
     assert_lean_transition_is_legal("Request", "pending", "dead");
 
     let snap = fetch_request_snapshot(&db.node, &doc_id).await;
@@ -203,7 +209,10 @@ async fn transition_to_interrupted_from_claimed() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
 
     let interrupt_at = chrono::Utc::now().to_rfc3339();
     set_interrupt_requested_at(&db.node, &doc_id, &interrupt_at).await;
@@ -239,7 +248,10 @@ async fn processing_interrupted_preserves_partial_response() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
 
@@ -253,7 +265,7 @@ async fn processing_interrupted_preserves_partial_response() {
         "streaming",
     )
     .await;
-    lifecycle.set_response_doc_id(&response_doc_id);
+    lifecycle.set_response_doc_id(&response_doc_id).unwrap();
 
     let stream_writer =
         DefraStreamWriter::new(db.node.clone(), AGENT_DID, Duration::from_millis(50));
@@ -308,7 +320,10 @@ async fn input_required_interrupt_is_rejected_without_transition() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
     set_request_lifecycle_state(&db.node, &doc_id, "inputRequired").await;
@@ -383,7 +398,10 @@ async fn pending_tie_break_prefers_interrupt_over_expire() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Interrupted);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Interrupted
+    );
     assert_lean_transition_is_legal("Request", "pending", "interrupted");
 
     let snap = fetch_request_snapshot(&db.node, &doc_id).await;
@@ -414,7 +432,10 @@ async fn transition_to_interrupted_from_processing() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
 
@@ -453,7 +474,10 @@ async fn fail_after_interrupt_latch_prefers_interrupted() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
 
@@ -540,7 +564,10 @@ async fn interrupt_on_already_terminal_is_noop() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.complete().await.unwrap();
 
@@ -587,7 +614,10 @@ async fn valid_until_cached_at_claim_ignores_post_claim_extension() {
         BACKEND_ID,
     );
 
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
 
     let much_later = (chrono::Utc::now() + chrono::Duration::hours(10)).to_rfc3339();
     set_valid_until(&db.node, &doc_id, &much_later).await;
@@ -635,7 +665,7 @@ async fn s7_interrupt_requested_at_is_latch_never_rewritten() {
         BACKEND_ID,
     );
     assert_eq!(
-        lifecycle_a.claim().await.unwrap(),
+        lifecycle_a.claim_without_identity_for_test().await.unwrap(),
         ClaimOutcome::Interrupted
     );
 
@@ -672,7 +702,10 @@ async fn s7_interrupt_requested_at_is_latch_never_rewritten() {
         ExecutionOrigin::Interactive,
         BACKEND_ID,
     );
-    assert_eq!(lifecycle_b.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle_b.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
 
     set_interrupt_requested_at(&db.node, &doc_id_b, &t0).await;
     let snap_b_pre = fetch_request_snapshot_raw(&db.node, &doc_id_b).await;
@@ -718,7 +751,10 @@ async fn s8_valid_until_never_rewritten_by_transitions() {
         ExecutionOrigin::Interactive,
         BACKEND_ID,
     );
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     let snap1 = fetch_request_snapshot_raw(&db.node, &doc_id).await;
     assert_eq!(
         snap1.valid_until.as_deref(),
@@ -767,7 +803,10 @@ async fn s1_interrupted_is_terminal_subsequent_transitions_are_no_ops() {
         ExecutionOrigin::Interactive,
         BACKEND_ID,
     );
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     lifecycle.transition_to_interrupted().await.unwrap();
 
     let snap0 = fetch_request_snapshot(&db.node, &doc_id).await;
@@ -836,7 +875,10 @@ async fn ordering_response_interrupted_at_before_request_lifecycle_flip() {
         ExecutionOrigin::Interactive,
         BACKEND_ID,
     );
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+    assert_eq!(
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
+        ClaimOutcome::Claimed
+    );
     lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
 
@@ -850,7 +892,7 @@ async fn ordering_response_interrupted_at_before_request_lifecycle_flip() {
         "streaming",
     )
     .await;
-    lifecycle.set_response_doc_id(&response_doc_id);
+    lifecycle.set_response_doc_id(&response_doc_id).unwrap();
 
     let intent_at = chrono::Utc::now().to_rfc3339();
     let stream_writer =
@@ -927,7 +969,7 @@ fn conformance_interrupted_lifecycle_maps_to_interrupted_client_turn() {
 
 #[tokio::test]
 async fn manual_run_materializes_pending_request() {
-    let db = test_db("manual-run-materializes-pending").await;
+    let db = signed_materializer_test_db("manual-run-materializes-pending").await;
 
     let doc_id = write_manual_agent_request(
         &db.node,
@@ -976,7 +1018,7 @@ async fn manual_run_materializes_pending_request() {
 
 #[tokio::test]
 async fn manual_run_preserves_lineage_through_claim_transition() {
-    let db = test_db("manual-run-lineage-through-claim").await;
+    let db = signed_materializer_test_db("manual-run-lineage-through-claim").await;
 
     let doc_id = write_manual_agent_request(
         &db.node,
@@ -1064,7 +1106,7 @@ async fn manual_run_preserves_lineage_through_claim_transition() {
         BACKEND_ID,
     );
     assert_eq!(
-        lifecycle.claim().await.unwrap(),
+        lifecycle.claim_without_identity_for_test().await.unwrap(),
         ClaimOutcome::Claimed,
         "manual pending row must be claimable exactly once"
     );

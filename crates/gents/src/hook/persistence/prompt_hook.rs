@@ -447,7 +447,8 @@ impl DefraSessionHook {
 
             let truncator =
                 DefraSpillTruncator::new(self.node.clone(), &self.agent_did, &session_id)
-                    .with_requester_did(self.active_requester_did().await);
+                    .with_requester_did(self.active_requester_did().await)
+                    .with_tool_call_id(internal_call_id);
             let result_for_persistence = result;
             let truncated = truncator
                 .truncate(
@@ -470,6 +471,11 @@ impl DefraSessionHook {
                         "on_tool_result: no in-flight lifecycle for tool_call_id={internal_call_id}"
                     )
                 })?;
+
+            let result_fact = truncated.spill_ref.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("full tool output was not retained as an exact signed fact")
+            })?;
+            lc.attach_result_fact(result_fact).await?;
 
             match outcome {
                 ToolOutcome::Completed(_) => lc.complete(&truncated.text).await?,

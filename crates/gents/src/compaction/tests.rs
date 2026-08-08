@@ -1244,10 +1244,22 @@ async fn the_summarizer_and_its_fallback_arm_distinct_capture_scopes() {
     ));
     let compactor = DefraCompactor::new(std::sync::Arc::new(model), config);
 
-    let sink: RenderedRequestCaptureSink = std::sync::Arc::new(|_| Box::pin(async { Ok(()) }));
+    let sink: RenderedRequestCaptureSink = std::sync::Arc::new(|_| {
+        Box::pin(async { Ok(crate::rendered_request::test_static_rendered_request_version()) })
+    });
     let scope = test_scope(
         RenderedRequestContext {
             request_doc_id: "doc-1".to_string(),
+            request_provenance: Some(crate::document_version::test_request_execution_provenance(
+                "doc-1",
+                "did:key:agent",
+            )),
+            inference_call_provenance_scope:
+                crate::rendered_request::InferenceCallProvenanceScope::StaticOrTest,
+            transcript_snapshot: Vec::new(),
+            config_provenance_scope:
+                crate::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+            config_provenance: None,
             request_id: "req-1".to_string(),
             agent_did: "did:key:agent".to_string(),
             requester_did: String::new(),
@@ -2069,13 +2081,16 @@ fn estimate_tokens_rough() {
 #[tokio::test]
 async fn integration_compaction_persists_entry_and_prompt_builder_uses_it() {
     let data_path = std::env::temp_dir().join(format!("gents-compactor-{}", uuid::Uuid::new_v4()));
+    let signed_identity = crate::test_support::signed_test_identity("gents-compactor-identity");
+    let signer_did = signed_identity.did().to_owned();
     let node = defra_node::EmbeddedNode::builder()
         .data_path(&data_path)
+        .with_node_identity_did(&signer_did)
         .build()
         .await
         .unwrap();
     ensure_schemas(&node).await.unwrap();
-    session::create_session_with_id(&node, "session-1", "general", "did:test:test")
+    session::create_session_with_id(&node, "session-1", "general", &signer_did)
         .await
         .unwrap();
 
@@ -2123,7 +2138,7 @@ async fn integration_compaction_persists_entry_and_prompt_builder_uses_it() {
         session::save_message(
             &node,
             "session-1",
-            "did:test:test",
+            &signer_did,
             sequence,
             "user",
             &serde_json::to_string(&user).unwrap(),
@@ -2136,7 +2151,7 @@ async fn integration_compaction_persists_entry_and_prompt_builder_uses_it() {
         session::save_message(
             &node,
             "session-1",
-            "did:test:test",
+            &signer_did,
             sequence,
             "assistant",
             &serde_json::to_string(&assistant_tool_call).unwrap(),
@@ -2149,7 +2164,7 @@ async fn integration_compaction_persists_entry_and_prompt_builder_uses_it() {
         session::save_message(
             &node,
             "session-1",
-            "did:test:test",
+            &signer_did,
             sequence,
             "user",
             &serde_json::to_string(&tool_result).unwrap(),
@@ -2162,7 +2177,7 @@ async fn integration_compaction_persists_entry_and_prompt_builder_uses_it() {
         session::save_message(
             &node,
             "session-1",
-            "did:test:test",
+            &signer_did,
             sequence,
             "assistant",
             &serde_json::to_string(&assistant).unwrap(),
@@ -2173,9 +2188,13 @@ async fn integration_compaction_persists_entry_and_prompt_builder_uses_it() {
         sequence += 1;
     }
 
-    let history = session::load_history(&node, "session-1").await.unwrap();
-    let durable_before = history.clone();
-    let (provider_history, _) = provider_view(history);
+    let loaded_history = session::load_history_with_refs(&node, "session-1")
+        .await
+        .unwrap();
+    let durable_before = loaded_history.messages.clone();
+    let transcript_snapshot = loaded_history.fact_refs;
+    let (provider_history, _) = provider_view(loaded_history.messages);
+    let provider_view_message_count = provider_history.len();
     let result = compactor
         .compact(
             provider_history,
@@ -2191,16 +2210,31 @@ async fn integration_compaction_persists_entry_and_prompt_builder_uses_it() {
         .unwrap();
 
     let summary = result.summary.clone().unwrap();
+    let behavior_id = "compaction-integration-behavior";
+    let config_provenance = session::create_test_config_provenance(&node, &signer_did, behavior_id)
+        .await
+        .unwrap();
+    let source_manifest = session::CompactionSourceManifest::new(
+        "session-1",
+        behavior_id,
+        transcript_snapshot,
+        config_provenance,
+        Vec::new(),
+        provider_view_message_count,
+        0,
+        provider_view_message_count,
+    );
     session::save_compaction_entry(
         &node,
         "session-1",
-        "did:test:test",
+        &signer_did,
         &summary,
         &result.files_read,
         &result.files_modified,
         result.messages_compacted,
         result.original_token_estimate,
         result.compacted_token_estimate,
+        source_manifest,
     )
     .await
     .unwrap();

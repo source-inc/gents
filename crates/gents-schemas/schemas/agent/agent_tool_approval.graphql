@@ -1,10 +1,20 @@
 type AgentToolApproval @branchable {
-    approval_id: String @index(unique: true)
-    tool_call_id: String @index
-    request_id: String @index
+    approval_id: String @index(unique: true) @immutable
+    approval_key: String @index(unique: true) @immutable
+    tool_call_id: String @index @immutable
+    tool_call_key: String @index @immutable
+    tool_call_doc_id: String @index @immutable
+    tool_call_composite_commit_cid: String @immutable
+    tool_call_signer_did: String @immutable
+    request_id: String @index @immutable
+    session_id: String @index @immutable
     agent_did: String @index @immutable
-    decision: String @index
+    requester_did: String @index @immutable
+    decision: String @index @immutable
     approver_did: String @immutable
-    reason: String
-    created_at: DateTime
+    reason: String @immutable
+    created_at: DateTime @immutable
+    fork_source_doc_id: String @index @immutable
+    fork_source_composite_commit_cid: String @immutable
+    fork_source_signer_did: String @immutable
 }

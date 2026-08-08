@@ -150,9 +150,10 @@ impl DefraSessionHook {
         let execution_session_id = session_id.clone();
         let execution_request_id = request_id.clone();
         let execution_tool_name = target_tool_name.clone();
+        let live_output_target = super::super::LiveOutputRowTarget::from_lifecycle(&lifecycle)?;
         let live_output_writer = live_outputs
-            .writer_for(background_tool_call_id.clone())
-            .await;
+            .writer_for(background_tool_call_id.clone(), live_output_target)
+            .await?;
         self.ensure_live_output_flusher();
         let workspace_cwd = crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
             .and_then(|runtime| runtime.workspace_cwd);

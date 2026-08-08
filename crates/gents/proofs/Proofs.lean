@@ -13,6 +13,9 @@ import Proofs.Transcript
 import Proofs.Compaction
 import Proofs.PromptAssembly
 import Proofs.RenderedCapture
+import Proofs.InferenceRenderedCapture
+import Proofs.RequestIngest
+import Proofs.SubagentBridgeAdmission
 import Proofs.RuntimeReconcile
 import Proofs.PairingReconcile
 import Proofs.PeerRegistryDiscovery
@@ -24,6 +27,9 @@ import Proofs.ClientShell
 import Proofs.CommandPolicy
 import Proofs.ToolPolicy
 import Proofs.ToolExecution
+import Proofs.ToolFact
+import Proofs.ForkProvenance
+import Proofs.ResponseOutcome
 import Proofs.CompletionRetry
 import Proofs.ManagedExec
 import Proofs.MCPHealth

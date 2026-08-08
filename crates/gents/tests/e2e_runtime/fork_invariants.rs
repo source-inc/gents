@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use axum::{extract::State, routing::post, Json, Router};
 use gents::graphql::escape_graphql_string;
@@ -6,16 +6,164 @@ use gents::session::{fork, fork_via_http, ForkError, ForkParams};
 use serde::Deserialize;
 use tokio::net::TcpListener;
 
-use crate::support::snapshots::fetch_compaction_entry_snapshots_for_session;
 use crate::support::snapshots::fetch_conversation_snapshot;
 use crate::support::snapshots::fetch_message_snapshots_for_session;
 use crate::support::snapshots::fetch_tool_call_snapshots_for_session;
 use crate::support::snapshots::fetch_tool_result_snapshots_for_session;
 use crate::support::{
     create_agent_behavior, create_agent_conversation, create_agent_message, create_agent_session,
-    create_agent_tool_call, create_agent_tool_result, create_compaction_entry, create_request,
-    test_db, AGENT_DID, AGENT_NAME,
+    create_agent_tool_call, create_compaction_entry, create_request, test_db_with_identity, TestDb,
+    AGENT_DID, AGENT_NAME,
 };
+
+async fn test_db(name: &str) -> TestDb {
+    let identity: Arc<dyn gents::AgentIdentity> =
+        Arc::new(crate::support::fixtures::test_identity(name));
+    test_db_with_identity(name, identity).await
+}
+
+async fn exact_current_evidence(
+    node: &defra_node::EmbeddedNode,
+    collection: &str,
+    logical_field: &str,
+    logical_value: &str,
+) -> (String, String, String) {
+    let query = format!(
+        r#"{{ {collection}(filter: {{ {logical_field}: {{ _eq: "{}" }} }}) {{ _docID }} }}"#,
+        escape_graphql_string(logical_value)
+    );
+    let response = node.execute(&query).await;
+    assert!(
+        !response.has_errors(),
+        "load exact source document: {:?}",
+        response.errors
+    );
+    let rows = response
+        .data
+        .as_ref()
+        .and_then(|data| data.get(collection))
+        .and_then(serde_json::Value::as_array)
+        .expect("source rows");
+    assert_eq!(
+        rows.len(),
+        1,
+        "logical source must resolve to one physical document"
+    );
+    let doc_id = rows[0]["_docID"]
+        .as_str()
+        .expect("source _docID")
+        .to_string();
+    let commits = node
+        .execute(&format!(
+            r#"{{ _commits(docID: ["{}"], filter: {{ fieldName: {{ _eq: "_C" }} }}) {{ cid heads {{ cid fieldName }} }} }}"#,
+            escape_graphql_string(&doc_id)
+        ))
+        .await;
+    assert!(
+        !commits.has_errors(),
+        "load source commits: {:?}",
+        commits.errors
+    );
+    let commits = commits
+        .data
+        .as_ref()
+        .and_then(|data| data.get("_commits"))
+        .and_then(serde_json::Value::as_array)
+        .expect("source commits");
+    let nested = commits
+        .iter()
+        .flat_map(|commit| commit["heads"].as_array().into_iter().flatten())
+        .filter(|head| head["fieldName"].as_str() == Some("_C"))
+        .filter_map(|head| head["cid"].as_str())
+        .collect::<HashSet<_>>();
+    let current = commits
+        .iter()
+        .filter(|commit| {
+            commit["cid"]
+                .as_str()
+                .is_some_and(|cid| !nested.contains(cid))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        current.len(),
+        1,
+        "source must have one current composite head"
+    );
+    let cid = current[0]["cid"].as_str().expect("source CID").to_string();
+    let signer = node
+        .verified_block_signer_did(&cid)
+        .await
+        .expect("verify source signer");
+    (doc_id, cid, signer)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_exact_tool_result(
+    node: &defra_node::EmbeddedNode,
+    session_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
+    tool_input: &str,
+    output_text: &str,
+    created_at: &str,
+) {
+    let tool_call_key = format!("{session_id}:{tool_call_id}");
+    let (call_doc_id, call_cid, call_signer) =
+        exact_current_evidence(node, "AgentToolCall", "tool_call_key", &tool_call_key).await;
+    let mutation = format!(
+        r#"mutation {{ create_AgentToolResult(input: {{
+            result_key: "{call_doc_id}",
+            tool_call_key: "{}",
+            tool_call_doc_id: "{call_doc_id}",
+            tool_call_composite_commit_cid: "{call_cid}",
+            tool_call_signer_did: "{call_signer}",
+            agent_did: "{AGENT_DID}",
+            session_id: "{}",
+            tool_name: "{}",
+            tool_input: "{}",
+            output_text: "{}",
+            model_output_truncated: false,
+            truncation_metadata: "",
+            conversation_doc_id: "",
+            created_at: "{}",
+            discarded_because_interrupted: false
+        }}) {{ _docID }} }}"#,
+        escape_graphql_string(&tool_call_key),
+        escape_graphql_string(session_id),
+        escape_graphql_string(tool_name),
+        escape_graphql_string(tool_input),
+        escape_graphql_string(output_text),
+        escape_graphql_string(created_at),
+    );
+    let response = node.execute(&mutation).await;
+    assert!(
+        !response.has_errors(),
+        "create exact result: {:?}",
+        response.errors
+    );
+    let (result_doc_id, result_cid, result_signer) =
+        exact_current_evidence(node, "AgentToolResult", "result_key", &call_doc_id).await;
+    let attach = format!(
+        r#"mutation {{ update_AgentToolCall(
+            filter: {{ _docID: {{ _eq: "{}" }} }},
+            input: {{
+                result_doc_id: "{}",
+                result_composite_commit_cid: "{}",
+                result_signer_did: "{}"
+            }}
+        ) {{ _docID }} }}"#,
+        escape_graphql_string(&call_doc_id),
+        escape_graphql_string(&result_doc_id),
+        escape_graphql_string(&result_cid),
+        escape_graphql_string(&result_signer),
+    );
+    let response = node.execute(&attach).await;
+    assert!(
+        !response.has_errors(),
+        "attach exact result: {:?}",
+        response.errors
+    );
+}
 
 #[derive(Clone)]
 struct EmbeddedGraphqlState {
@@ -411,7 +559,7 @@ async fn fork_copies_tool_calls_up_to_user_turn_boundary() {
 }
 
 #[tokio::test]
-async fn fork_copies_tool_results_strictly_before_cut_ts() {
+async fn fork_copies_only_results_pinned_by_a_copied_tool_call() {
     let db = test_db("fork-copy-tool-results").await;
 
     let parent_session = "parent-tr";
@@ -437,18 +585,46 @@ async fn fork_copies_tool_results_strictly_before_cut_ts() {
         "2026-04-21T10:00:03Z",
     )
     .await;
-    create_agent_tool_result(
+    create_agent_tool_call(
         &db.node,
         parent_session,
+        1,
+        "tc-early",
+        "read_file",
+        "{}",
+        "early",
+        "completed",
+        "2026-04-21T10:00:02Z",
+        "2026-04-21T10:00:02Z",
+    )
+    .await;
+    create_exact_tool_result(
+        &db.node,
+        parent_session,
+        "tc-early",
         "read_file",
         "{}",
         "early",
         "2026-04-21T10:00:02Z",
     )
     .await;
-    create_agent_tool_result(
+    create_agent_tool_call(
         &db.node,
         parent_session,
+        2,
+        "tc-late",
+        "read_file",
+        "{}",
+        "late",
+        "completed",
+        "2026-04-21T10:00:04Z",
+        "2026-04-21T10:00:04Z",
+    )
+    .await;
+    create_exact_tool_result(
+        &db.node,
+        parent_session,
+        "tc-late",
         "read_file",
         "{}",
         "late",
@@ -473,7 +649,7 @@ async fn fork_copies_tool_results_strictly_before_cut_ts() {
     assert_eq!(
         child_results.len(),
         1,
-        "only the early tool result should be copied"
+        "only the result pinned by the copied call should be minted"
     );
     assert_eq!(child_results[0].output_text, "early");
     assert_eq!(child_results[0].session_id, outcome.session_id);
@@ -482,13 +658,23 @@ async fn fork_copies_tool_results_strictly_before_cut_ts() {
     assert_eq!(child_results[0].tool_input, "{}");
     assert!(!child_results[0].truncated);
     assert_eq!(child_results[0].truncation_metadata, "");
-    assert_eq!(child_results[0].conversation_doc_id, "");
+    let (child_conversation_doc_id, _, _) = exact_current_evidence(
+        &db.node,
+        "AgentConversation",
+        "session_id",
+        &outcome.session_id,
+    )
+    .await;
+    assert_eq!(
+        child_results[0].conversation_doc_id,
+        child_conversation_doc_id
+    );
     assert_eq!(child_results[0].created_at, "2026-04-21T10:00:02Z");
     assert_eq!(outcome.copied_tool_results, 1);
 }
 
 #[tokio::test]
-async fn fork_copies_compaction_entries_strictly_before_cut_ts() {
+async fn fork_rejects_legacy_compaction_without_exact_source_manifest() {
     let db = test_db("fork-copy-compactions").await;
 
     let parent_session = "parent-ce";
@@ -533,7 +719,7 @@ async fn fork_copies_compaction_entries_strictly_before_cut_ts() {
     )
     .await;
 
-    let outcome = fork(
+    let error = fork(
         &db.node,
         ForkParams {
             source_session_id: parent_session,
@@ -543,18 +729,12 @@ async fn fork_copies_compaction_entries_strictly_before_cut_ts() {
         },
     )
     .await
-    .expect("fork succeeds");
-
-    let child_compactions =
-        fetch_compaction_entry_snapshots_for_session(&db.node, &outcome.session_id).await;
-    assert_eq!(child_compactions.len(), 1);
-    assert_eq!(child_compactions[0].summary, "early summary");
-    assert_eq!(child_compactions[0].sequence, 1);
-    assert_eq!(
-        child_compactions[0].compaction_key,
-        format!("{}:1", outcome.session_id)
+    .expect_err("fork must fail closed on a legacy compaction without exact provenance");
+    assert!(
+        matches!(error, ForkError::ForkCopyFailed(_)),
+        "unexpected fork error: {error:?}"
     );
-    assert_eq!(outcome.copied_compaction_entries, 1);
+    assert!(error.to_string().contains("source compaction manifest"));
 }
 
 #[tokio::test]
@@ -596,22 +776,13 @@ async fn fork_batches_multiple_rows_for_all_copy_collections() {
 
         let tool_input = format!(r#"{{"path":"file-{i}.txt"}}"#);
         let output_text = format!("tool-result-{i}");
-        create_agent_tool_result(
+        create_exact_tool_result(
             &db.node,
             parent_session,
+            &tool_call_id,
             "read_file",
             &tool_input,
             &output_text,
-            &timestamp,
-        )
-        .await;
-
-        create_compaction_entry(
-            &db.node,
-            parent_session,
-            i,
-            &format!("summary-{i}"),
-            i,
             &timestamp,
         )
         .await;
@@ -632,7 +803,7 @@ async fn fork_batches_multiple_rows_for_all_copy_collections() {
     assert_eq!(outcome.copied_messages, 3);
     assert_eq!(outcome.copied_tool_calls, 3);
     assert_eq!(outcome.copied_tool_results, 3);
-    assert_eq!(outcome.copied_compaction_entries, 3);
+    assert_eq!(outcome.copied_compaction_entries, 0);
 
     let child_messages = fetch_message_snapshots_for_session(&db.node, &outcome.session_id).await;
     assert_eq!(child_messages.len(), 3);
@@ -665,19 +836,6 @@ async fn fork_batches_multiple_rows_for_all_copy_collections() {
             .collect::<Vec<_>>(),
         vec!["tool-result-1", "tool-result-2", "tool-result-3"]
     );
-
-    let child_compactions =
-        fetch_compaction_entry_snapshots_for_session(&db.node, &outcome.session_id).await;
-    assert_eq!(child_compactions.len(), 3);
-    for (index, compaction) in child_compactions.iter().enumerate() {
-        let sequence = (index + 1) as u32;
-        assert_eq!(compaction.sequence, sequence);
-        assert_eq!(compaction.summary, format!("summary-{sequence}"));
-        assert_eq!(
-            compaction.compaction_key,
-            format!("{}:{sequence}", outcome.session_id)
-        );
-    }
 }
 
 #[tokio::test]

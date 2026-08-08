@@ -19,6 +19,22 @@ impl Drop for DropProbe {
 
 impl super::StreamGuardLifecycle for DropProbe {}
 
+struct CancelBeforePollProbe {
+    drops: Arc<AtomicUsize>,
+}
+
+impl Drop for CancelBeforePollProbe {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl super::StreamGuardLifecycle for CancelBeforePollProbe {
+    fn cancel_before_poll(&mut self) -> bool {
+        true
+    }
+}
+
 #[tokio::test]
 async fn holds_guard_until_stream_eof_and_preserves_final_response_metadata() {
     let drops = Arc::new(AtomicUsize::new(0));
@@ -78,5 +94,32 @@ async fn drops_guard_when_inner_stream_errors() {
 
     let item = guarded.next().await.expect("error item");
     assert!(item.is_err());
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn cancellation_before_first_poll_never_polls_the_provider_stream() {
+    let polls = Arc::new(AtomicUsize::new(0));
+    let polls_for_stream = polls.clone();
+    let inner: StreamingCompletionResponse<()> =
+        StreamingCompletionResponse::stream(Box::pin(futures::stream::poll_fn(move |_| {
+            polls_for_stream.fetch_add(1, Ordering::SeqCst);
+            std::task::Poll::Pending
+        })));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut guarded = super::hold_stream_guard(
+        inner,
+        CancelBeforePollProbe {
+            drops: drops.clone(),
+        },
+    );
+
+    let error = guarded
+        .next()
+        .await
+        .expect("cancellation error")
+        .expect_err("cancelled stream must fail before polling provider");
+    assert!(error.to_string().contains("cancelled"));
+    assert_eq!(polls.load(Ordering::SeqCst), 0);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }

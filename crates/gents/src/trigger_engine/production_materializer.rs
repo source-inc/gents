@@ -151,6 +151,7 @@ impl MaterializerHandle for ProductionMaterializer {
                 execution_origin,
                 lineage,
                 Some(&conversation_title),
+                None,
             )
             .await?;
             tracing::info!(
@@ -161,6 +162,53 @@ impl MaterializerHandle for ProductionMaterializer {
                 conversation_title = %conversation_title,
                 "enqueued AgentRequest for trigger fire"
             );
+            Ok(enqueued.request_id)
+        })
+    }
+
+    fn materialize_with_request_id(
+        &self,
+        task: &ResolvedTask,
+        trigger_id: Option<&str>,
+        trigger_kind: TriggerKind,
+        rendered_prompt: &str,
+        request_id: &str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + '_>> {
+        if matches!(trigger_kind, TriggerKind::Manual) && trigger_id.is_some() {
+            return Box::pin(async {
+                Err(anyhow!(
+                    "Manual trigger materialization must not carry trigger_id"
+                ))
+            });
+        }
+
+        let resolved = self.resolve_behavior(task);
+        let node = self.node.clone();
+        let task_label = task.display_label().to_string();
+        let rendered_prompt = rendered_prompt.to_string();
+        let trigger_id = trigger_id.map(str::to_owned);
+        let trigger_kind_str = trigger_kind.as_str().to_owned();
+        let request_id = request_id.to_owned();
+        let execution_origin = execution_origin_for_trigger_kind(trigger_kind);
+
+        Box::pin(async move {
+            let (behavior_name, behavior_did, _, _) = resolved?;
+            let lineage = TriggerLineage {
+                trigger_id,
+                trigger_kind: Some(trigger_kind_str),
+            };
+            let conversation_title = task_run_conversation_title(&task_label);
+            let enqueued = write_pending_agent_request_with_lineage_and_conversation_title(
+                node.as_ref(),
+                &behavior_did,
+                &behavior_name,
+                &rendered_prompt,
+                execution_origin,
+                lineage,
+                Some(&conversation_title),
+                Some(&request_id),
+            )
+            .await?;
             Ok(enqueued.request_id)
         })
     }

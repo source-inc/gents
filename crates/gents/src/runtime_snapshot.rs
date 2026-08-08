@@ -17,6 +17,12 @@ use crate::watcher::AgentRequest;
 
 pub type DispatcherMap = HashMap<String, mpsc::Sender<AgentRequest>>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ScopedBehaviorConfigProvenance {
+    pub(crate) scope: crate::rendered_request::ConfigProvenanceScope,
+    pub(crate) exact: Option<Arc<crate::ResolvedBehaviorConfigProvenance>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedTask {
     pub task_id: String,
@@ -132,6 +138,11 @@ pub(crate) struct ResolvedRuntimeSnapshot {
     pub(crate) paired_peer_dids: HashSet<String>,
     pub(crate) default_behavior_id: String,
     pub(crate) behaviors: HashMap<String, Arc<AgentBehavior>>,
+    pub(crate) config_provenance_scope: crate::rendered_request::ConfigProvenanceScope,
+    /// Exact signed DefraDB configuration versions used to resolve each
+    /// document-backed behavior. Builder-backed behaviors deliberately have no
+    /// entry because they have no durable configuration documents to pin.
+    pub behavior_config_provenance: HashMap<String, Arc<crate::ResolvedBehaviorConfigProvenance>>,
     pub(crate) tool_surfaces: HashMap<String, Arc<ToolSurface>>,
     pub(crate) backend_admission_configs: HashMap<String, BackendAdmissionConfig>,
     pub(crate) unavailable_behaviors: HashMap<String, String>,
@@ -175,6 +186,9 @@ impl ResolvedRuntimeSnapshot {
                 .into_iter()
                 .map(|behavior| (behavior.behavior_id.clone(), behavior))
                 .collect(),
+            config_provenance_scope:
+                crate::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+            behavior_config_provenance: HashMap::new(),
             tool_surfaces,
             backend_admission_configs,
             unavailable_behaviors,
@@ -183,6 +197,63 @@ impl ResolvedRuntimeSnapshot {
             active_event_triggers: HashMap::new(),
             unavailable_event_triggers: HashSet::new(),
             active_tasks: HashMap::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_behavior_config_provenance(
+        mut self,
+        provenance: HashMap<String, Arc<crate::ResolvedBehaviorConfigProvenance>>,
+    ) -> Self {
+        self.behavior_config_provenance = provenance;
+        self
+    }
+
+    pub(crate) fn with_reconciled_document_runtime_config_provenance(
+        mut self,
+        provenance: HashMap<String, Arc<crate::ResolvedBehaviorConfigProvenance>>,
+    ) -> Result<Self> {
+        self.config_provenance_scope =
+            crate::rendered_request::ConfigProvenanceScope::ReconciledDocumentRuntime;
+        self.behavior_config_provenance = provenance;
+        self.validate_config_provenance_scope()?;
+        Ok(self)
+    }
+
+    pub(crate) fn validate_config_provenance_scope(&self) -> Result<()> {
+        for (behavior_id, behavior) in &self.behaviors {
+            match self.behavior_config_provenance.get(behavior_id) {
+                Some(exact) => exact.validate_for_behavior(behavior_id, behavior.agent_did())?,
+                None
+                    if self.config_provenance_scope
+                        == crate::rendered_request::ConfigProvenanceScope::ReconciledDocumentRuntime =>
+                {
+                    anyhow::bail!(
+                        "reconciled document runtime behavior {behavior_id} has no exact config provenance"
+                    )
+                }
+                None => {}
+            }
+        }
+        if let Some(unknown_behavior_id) = self
+            .behavior_config_provenance
+            .keys()
+            .find(|behavior_id| !self.behaviors.contains_key(*behavior_id))
+        {
+            anyhow::bail!(
+                "config provenance references non-runnable behavior {unknown_behavior_id}"
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn scoped_config_provenance_for(
+        &self,
+        behavior_id: &str,
+    ) -> ScopedBehaviorConfigProvenance {
+        ScopedBehaviorConfigProvenance {
+            scope: self.config_provenance_scope,
+            exact: self.behavior_config_provenance.get(behavior_id).cloned(),
         }
     }
 
@@ -268,6 +339,8 @@ impl ResolvedRuntimeSnapshot {
             paired_peer_dids: self.paired_peer_dids,
             default_behavior_id: self.default_behavior_id,
             behaviors: self.behaviors,
+            config_provenance_scope: self.config_provenance_scope,
+            behavior_config_provenance: self.behavior_config_provenance,
             tool_surfaces: self.tool_surfaces,
             backend_admission_configs: self.backend_admission_configs,
             unavailable_behaviors: self.unavailable_behaviors,
@@ -288,6 +361,8 @@ impl ResolvedRuntimeSnapshot {
             &self.local_did,
             &self.paired_peer_dids,
             &self.behaviors,
+            self.config_provenance_scope,
+            &self.behavior_config_provenance,
             &self.tool_surfaces,
             &self.backend_admission_configs,
             &self.unavailable_behaviors,
@@ -308,6 +383,8 @@ pub struct ActiveRuntimeSnapshot {
     pub paired_peer_dids: HashSet<String>,
     pub default_behavior_id: String,
     pub behaviors: HashMap<String, Arc<AgentBehavior>>,
+    pub config_provenance_scope: crate::rendered_request::ConfigProvenanceScope,
+    pub behavior_config_provenance: HashMap<String, Arc<crate::ResolvedBehaviorConfigProvenance>>,
     pub tool_surfaces: HashMap<String, Arc<ToolSurface>>,
     pub backend_admission_configs: HashMap<String, BackendAdmissionConfig>,
     pub unavailable_behaviors: HashMap<String, String>,
@@ -403,6 +480,8 @@ impl ActiveRuntimeSnapshot {
             &self.local_did,
             &self.paired_peer_dids,
             &self.behaviors,
+            self.config_provenance_scope,
+            &self.behavior_config_provenance,
             &self.tool_surfaces,
             &self.backend_admission_configs,
             &self.unavailable_behaviors,
@@ -435,6 +514,8 @@ fn configuration_fingerprint(
     local_did: &str,
     paired_peer_dids: &HashSet<String>,
     behaviors: &HashMap<String, Arc<AgentBehavior>>,
+    config_provenance_scope: crate::rendered_request::ConfigProvenanceScope,
+    behavior_config_provenance: &HashMap<String, Arc<crate::ResolvedBehaviorConfigProvenance>>,
     tool_surfaces: &HashMap<String, Arc<ToolSurface>>,
     backend_admission_configs: &HashMap<String, BackendAdmissionConfig>,
     unavailable_behaviors: &HashMap<String, String>,
@@ -459,6 +540,14 @@ fn configuration_fingerprint(
     fingerprint.push_str("default:");
     fingerprint.push_str(default_behavior_id);
     fingerprint.push('\n');
+    fingerprint.push_str("config_provenance_scope:");
+    fingerprint.push_str(match config_provenance_scope {
+        crate::rendered_request::ConfigProvenanceScope::ReconciledDocumentRuntime => {
+            "reconciled_document_runtime"
+        }
+        crate::rendered_request::ConfigProvenanceScope::StaticOrOneShot => "static_or_one_shot",
+    });
+    fingerprint.push('\n');
 
     let mut behavior_ids = behaviors.keys().cloned().collect::<Vec<_>>();
     behavior_ids.sort();
@@ -466,11 +555,20 @@ fn configuration_fingerprint(
         let behavior = behaviors
             .get(&behavior_id)
             .expect("behavior id came from behaviors map");
+        let mut normalized_behavior = behavior.as_ref().clone();
+        crate::skills::sort_skills_canonically(&mut normalized_behavior.skills);
         fingerprint.push_str("behavior:");
         fingerprint.push_str(&behavior_id);
         fingerprint.push('=');
-        fingerprint.push_str(&format!("{behavior:?}"));
+        fingerprint.push_str(&format!("{normalized_behavior:?}"));
         fingerprint.push('\n');
+        if let Some(provenance) = behavior_config_provenance.get(&behavior_id) {
+            fingerprint.push_str("behavior_config_provenance:");
+            fingerprint.push_str(&behavior_id);
+            fingerprint.push('=');
+            fingerprint.push_str(&format!("{provenance:?}"));
+            fingerprint.push('\n');
+        }
     }
 
     let mut tool_ids = tool_surfaces.keys().cloned().collect::<Vec<_>>();

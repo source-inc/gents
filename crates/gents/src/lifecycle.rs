@@ -8,6 +8,11 @@ use crate::session;
 use crate::watcher::AgentRequest;
 
 mod claim;
+pub(crate) use claim::{
+    reconstruct_execution_provenance_from_claim_ancestry, verify_persisted_execution_provenance,
+};
+#[doc(hidden)]
+pub mod ingest_contract;
 mod lookup;
 pub mod manual;
 pub(crate) mod materialize;
@@ -36,10 +41,6 @@ pub fn is_deprecated_background_completion_request(
     metadata: Option<&str>,
 ) -> bool {
     queue::is_deprecated_background_completion_wakeup(execution_origin, metadata)
-}
-
-fn graphql_retry_root_request(retry_root_request: Option<&str>, request_id: &str) -> String {
-    escape_graphql_string(retry_root_request.unwrap_or(request_id))
 }
 
 fn extract_single_doc_id(response: &defra_node::QueryResponse, key: &str) -> Option<String> {
@@ -241,6 +242,8 @@ pub struct RequestLifecycle {
     backend_id: String,
     failure_reason: Option<String>,
     request: AgentRequest,
+    request_version: Option<crate::DocumentVersionRef>,
+    execution_provenance: Option<crate::RequestExecutionProvenance>,
     response_doc_id: Option<String>,
     progress_seq: u32,
     deadline_duration_secs: u64,
@@ -250,12 +253,42 @@ pub struct RequestLifecycle {
 }
 
 impl RequestLifecycle {
+    fn require_execution_provenance(
+        &self,
+        operation: &str,
+    ) -> anyhow::Result<&crate::RequestExecutionProvenance> {
+        self.execution_provenance.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "cannot {operation} request {} without verified source-and-claim execution provenance",
+                self.request.request_id
+            )
+        })
+    }
+
+    fn require_active_execution_provenance(&self, operation: &str) -> anyhow::Result<()> {
+        if matches!(
+            self.state,
+            LocalLifecycleState::Claimed | LocalLifecycleState::Streaming
+        ) {
+            self.require_execution_provenance(operation)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn claimed_deadline_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         self.claimed_deadline_at
     }
 
     pub fn valid_until_at_claim_for_test(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         self.valid_until_at_claim
+    }
+
+    pub fn request_version(&self) -> Option<&crate::DocumentVersionRef> {
+        self.request_version.as_ref()
+    }
+
+    pub fn execution_provenance(&self) -> Option<&crate::RequestExecutionProvenance> {
+        self.execution_provenance.as_ref()
     }
 }
 

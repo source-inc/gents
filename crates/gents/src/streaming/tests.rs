@@ -229,6 +229,7 @@ fn build_finalize_mutation_clears_tail_without_buffer() {
             error_message: Some("stale provider error".to_string()),
             token_count: 0,
             interrupted_at: None,
+            ..PersistedResponseState::default()
         }),
         "doc-1",
         &StreamStatus::Complete,
@@ -273,6 +274,7 @@ fn build_error_finalize_atomically_carries_response_and_request_reason() {
             error_message: None,
             token_count: 0,
             interrupted_at: None,
+            ..PersistedResponseState::default()
         }),
         "doc-1",
         &StreamStatus::Error,

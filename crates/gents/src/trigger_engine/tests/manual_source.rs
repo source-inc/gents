@@ -103,7 +103,7 @@ async fn manual_source_next_fire_returns_none_after_cancel() {
 ///     schedule and event fires keep `Scheduled`.
 #[tokio::test]
 async fn production_materializer_accepts_manual_lineage_end_to_end() {
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    let node = signed_test_node("manual-materializer-node").await;
     ensure_runtime_schemas(node.as_ref()).await.unwrap();
 
     // Snapshot: behavior "general" loaded (with backend_id), no active
@@ -232,6 +232,7 @@ async fn dispatch_manual_intent_renders_with_args_and_materializes() {
         doc_vars: None,
         args_vars: Some(serde_json::json!({"name": "Amy"})),
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
 
@@ -282,6 +283,7 @@ async fn dispatch_rejects_manual_intent_with_trigger_id() {
         doc_vars: None,
         args_vars: Some(serde_json::json!({})),
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(move |r| {
             *capture.lock().unwrap() = Some(r);
         }),

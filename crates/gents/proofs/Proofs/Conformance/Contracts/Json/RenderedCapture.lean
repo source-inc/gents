@@ -5,6 +5,18 @@ namespace Conformance.Contracts
 
 open Conformance.ContractCases
 
+def renderedConfigSourceRefCaseJson (witness : RenderedConfigSourceRefCase) : String :=
+  "{"
+    ++ "\"source_class\":" ++ jsonString witness.sourceClass ++ ","
+    ++ "\"logical_id\":" ++ jsonOptionalNat witness.logicalId ++ ","
+    ++ "\"doc_id\":" ++ toString witness.docId ++ ","
+    ++ "\"composite_commit_cid\":" ++ toString witness.compositeCommitCid ++ ","
+    ++ "\"signer_did\":" ++ toString witness.signerDid
+    ++ "}"
+
+def renderedConfigSourceRefCasesJson (witnesses : List RenderedConfigSourceRefCase) : String :=
+  jsonArray (witnesses.map renderedConfigSourceRefCaseJson)
+
 def renderedCaptureCaseJson (witness : RenderedCaptureCase) : String :=
   "{"
     ++ "\"name\":" ++ jsonString witness.name ++ ","
@@ -14,7 +26,16 @@ def renderedCaptureCaseJson (witness : RenderedCaptureCase) : String :=
     ++ "\"turn_index\":" ++ toString witness.turnIndex ++ ","
     ++ "\"attempt\":" ++ toString witness.attempt ++ ","
     ++ "\"request\":" ++ toString witness.request ++ ","
+    ++ "\"config_scope\":" ++ jsonString witness.configScope ++ ","
+    ++ "\"config_required\":" ++ boolString witness.configRequired ++ ","
+    ++ "\"config_present\":" ++ boolString witness.configPresent ++ ","
+    ++ "\"config_sources\":" ++ renderedConfigSourceRefCasesJson witness.configSources ++ ","
+    ++ "\"config_complete\":" ++ boolString witness.configComplete ++ ","
+    ++ "\"config_admitted\":" ++ boolString witness.configAdmitted ++ ","
     ++ "\"prior_binding\":" ++ jsonOptionalNat witness.priorBinding ++ ","
+    ++ "\"prior_config_present\":" ++ boolString witness.priorConfigPresent ++ ","
+    ++ "\"prior_config_sources\":"
+      ++ renderedConfigSourceRefCasesJson witness.priorConfigSources ++ ","
     ++ "\"capture_outcome\":" ++ jsonString witness.captureOutcome ++ ","
     ++ "\"capture_durable\":" ++ boolString witness.captureDurable ++ ","
     ++ "\"post_stage\":" ++ jsonString witness.postStage ++ ","
@@ -22,6 +43,9 @@ def renderedCaptureCaseJson (witness : RenderedCaptureCase) : String :=
     ++ "\"provider_requests_observed\":"
       ++ toString witness.providerRequestsObserved ++ ","
     ++ "\"durable_after\":" ++ jsonOptionalNat witness.durableAfter ++ ","
+    ++ "\"durable_config_present\":" ++ boolString witness.durableConfigPresent ++ ","
+    ++ "\"durable_config_sources\":"
+      ++ renderedConfigSourceRefCasesJson witness.durableConfigSources ++ ","
     ++ "\"final_stage\":" ++ jsonString witness.finalStage
     ++ "}"
 

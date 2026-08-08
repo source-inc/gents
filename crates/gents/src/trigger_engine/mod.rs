@@ -52,6 +52,9 @@ pub struct FireIntent {
     pub doc_vars: Option<serde_json::Value>,
     pub args_vars: Option<serde_json::Value>,
     pub pre_materialized_request_id: Option<String>,
+    /// Stable logical id for materialization after rendering/concurrency.
+    /// Crash-recoverable sources use this to make request creation replayable.
+    pub materialization_request_id: Option<String>,
     pub on_result: Box<dyn FnOnce(FireResult) + Send>,
 }
 
@@ -95,6 +98,18 @@ pub(crate) trait MaterializerHandle: Send + Sync {
         trigger_kind: TriggerKind,
         rendered_prompt: &str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + '_>>;
+
+    fn materialize_with_request_id(
+        &self,
+        task: &crate::runtime_snapshot::ResolvedTask,
+        trigger_id: Option<&str>,
+        trigger_kind: TriggerKind,
+        rendered_prompt: &str,
+        _request_id: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + '_>>
+    {
+        self.materialize(task, trigger_id, trigger_kind, rendered_prompt)
+    }
 
     /// Check whether any active runtime `AgentRequest` of `agent_did` is
     /// currently bound to this trigger. Used by the concurrency gate to
@@ -364,16 +379,22 @@ impl TriggerEngine {
     }
 
     async fn materialize_after_lock(&self, intent: FireIntent, rendered: String) -> FireResult {
-        let request_id = match self
-            .materializer
-            .materialize(
+        let materialized = match intent.materialization_request_id.as_deref() {
+            Some(request_id) => self.materializer.materialize_with_request_id(
                 &intent.task,
                 intent.trigger_id.as_deref(),
                 intent.trigger_kind,
                 &rendered,
-            )
-            .await
-        {
+                request_id,
+            ),
+            None => self.materializer.materialize(
+                &intent.task,
+                intent.trigger_id.as_deref(),
+                intent.trigger_kind,
+                &rendered,
+            ),
+        };
+        let request_id = match materialized.await {
             Ok(id) => id,
             Err(e) => {
                 let result = FireResult::Errored {
@@ -395,6 +416,25 @@ pub async fn run_subagent_source_for_test(
     node: Arc<defra_node::EmbeddedNode>,
     snapshot_rx: watch::Receiver<Arc<ActiveRuntimeSnapshot>>,
     cancel: CancellationToken,
+) {
+    run_subagent_source_for_test_inner(node, snapshot_rx, cancel, None).await;
+}
+
+#[doc(hidden)]
+pub async fn run_subagent_source_for_test_with_ready(
+    node: Arc<defra_node::EmbeddedNode>,
+    snapshot_rx: watch::Receiver<Arc<ActiveRuntimeSnapshot>>,
+    cancel: CancellationToken,
+    ready: tokio::sync::oneshot::Sender<()>,
+) {
+    run_subagent_source_for_test_inner(node, snapshot_rx, cancel, Some(ready)).await;
+}
+
+async fn run_subagent_source_for_test_inner(
+    node: Arc<defra_node::EmbeddedNode>,
+    snapshot_rx: watch::Receiver<Arc<ActiveRuntimeSnapshot>>,
+    cancel: CancellationToken,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) {
     struct UnusedMaterializer;
     impl MaterializerHandle for UnusedMaterializer {
@@ -439,6 +479,9 @@ pub async fn run_subagent_source_for_test(
         node,
         cancel.clone(),
     ));
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
     let materializer: Arc<dyn MaterializerHandle> = Arc::new(UnusedMaterializer);
     let engine = TriggerEngine::new(snapshot_rx, materializer);
     engine.run(vec![subagent_source], cancel).await;

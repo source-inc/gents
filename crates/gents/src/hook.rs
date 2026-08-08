@@ -91,20 +91,58 @@ struct BackgroundExecution {
 #[derive(Clone, Default)]
 struct BackgroundLiveOutputState {
     registry: LiveToolOutputRegistry,
+    row_targets: Arc<Mutex<HashMap<String, LiveOutputRowTarget>>>,
     flushed_seq: Arc<Mutex<HashMap<String, i64>>>,
     flusher_running: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LiveOutputRowTarget {
+    doc_id: String,
+    request_id: String,
+    session_id: String,
+    agent_did: String,
+}
+
+impl LiveOutputRowTarget {
+    fn from_lifecycle(lifecycle: &ToolCallLifecycle) -> anyhow::Result<Self> {
+        let doc_id = lifecycle.doc_id().ok_or_else(|| {
+            anyhow::anyhow!("live output requested before AgentToolCall persisted")
+        })?;
+        Ok(Self {
+            doc_id: doc_id.to_string(),
+            request_id: lifecycle.request_id().to_string(),
+            session_id: lifecycle.session_id().to_string(),
+            agent_did: lifecycle.agent_did().to_string(),
+        })
+    }
 }
 
 impl BackgroundLiveOutputState {
     async fn writer_for(
         &self,
         tool_call_id: impl Into<String>,
-    ) -> crate::background_tools::LiveToolOutputWriter {
-        self.registry.writer_for(tool_call_id).await
+        row_target: LiveOutputRowTarget,
+    ) -> anyhow::Result<crate::background_tools::LiveToolOutputWriter> {
+        let tool_call_id = tool_call_id.into();
+        let mut row_targets = self.row_targets.lock().await;
+        if let Some(existing) = row_targets.get(&tool_call_id) {
+            anyhow::ensure!(
+                existing == &row_target,
+                "live output registry identity conflict for tool_call_id={tool_call_id}: existing _docID={} new _docID={}",
+                existing.doc_id,
+                row_target.doc_id
+            );
+        } else {
+            row_targets.insert(tool_call_id.clone(), row_target);
+        }
+        drop(row_targets);
+        Ok(self.registry.writer_for(tool_call_id).await)
     }
 
     async fn remove(&self, tool_call_id: &str) {
         self.registry.remove(tool_call_id).await;
+        self.row_targets.lock().await.remove(tool_call_id);
         self.flushed_seq.lock().await.remove(tool_call_id);
     }
 
@@ -394,6 +432,22 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
     value.and_then(|value| (!value.is_empty()).then_some(value))
 }
 
+fn mutation_doc_ids(data: Option<&serde_json::Value>, field: &str) -> Vec<String> {
+    let Some(value) = data.and_then(|data| data.get(field)) else {
+        return Vec::new();
+    };
+    if let Some(doc_id) = value.get("_docID").and_then(serde_json::Value::as_str) {
+        return vec![doc_id.to_string()];
+    }
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("_docID").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
 #[derive(Clone)]
 pub struct DefraSessionHook {
     node: Arc<EmbeddedNode>,
@@ -607,13 +661,45 @@ impl DefraSessionHook {
     pub(crate) async fn foreground_live_output_writer(
         &self,
         internal_call_id: &str,
-    ) -> crate::background_tools::LiveToolOutputWriter {
-        let writer = self
+    ) -> Option<crate::background_tools::LiveToolOutputWriter> {
+        let row_target = {
+            let lifecycles = self.in_flight_lifecycles.lock().await;
+            let Some(lifecycle) = lifecycles.get(internal_call_id) else {
+                tracing::warn!(
+                    tool_call_id = %internal_call_id,
+                    "live output disabled because the AgentToolCall lifecycle is not registered"
+                );
+                return None;
+            };
+            match LiveOutputRowTarget::from_lifecycle(lifecycle) {
+                Ok(target) => target,
+                Err(error) => {
+                    tracing::warn!(
+                        tool_call_id = %internal_call_id,
+                        error = %error,
+                        "live output disabled because the AgentToolCall physical identity is unavailable"
+                    );
+                    return None;
+                }
+            }
+        };
+        let writer = match self
             .background_live_outputs
-            .writer_for(internal_call_id)
-            .await;
+            .writer_for(internal_call_id, row_target)
+            .await
+        {
+            Ok(writer) => writer,
+            Err(error) => {
+                tracing::warn!(
+                    tool_call_id = %internal_call_id,
+                    error = %error,
+                    "live output disabled because its registry identity conflicts"
+                );
+                return None;
+            }
+        };
         self.ensure_live_output_flusher();
-        writer
+        Some(writer)
     }
 
     pub(crate) async fn release_live_output(&self, tool_call_id: &str) {
@@ -680,6 +766,20 @@ impl DefraSessionHook {
 
         let mut count = 0usize;
         for tool_call_id in live_ids {
+            let Some(row_target) = self
+                .background_live_outputs
+                .row_targets
+                .lock()
+                .await
+                .get(&tool_call_id)
+                .cloned()
+            else {
+                tracing::warn!(
+                    tool_call_id = %tool_call_id,
+                    "live output buffer has no physical AgentToolCall identity; skipping flush"
+                );
+                continue;
+            };
             let Some(snapshot) = self
                 .background_live_outputs
                 .registry
@@ -707,12 +807,24 @@ impl DefraSessionHook {
             let start = bytes.len().saturating_sub(TAIL_PERSIST_BYTES);
             let tail = String::from_utf8_lossy(&bytes[start..]).to_string();
 
+            let escaped_doc_id = crate::graphql::escape_graphql_string(&row_target.doc_id);
+            let escaped_request_id = crate::graphql::escape_graphql_string(&row_target.request_id);
+            let escaped_session_id = crate::graphql::escape_graphql_string(&row_target.session_id);
+            let escaped_agent_did = crate::graphql::escape_graphql_string(&row_target.agent_did);
             let row_query = format!(
                 r#"{{
                     AgentToolCall(
-                        filter: {{ tool_call_id: {{ _eq: "{id}" }} }},
-                        limit: 1
+                        filter: {{
+                            _and: [
+                                {{ _docID: {{ _eq: "{doc_id}" }} }},
+                                {{ request_id: {{ _eq: "{request_id}" }} }},
+                                {{ session_id: {{ _eq: "{session_id}" }} }},
+                                {{ agent_did: {{ _eq: "{agent_did}" }} }}
+                            ]
+                        }},
+                        limit: 2
                     ) {{
+                        _docID
                         lifecycle_state
                         started_at
                         deadline_at
@@ -722,24 +834,48 @@ impl DefraSessionHook {
                         stuck_since
                     }}
                 }}"#,
-                id = crate::graphql::escape_graphql_string(&tool_call_id),
+                doc_id = escaped_doc_id,
+                request_id = escaped_request_id,
+                session_id = escaped_session_id,
+                agent_did = escaped_agent_did,
             );
             let row_response = self.node.execute(&row_query).await;
-            let Some(row_value) = row_response
+            if row_response.has_errors() {
+                tracing::debug!(
+                    tool_call_id = %tool_call_id,
+                    doc_id = %row_target.doc_id,
+                    errors = ?row_response.errors,
+                    "live output exact-row reload failed; will retry next tick"
+                );
+                continue;
+            }
+            let row_values = row_response
                 .data
                 .as_ref()
                 .and_then(|data| data.get("AgentToolCall"))
                 .and_then(|value| value.as_array())
-                .and_then(|rows| rows.first())
                 .cloned()
-            else {
+                .unwrap_or_default();
+            let [row_value] = row_values.as_slice() else {
+                tracing::warn!(
+                    tool_call_id = %tool_call_id,
+                    doc_id = %row_target.doc_id,
+                    matched_rows = row_values.len(),
+                    "live output exact-row reload found stale or conflicting physical identity"
+                );
                 continue;
             };
             if row_value.get("lifecycle_state").and_then(|v| v.as_str()) != Some("running") {
+                tracing::debug!(
+                    tool_call_id = %tool_call_id,
+                    doc_id = %row_target.doc_id,
+                    observed_state = ?row_value.get("lifecycle_state"),
+                    "live output flush lost its running-state compare"
+                );
                 continue;
             }
             let datetime_row: crate::background_completion::AgentToolCallDateTimeRow =
-                serde_json::from_value(row_value).unwrap_or_default();
+                serde_json::from_value(row_value.clone()).unwrap_or_default();
             let mut datetime_fields = Vec::new();
             crate::background_completion::push_datetime_field(
                 &mut datetime_fields,
@@ -789,14 +925,20 @@ impl DefraSessionHook {
                     update_AgentToolCall(
                         filter: {{
                             _and: [
-                                {{ tool_call_id: {{ _eq: "{id}" }} }},
+                                {{ _docID: {{ _eq: "{doc_id}" }} }},
+                                {{ request_id: {{ _eq: "{request_id}" }} }},
+                                {{ session_id: {{ _eq: "{session_id}" }} }},
+                                {{ agent_did: {{ _eq: "{agent_did}" }} }},
                                 {{ lifecycle_state: {{ _eq: "running" }} }}
                             ]
                         }},
                         input: {{ partial_output_tail: "{tail}", partial_output_seq: {seq}{datetimes} }}
                     ) {{ _docID }}
                 }}"#,
-                id = crate::graphql::escape_graphql_string(&tool_call_id),
+                doc_id = escaped_doc_id,
+                request_id = escaped_request_id,
+                session_id = escaped_session_id,
+                agent_did = escaped_agent_did,
                 tail = crate::graphql::escape_graphql_string(&tail),
                 datetimes = datetime_fragment,
             );
@@ -808,10 +950,31 @@ impl DefraSessionHook {
                     "live output tail flush failed; will retry next tick"
                 );
             } else {
-                self.background_live_outputs
-                    .record_flushed_seq_if_live(&tool_call_id, seq)
-                    .await;
-                count += 1;
+                let returned_doc_ids =
+                    mutation_doc_ids(response.data.as_ref(), "update_AgentToolCall");
+                match returned_doc_ids.as_slice() {
+                    [updated_doc_id] if updated_doc_id == &row_target.doc_id => {
+                        self.background_live_outputs
+                            .record_flushed_seq_if_live(&tool_call_id, seq)
+                            .await;
+                        count += 1;
+                    }
+                    [] => {
+                        tracing::warn!(
+                            tool_call_id = %tool_call_id,
+                            doc_id = %row_target.doc_id,
+                            "live output tail flush lost its exact running-state compare; will retry while live"
+                        );
+                    }
+                    _ => {
+                        tracing::error!(
+                            tool_call_id = %tool_call_id,
+                            doc_id = %row_target.doc_id,
+                            returned_doc_ids = ?returned_doc_ids,
+                            "live output tail flush returned an unexpected physical row set"
+                        );
+                    }
+                }
             }
         }
         Ok(count)

@@ -125,13 +125,15 @@ async fn setup_background_tool_hook(
     test_name: &str,
     registry: BackgroundToolRegistry,
 ) -> (support::TestDb, DefraSessionHook, String, String) {
-    let db = test_db(test_name).await;
+    let db = signed_materializer_test_db(test_name).await;
+    let fixture_agent_did = signed_materializer_agent_did(&db).to_string();
     let session_id = format!("{test_name}-session");
     let request_id = format!("{test_name}-request");
-    support::create_request(
+    support::create_request_for_agent(
         db.node.as_ref(),
         &request_id,
         &session_id,
+        &fixture_agent_did,
         "processing",
         "2026-05-19T00:00:00Z",
     )
@@ -141,7 +143,7 @@ async fn setup_background_tool_hook(
         db.node.clone(),
         &session_id,
         "r6-background-theorem",
-        AGENT_DID,
+        &fixture_agent_did,
         FailurePolicy::default(),
     )
     .await
@@ -165,7 +167,8 @@ async fn setup_background_spawn_fixture(
     String,
     chrono::DateTime<chrono::Utc>,
 ) {
-    let db = test_db(test_name).await;
+    let db = signed_materializer_test_db(test_name).await;
+    let fixture_agent_did = signed_materializer_agent_did(&db).to_string();
     let parent_deadline = chrono::Utc::now() + chrono::Duration::minutes(5);
     let selection_id = format!("{test_name}-tools");
 
@@ -173,12 +176,17 @@ async fn setup_background_spawn_fixture(
         db.node.as_ref(),
         &ToolSelectionDocument {
             selection_id: selection_id.clone(),
-            agent_did: AGENT_DID.to_string(),
+            agent_did: fixture_agent_did.clone(),
             subagent_targets: Some(
                 targets
                     .into_iter()
                     .map(|behavior_id| {
-                        gents::subagent_target_entry(behavior_id, AGENT_DID, behavior_id, None)
+                        gents::subagent_target_entry(
+                            behavior_id,
+                            &fixture_agent_did,
+                            behavior_id,
+                            None,
+                        )
                     })
                     .collect(),
             ),
@@ -193,7 +201,7 @@ async fn setup_background_spawn_fixture(
         db.node.as_ref(),
         &AgentBehaviorDocument {
             behavior_id: BACKGROUND_THEOREM_PARENT_BEHAVIOR_ID.to_string(),
-            agent_did: AGENT_DID.to_string(),
+            agent_did: fixture_agent_did.clone(),
             display_name: Some("R6 theorem parent".to_string()),
             description: None,
             summary: None,
@@ -217,7 +225,7 @@ async fn setup_background_spawn_fixture(
         db.node.as_ref(),
         &AgentBehaviorDocument {
             behavior_id: BACKGROUND_THEOREM_CHILD_BEHAVIOR_ID.to_string(),
-            agent_did: AGENT_DID.to_string(),
+            agent_did: fixture_agent_did.clone(),
             display_name: Some("R6 theorem child".to_string()),
             description: None,
             summary: None,
@@ -244,6 +252,7 @@ async fn setup_background_spawn_fixture(
         db.node.as_ref(),
         &request_id,
         &session_id,
+        &fixture_agent_did,
         parent_subagent_depth,
         parent_deadline,
     )
@@ -253,7 +262,7 @@ async fn setup_background_spawn_fixture(
         db.node.clone(),
         &session_id,
         BACKGROUND_THEOREM_PARENT_BEHAVIOR_ID,
-        AGENT_DID,
+        &fixture_agent_did,
         FailurePolicy::default(),
     )
     .await
@@ -268,13 +277,18 @@ async fn create_background_theorem_parent_request(
     node: &EmbeddedNode,
     request_id: &str,
     session_id: &str,
+    fixture_agent_did: &str,
     subagent_depth: u32,
     deadline: chrono::DateTime<chrono::Utc>,
 ) {
     let request_id = escape_graphql_string(request_id);
     let session_id = escape_graphql_string(session_id);
     let behavior_id = escape_graphql_string(BACKGROUND_THEOREM_PARENT_BEHAVIOR_ID);
-    let agent_did = escape_graphql_string(AGENT_DID);
+    let agent_did = escape_graphql_string(fixture_agent_did);
+    let source_author_did = escape_graphql_string(
+        node.node_identity_did()
+            .expect("background theorem fixture requires a signed node"),
+    );
     let created_at = chrono::Utc::now().to_rfc3339();
     let deadline = deadline.to_rfc3339();
     let mutation = format!(
@@ -282,6 +296,7 @@ async fn create_background_theorem_parent_request(
             create_AgentRequest(input: {{
                 request_id: "{request_id}",
                 agent_did: "{agent_did}",
+                source_author_did: "{source_author_did}",
                 behavior_id: "{behavior_id}",
                 session_id: "{session_id}",
                 retry_parent_request: "",
@@ -489,7 +504,10 @@ async fn wait_for_background_theorem_child_lifecycle_state(
     child_request_id: &str,
     expected_state: &str,
 ) -> BackgroundTheoremChildRequestRow {
-    let timeout_at = tokio::time::Instant::now() + Duration::from_secs(10);
+    // SubagentSource's production recovery rescan runs every five seconds.
+    // Allow six ticks so a loaded full-suite run still proves eventual
+    // materialization instead of depending on prompt subscription delivery.
+    let timeout_at = tokio::time::Instant::now() + Duration::from_secs(30);
 
     loop {
         if let Some(row) =
@@ -1074,12 +1092,13 @@ pub(super) async fn generated_r6_background_theorem_witnesses_drive_cascade_canc
         true,
     )
     .await;
+    let fixture_agent_did = signed_materializer_agent_did(&db).to_string();
     // After spawn convergence (#377) the child AgentRequest is materialized by
     // SubagentSource, not synchronously by the hook.  Hold a standalone source
     // for the lifetime of this test so the bridge row produces a child request.
     let _source = super::support::fixtures::spawn_subagent_source(
         db.node.clone(),
-        AGENT_DID,
+        &fixture_agent_did,
         BACKGROUND_THEOREM_PARENT_BEHAVIOR_ID,
         BACKGROUND_THEOREM_CHILD_BEHAVIOR_ID,
     );
@@ -1128,14 +1147,17 @@ pub(super) async fn generated_r6_background_theorem_witnesses_drive_cascade_canc
     let mut child_lifecycle = RequestLifecycle::new_with_execution_binding(
         db.node.clone(),
         BACKGROUND_THEOREM_CHILD_BEHAVIOR_ID,
-        AGENT_DID,
+        &fixture_agent_did,
         child.into_agent_request(),
         DEADLINE_SECS,
         ExecutionOrigin::Interactive,
         BACKEND_ID,
     );
     assert_eq!(
-        child_lifecycle.claim_with_identity().await.unwrap(),
+        child_lifecycle
+            .claim_without_identity_for_test()
+            .await
+            .unwrap(),
         ClaimOutcome::Claimed
     );
     child_lifecycle.begin_execution().await.unwrap();
@@ -1153,7 +1175,7 @@ pub(super) async fn generated_r6_background_theorem_witnesses_drive_cascade_canc
             .expect("load bridge lifecycle")
             .expect("bridge should be persisted");
     let dispatch = lifecycle
-        .cancel_during_run_with_cascade_dispatch(CancelCause::Interrupted, AGENT_DID)
+        .cancel_during_run_with_cascade_dispatch(CancelCause::Interrupted, &fixture_agent_did)
         .await
         .expect("cancel bridge with cascade dispatch")
         .expect("cascade dispatch");
@@ -1600,10 +1622,12 @@ pub(super) async fn generated_read_tool_output_witness_drives_hook_dispatch() {
     // A new request gets a new hook, but the daemon-owned process registry
     // carries the live ring buffer across that request boundary.
     let next_request_id = format!("{request_id}-next");
-    support::create_request(
+    let fixture_agent_did = signed_materializer_agent_did(&db).to_string();
+    support::create_request_for_agent(
         db.node.as_ref(),
         &next_request_id,
         &session_id,
+        &fixture_agent_did,
         "processing",
         "2026-05-19T00:00:01Z",
     )
@@ -1612,7 +1636,7 @@ pub(super) async fn generated_read_tool_output_witness_drives_hook_dispatch() {
         db.node.clone(),
         &session_id,
         "r6-background-theorem",
-        AGENT_DID,
+        &fixture_agent_did,
         FailurePolicy::default(),
     )
     .await
@@ -1666,7 +1690,7 @@ pub(super) async fn generated_read_tool_output_witness_drives_hook_dispatch() {
         db.node.clone(),
         &session_id,
         "r6-background-theorem",
-        AGENT_DID,
+        &fixture_agent_did,
         FailurePolicy::default(),
     )
     .await
@@ -1785,7 +1809,7 @@ pub(super) async fn generated_bridge_step_cases_drive_bridge_lifecycle() {
 async fn seed_bridge_step_fixture(
     case: &lean_vocab_test::LeanBridgeStepCase,
 ) -> (support::TestDb, ToolCallLifecycle, String, String, String) {
-    let db = test_db(&format!("bridge-step-{}", case.name)).await;
+    let db = signed_materializer_test_db(&format!("bridge-step-{}", case.name)).await;
     let parent_request_id = format!("{}-parent", case.name);
     let parent_session_id = format!("{}-parent-session", case.name);
     let tool_call_id = format!("{}-tool", case.name);
@@ -1819,6 +1843,7 @@ async fn seed_bridge_step_fixture(
         db.node.as_ref(),
         &parent_request_id,
         &parent_session_id,
+        AGENT_DID,
         0,
         chrono::Utc::now() + chrono::Duration::minutes(5),
     )
@@ -1833,7 +1858,7 @@ async fn seed_bridge_step_fixture(
         .await;
     }
 
-    gents::tool_call_lifecycle::create_subagent_request_with_request_id(
+    gents::tool_call_lifecycle::create_subagent_request_with_request_id_for_test(
         db.node.as_ref(),
         child_request_id.clone(),
         parent_request_id.clone(),

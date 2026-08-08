@@ -39,6 +39,31 @@ pub struct InferenceProfile {
     pub retry_interactive_max: Option<i64>,
 }
 
+const INFERENCE_PROFILE_FIELDS: &str = r#"
+                _docID
+                profile_id
+                display_name
+                context_window
+                max_output_tokens
+                max_turns
+                temperature
+                top_p
+                top_k
+                min_p
+                frequency_penalty
+                presence_penalty
+                repetition_penalty
+                reasoning_effort
+                stream_batch_ms
+                stream_liveness_timeout_secs
+                deadline_duration_secs
+                retry_max_transport
+                retry_backoff_ms
+                retry_max_resample
+                retry_allow_repair
+                retry_interactive_max
+"#;
+
 const DEFAULT_INFERENCE_PROFILE_LABEL: &str = "Default";
 
 pub fn default_inference_profile_id_for_behavior(behavior_id: &str) -> String {
@@ -182,6 +207,26 @@ pub(crate) async fn load_inference_profile_by_doc_id(
         anyhow::bail!("query InferenceProfile by _docID failed: {:?}", resp.errors);
     }
 
+    Ok(serde_helpers::first_row_with_doc_id(
+        resp.data.as_ref(),
+        "InferenceProfile",
+    ))
+}
+
+pub(crate) async fn load_inference_profile_at_cid(
+    node: &EmbeddedNode,
+    composite_commit_cid: &str,
+) -> Result<Option<(String, InferenceProfile)>> {
+    let escaped_cid = escape_graphql_string(composite_commit_cid);
+    let query = format!(
+        r#"{{
+            InferenceProfile(cid: ["{escaped_cid}"]) {{{INFERENCE_PROFILE_FIELDS}}}
+        }}"#
+    );
+    let resp = node.execute(&query).await;
+    if resp.has_errors() {
+        anyhow::bail!("query InferenceProfile at CID failed: {:?}", resp.errors);
+    }
     Ok(serde_helpers::first_row_with_doc_id(
         resp.data.as_ref(),
         "InferenceProfile",

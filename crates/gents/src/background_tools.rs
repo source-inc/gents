@@ -7,9 +7,9 @@ mod transcript_render;
 use std::collections::{HashMap, HashSet};
 
 use crate::llm::message::{AssistantContent, Message, Text, UserContent};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context as _, Result};
 use chrono::{DateTime, Utc};
-use defra_node::EmbeddedNode;
+use defra_node::{EmbeddedNode, ExecuteRetryPolicy, QueryRequest};
 use gents_protocol::transcript::{decode_persisted_message, present_persisted_message};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -283,6 +283,9 @@ pub(crate) fn subagent_spawn_denial(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChildEdge {
     pub parent_tool_call_id: String,
+    /// Exact DefraDB document identity of the child request. Terminal response
+    /// facts are keyed by this physical identity, never by the logical UUID.
+    pub child_request_doc_id: String,
     pub child_request_id: String,
     pub child_session_id: String,
     /// Owning principal of the child request/session. #664: used to scope
@@ -2095,6 +2098,8 @@ mod cross_deployment_timeout_tests {
 
 #[derive(Debug, Deserialize)]
 struct ChildRequestEdgeRow {
+    #[serde(rename = "_docID")]
+    doc_id: String,
     request_id: String,
     session_id: String,
     agent_did: Option<String>,
@@ -2231,13 +2236,18 @@ pub(crate) async fn load_authorized_child_edge(
     parent_context: &ParentSubagentContext,
     child_request_id: &str,
 ) -> Result<ChildEdge> {
+    let reader_did = node.node_identity_did().ok_or_else(|| {
+        anyhow!("loading an authorized child edge requires a DefraDB query identity")
+    })?;
+    let identity =
+        identity::Did::new(reader_did).context("parsing authorized child-edge reader DID")?;
     let escaped_child_request_id = escape_graphql_string(child_request_id);
     let child_query = format!(
         r#"{{
             AgentRequest(
-                filter: {{ request_id: {{ _eq: "{escaped_child_request_id}" }} }},
-                limit: 1
+                filter: {{ request_id: {{ _eq: "{escaped_child_request_id}" }} }}
             ) {{
+                _docID
                 request_id
                 session_id
                 agent_did
@@ -2247,15 +2257,34 @@ pub(crate) async fn load_authorized_child_edge(
             }}
         }}"#
     );
-    let child_response = node.execute(&child_query).await;
+    let child_response = node
+        .execute_request_with_retry(
+            QueryRequest::new(child_query).with_identity(Some(identity.clone())),
+            ExecuteRetryPolicy::default(),
+        )
+        .await;
     if child_response.has_errors() {
         anyhow::bail!(
             "query child AgentRequest {child_request_id} failed: {:?}",
             child_response.errors
         );
     }
-    let child: ChildRequestEdgeRow = first_row(child_response.data.as_ref(), "AgentRequest")
-        .ok_or_else(|| anyhow!("child AgentRequest {child_request_id} not found"))?;
+    let mut children: Vec<ChildRequestEdgeRow> = child_response
+        .data
+        .as_ref()
+        .and_then(|data| data.get("AgentRequest"))
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .context("decoding child AgentRequest identity")?
+        .unwrap_or_default();
+    if children.len() != 1 {
+        anyhow::bail!(
+            "child AgentRequest {child_request_id} resolved to {} physical documents",
+            children.len()
+        );
+    }
+    let child = children.pop().expect("length checked above");
     if child.caused_by_parent_request_id.as_deref() != Some(parent_context.request_id.as_str()) {
         anyhow::bail!(
             "child AgentRequest {child_request_id} is not linked to parent request {}",
@@ -2297,7 +2326,12 @@ pub(crate) async fn load_authorized_child_edge(
             }}
         }}"#
     );
-    let tool_call_response = node.execute(&tool_call_query).await;
+    let tool_call_response = node
+        .execute_request_with_retry(
+            QueryRequest::new(tool_call_query).with_identity(Some(identity)),
+            ExecuteRetryPolicy::default(),
+        )
+        .await;
     if tool_call_response.has_errors() {
         anyhow::bail!(
             "query parent AgentToolCall {parent_tool_call_id} failed: {:?}",
@@ -2329,6 +2363,7 @@ pub(crate) async fn load_authorized_child_edge(
 
     Ok(ChildEdge {
         parent_tool_call_id: tool_call.tool_call_id,
+        child_request_doc_id: child.doc_id,
         child_request_id: child.request_id,
         child_session_id: child.session_id,
         child_agent_did,
@@ -2340,85 +2375,28 @@ pub(crate) async fn load_authorized_child_edge(
     })
 }
 
-#[derive(Debug, Deserialize)]
-struct AgentResponseFinalRow {
-    materialized_message_sequence: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AgentMessageContentRow {
-    role: String,
-    content: String,
-}
-
 pub(crate) async fn load_child_final_response(
     node: &EmbeddedNode,
     child_edge: &ChildEdge,
 ) -> Result<Option<String>> {
-    let child_request_id = &child_edge.child_request_id;
-    let escaped_child_request_id = escape_graphql_string(child_request_id);
-    let response_query = format!(
-        r#"{{
-            AgentResponse(
-                filter: {{ request_id: {{ _eq: "{escaped_child_request_id}" }} }},
-                order: {{ created_at: DESC }},
-                limit: 1
-            ) {{
-                materialized_message_sequence
-            }}
-        }}"#
-    );
-    let response = node.execute(&response_query).await;
-    if response.has_errors() {
-        anyhow::bail!(
-            "query child AgentResponse {child_request_id} failed: {:?}",
-            response.errors
-        );
-    }
-    let Some(response_row) =
-        first_row::<AgentResponseFinalRow>(response.data.as_ref(), "AgentResponse")
+    let Some(message) = crate::response_outcome::load_verified_complete_response_message(
+        node,
+        &child_edge.child_agent_did,
+        &child_edge.child_request_doc_id,
+        &child_edge.child_request_id,
+        &child_edge.child_session_id,
+    )
+    .await?
     else {
         return Ok(None);
     };
-    let Some(sequence) = response_row.materialized_message_sequence else {
-        return Ok(None);
-    };
-
-    let escaped_session_id = escape_graphql_string(&child_edge.child_session_id);
-    let message_query = format!(
-        r#"{{
-            AgentMessage(
-                filter: {{
-                    session_id: {{ _eq: "{escaped_session_id}" }},
-                    sequence: {{ _eq: {sequence} }}
-                }},
-                limit: 1
-            ) {{
-                role
-                content
-            }}
-        }}"#
+    tracing::debug!(
+        child_request_doc_id = %child_edge.child_request_doc_id,
+        final_message_doc_id = %message.fact.doc_id,
+        final_message_composite_commit_cid = %message.fact.composite_commit_cid,
+        "loaded verified immutable child completion"
     );
-    let message = node.execute(&message_query).await;
-    if message.has_errors() {
-        anyhow::bail!(
-            "query child AgentMessage {child_request_id} sequence {sequence} failed: {:?}",
-            message.errors
-        );
-    }
-    let Some(message_row) =
-        first_row::<AgentMessageContentRow>(message.data.as_ref(), "AgentMessage")
-    else {
-        return Ok(None);
-    };
-    if message_row.role != "assistant" {
-        anyhow::bail!(
-            "materialized child response {child_request_id} sequence {sequence} is role {}",
-            message_row.role
-        );
-    }
-
-    Ok(Some(render_assistant_message_text(&message_row.content)?))
+    Ok(Some(render_assistant_message_text(&message.content)?))
 }
 
 pub(crate) async fn load_child_terminal_row(
@@ -2451,7 +2429,7 @@ pub(crate) async fn load_child_terminal_row(
     ))
 }
 
-fn render_assistant_message_text(content: &str) -> Result<String> {
+pub(crate) fn render_assistant_message_text(content: &str) -> Result<String> {
     let message = decode_persisted_message("assistant", content);
     let Message::Assistant { content, .. } = message else {
         anyhow::bail!("materialized child response is not an assistant message");

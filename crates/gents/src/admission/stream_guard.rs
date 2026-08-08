@@ -8,12 +8,19 @@ use rig::streaming::{
     RawStreamingChoice, RawStreamingToolCall, StreamedAssistantContent, StreamingCompletionResponse,
 };
 
+use super::provenance::RunningInferenceCallProvenance;
+
 pub(crate) trait StreamGuardLifecycle {
+    fn cancel_before_poll(&mut self) -> bool {
+        false
+    }
+
     fn mark_stream_success(&mut self, _usage: Option<Usage>) {}
 
     fn mark_stream_error(&mut self, _error: &CompletionError) {}
 }
 
+#[cfg(test)]
 pub(crate) fn hold_stream_guard<R, G>(
     stream: StreamingCompletionResponse<R>,
     guard: G,
@@ -22,9 +29,34 @@ where
     R: Clone + Unpin + GetTokenUsage + Send + 'static,
     G: StreamGuardLifecycle + Send + Unpin + 'static,
 {
+    hold_stream_guard_inner(stream, guard, None)
+}
+
+pub(crate) fn hold_stream_guard_with_running_call<R, G>(
+    stream: StreamingCompletionResponse<R>,
+    guard: G,
+    running_call: RunningInferenceCallProvenance,
+) -> StreamingCompletionResponse<R>
+where
+    R: Clone + Unpin + GetTokenUsage + Send + 'static,
+    G: StreamGuardLifecycle + Send + Unpin + 'static,
+{
+    hold_stream_guard_inner(stream, guard, Some(running_call))
+}
+
+fn hold_stream_guard_inner<R, G>(
+    stream: StreamingCompletionResponse<R>,
+    guard: G,
+    running_call: Option<RunningInferenceCallProvenance>,
+) -> StreamingCompletionResponse<R>
+where
+    R: Clone + Unpin + GetTokenUsage + Send + 'static,
+    G: StreamGuardLifecycle + Send + Unpin + 'static,
+{
     StreamingCompletionResponse::stream(Box::pin(GuardedStreamingResult {
         inner: stream,
         guard: Some(guard),
+        running_call,
         pending: VecDeque::new(),
         message_id_emitted: false,
         done: false,
@@ -37,6 +69,7 @@ where
 {
     inner: StreamingCompletionResponse<R>,
     guard: Option<G>,
+    running_call: Option<RunningInferenceCallProvenance>,
     pending: VecDeque<RawStreamingChoice<R>>,
     message_id_emitted: bool,
     done: bool,
@@ -69,7 +102,45 @@ where
             return Poll::Ready(None);
         }
 
-        match Pin::new(&mut this.inner).poll_next(cx) {
+        if this
+            .guard
+            .as_mut()
+            .is_some_and(StreamGuardLifecycle::cancel_before_poll)
+        {
+            let error = CompletionError::ProviderError(
+                "inference cancelled by request interrupt before provider send".to_string(),
+            );
+            this.release_guard();
+            this.done = true;
+            return Poll::Ready(Some(Err(error)));
+        }
+
+        let inner_poll = match this.running_call.as_ref() {
+            Some(running_call) => super::client::scope_running_call_poll(running_call, || {
+                Pin::new(&mut this.inner).poll_next(cx)
+            }),
+            None => Pin::new(&mut this.inner).poll_next(cx),
+        };
+
+        if matches!(inner_poll, Poll::Ready(Some(Ok(_))) | Poll::Ready(None))
+            && this
+                .running_call
+                .as_ref()
+                .is_some_and(|running_call| running_call.rendered_request().is_none())
+        {
+            let error = CompletionError::ProviderError(
+                "InferenceCallRenderBindingMissing: provider stream produced output without an exact RenderedRequest binding"
+                    .to_string(),
+            );
+            if let Some(guard) = this.guard.as_mut() {
+                guard.mark_stream_error(&error);
+            }
+            this.release_guard();
+            this.done = true;
+            return Poll::Ready(Some(Err(error)));
+        }
+
+        match inner_poll {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Some(Ok(item))) => {
                 if let StreamedAssistantContent::Final(response) = &item {

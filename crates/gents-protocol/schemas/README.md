@@ -12,6 +12,13 @@ documents for inspection and debugging.
 This file is the quick map of what each collection means, how collections relate
 to each other, and which subsystem writes them.
 
+Collection changes are governed by the repository-wide
+[DefraDB schema design guide](../../../docs/defradb-schema-guide.md) and tracked
+in the [schema decision ledger](../../../docs/schema-decision-ledger.md). The
+guide defines identity, branchability, replication, ACP, provenance, and
+retention requirements that are intentionally broader than this operational
+map.
+
 ## High-Level Shape
 
 ```text
@@ -83,7 +90,7 @@ These documents record user requests, assistant output, and conversation history
 | `AgentToolCall` | `tool_call_key`, `session_id`, `tool_name`, `tool_call_id`, `args`, `result`, `status`, trace enrichment fields | concrete tool invocation records within a session | runtime/tool persistence | chat progress, TUI, diagnostics |
 | `AgentToolResult` | `agent_did`, `session_id`, `tool_name`, `tool_input`, `output_text`, `truncated`, `discarded_because_interrupted` | normalized tool result persistence | tool persistence hook | compaction and later inspection |
 | `CompactionEntry` | `compaction_key`, `session_id`, `summary`, `messages_compacted`, token counts | persisted compaction summaries | compaction layer | session reconstruction and debugging |
-| `RenderedRequest` | `capture_key`, `request_id`, `session_id`, `capture_scope`, `turn_index`, `attempt`, `request_json`, `prompt_hash`, `tools_hash`, `provenance_json` | one durable fact per provider attempt: the exact HTTP request body, persisted before it is sent | `rendered_request::transport::RenderedRequestCapturingHttpClient`, the innermost transport in every provider stack, through `rendered_request::sink::DefraRenderedRequestSink` (installed by default) | trace projections, capture-verified reconstruction |
+| `RenderedRequest` | `capture_key`, `request_doc_id`, source/claim commit CIDs and verified signer DIDs, `request_id`, `session_id`, `capture_scope`, `turn_index`, `attempt`, `request_json`, `prompt_hash`, `tools_hash`, `provenance_json` | one durable fact per provider attempt: the exact HTTP request body and exact signed source-to-claim request chain, persisted before send | `rendered_request::transport::RenderedRequestCapturingHttpClient`, the innermost transport in every provider stack, through `rendered_request::sink::DefraRenderedRequestSink` (installed by default) | trace projections, capture reconstruction (still `CapturedOnly` until all transcript/config versions and later policy evidence are pinned) |
 
 ### Tasks, Schedules, and Event Triggers
 

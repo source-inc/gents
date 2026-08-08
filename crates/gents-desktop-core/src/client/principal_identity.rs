@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use crypto::Key;
-use gents::identity::{AgentIdentity, ServiceAccount};
+use gents::identity::{register_ed25519_signing_identity, AgentIdentity, ServiceAccount};
 use identity::{FullIdentity as _, Identity as _, RawIdentity};
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +65,7 @@ impl PrincipalIdentity {
         };
 
         validate_or_persist_metadata(metadata_path, &metadata).await?;
+        register_ed25519_signing_identity(&did, &private_key_bytes, &public_key_bytes)?;
 
         Ok(Self {
             did,

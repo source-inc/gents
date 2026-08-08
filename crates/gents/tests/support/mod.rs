@@ -1,10 +1,11 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use gents::defra_node::{EmbeddedNode, P2PConfig, QueryResponse};
 use gents::graphql::escape_graphql_string;
-use gents::{ensure_runtime_schemas, watcher::AgentRequest};
+use gents::{ensure_runtime_schemas, watcher::AgentRequest, AgentIdentity};
 use serde::Deserialize;
 use tempfile::TempDir;
 
@@ -26,14 +27,44 @@ pub const AGENT_DID: &str = "did:test:test";
 pub const AGENT_NAME: &str = "test";
 pub const BACKEND_ID: &str = "backend-test";
 pub const DEADLINE_SECS: u64 = 300;
+const MAX_CONCURRENT_SIGNED_TEST_NODES: usize = 8;
+
+fn signed_test_node_semaphore() -> Arc<tokio::sync::Semaphore> {
+    static SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    SEMAPHORE
+        .get_or_init(|| {
+            Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_SIGNED_TEST_NODES,
+            ))
+        })
+        .clone()
+}
+
+async fn signed_test_node_permit(signed: bool) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    if !signed {
+        return None;
+    }
+    Some(
+        signed_test_node_semaphore()
+            .acquire_owned()
+            .await
+            .expect("signed test-node semaphore closed"),
+    )
+}
 
 pub struct TestDb {
     pub node: Arc<EmbeddedNode>,
     pub process_generation: u64,
+    node_identity: Option<Arc<dyn AgentIdentity>>,
     tempdir: TempDir,
+    _signed_node_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl TestDb {
+    pub fn node_identity(&self) -> Option<Arc<dyn AgentIdentity>> {
+        self.node_identity.clone()
+    }
+
     pub async fn simulate_process_crash(&mut self) -> anyhow::Result<()> {
         let data_path = self.tempdir.path().to_path_buf();
         let before = self.process_generation;
@@ -69,16 +100,16 @@ impl TestDb {
             }
         }
 
-        let reopened = EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "simulate_process_crash: reopen durable store at {} failed: {e}",
-                    data_path.display()
-                )
-            })?;
+        let mut builder = EmbeddedNode::builder().data_path(&data_path);
+        if let Some(identity) = &self.node_identity {
+            builder = builder.with_node_identity_did(identity.did());
+        }
+        let reopened = builder.build().await.map_err(|e| {
+            anyhow::anyhow!(
+                "simulate_process_crash: reopen durable store at {} failed: {e}",
+                data_path.display()
+            )
+        })?;
         self.node = Arc::new(reopened);
 
         ensure_runtime_schemas(&self.node)
@@ -91,24 +122,33 @@ impl TestDb {
 }
 
 pub async fn test_db(name: &str) -> TestDb {
+    build_test_db(name, None).await
+}
+
+pub async fn test_db_with_identity(name: &str, identity: Arc<dyn AgentIdentity>) -> TestDb {
+    build_test_db(name, Some(identity)).await
+}
+
+async fn build_test_db(name: &str, node_identity: Option<Arc<dyn AgentIdentity>>) -> TestDb {
+    let signed_node_permit = signed_test_node_permit(node_identity.is_some()).await;
     let tempdir = tempfile::Builder::new()
         .prefix(&format!("gents-{name}-"))
         .tempdir()
         .expect("tempdir");
-    let node = Arc::new(
-        EmbeddedNode::builder()
-            .data_path(tempdir.path())
-            .build()
-            .await
-            .expect("embedded node"),
-    );
+    let mut builder = EmbeddedNode::builder().data_path(tempdir.path());
+    if let Some(identity) = &node_identity {
+        builder = builder.with_node_identity_did(identity.did());
+    }
+    let node = Arc::new(builder.build().await.expect("embedded node"));
     ensure_runtime_schemas(&node)
         .await
         .expect("runtime schemas");
     TestDb {
         node,
         process_generation: 0,
+        node_identity,
         tempdir,
+        _signed_node_permit: signed_node_permit,
     }
 }
 
@@ -169,7 +209,9 @@ pub async fn test_db_with_duplicate_tolerant_conversations(name: &str) -> TestDb
     TestDb {
         node,
         process_generation: 0,
+        node_identity: None,
         tempdir,
+        _signed_node_permit: None,
     }
 }
 
@@ -292,43 +334,57 @@ impl TestP2pAdmission {
 }
 
 pub async fn test_p2p_db(name: &str) -> TestDb {
-    test_p2p_db_with_admission(name, TestP2pAdmission::default()).await
+    build_test_p2p_db(name, TestP2pAdmission::default(), None).await
+}
+
+pub async fn test_p2p_db_with_identity(name: &str, identity: Arc<dyn AgentIdentity>) -> TestDb {
+    build_test_p2p_db(name, TestP2pAdmission::default(), Some(identity)).await
 }
 
 pub async fn test_p2p_db_with_admission(name: &str, admission: TestP2pAdmission) -> TestDb {
+    build_test_p2p_db(name, admission, None).await
+}
+
+async fn build_test_p2p_db(
+    name: &str,
+    admission: TestP2pAdmission,
+    node_identity: Option<Arc<dyn AgentIdentity>>,
+) -> TestDb {
+    let signed_node_permit = signed_test_node_permit(node_identity.is_some()).await;
     let tempdir = tempfile::Builder::new()
         .prefix(&format!("gents-{name}-"))
         .tempdir()
         .expect("tempdir");
-    let node = Arc::new(
-        EmbeddedNode::builder()
-            .data_path(tempdir.path())
-            .with_p2p(P2PConfig {
-                port: 0,
-                bind_addr: Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
-                relay_mode: p2p::iroh::IrohRelayModeConfig::Disabled,
-                discovery: p2p::iroh::IrohDiscoveryConfig::Disabled,
-                max_concurrent_multipath_paths: None,
-                secret_key_path: None,
-                load_persisted_collections: false,
-                max_concurrent_dag_fetches: admission.max_concurrent_dag_fetches,
-                max_concurrent_push_tasks: admission.max_concurrent_push_tasks,
-                rate_limit_burst: admission.rate_limit_burst,
-                rate_limit_rate: admission.rate_limit_rate,
-                max_doc_sync_request_doc_ids: p2p::sync::DEFAULT_MAX_DOC_SYNC_REQUEST_DOC_IDS,
-                max_pending_dags: admission.max_pending_dags,
-            })
-            .build()
-            .await
-            .expect("embedded p2p node"),
-    );
+    let mut builder = EmbeddedNode::builder()
+        .data_path(tempdir.path())
+        .with_p2p(P2PConfig {
+            port: 0,
+            bind_addr: Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+            relay_mode: p2p::iroh::IrohRelayModeConfig::Disabled,
+            discovery: p2p::iroh::IrohDiscoveryConfig::Disabled,
+            max_concurrent_multipath_paths: None,
+            secret_key_path: None,
+            load_persisted_collections: false,
+            max_concurrent_dag_fetches: admission.max_concurrent_dag_fetches,
+            max_concurrent_push_tasks: admission.max_concurrent_push_tasks,
+            rate_limit_burst: admission.rate_limit_burst,
+            rate_limit_rate: admission.rate_limit_rate,
+            max_doc_sync_request_doc_ids: p2p::sync::DEFAULT_MAX_DOC_SYNC_REQUEST_DOC_IDS,
+            max_pending_dags: admission.max_pending_dags,
+        });
+    if let Some(identity) = &node_identity {
+        builder = builder.with_node_identity_did(identity.did());
+    }
+    let node = Arc::new(builder.build().await.expect("embedded p2p node"));
     ensure_runtime_schemas(&node)
         .await
         .expect("runtime schemas");
     TestDb {
         node,
         process_generation: 0,
+        node_identity,
         tempdir,
+        _signed_node_permit: signed_node_permit,
     }
 }
 
@@ -336,6 +392,17 @@ pub async fn create_request(
     node: &EmbeddedNode,
     request_id: &str,
     session_id: &str,
+    status: &str,
+    created_at: &str,
+) -> String {
+    create_request_for_agent(node, request_id, session_id, AGENT_DID, status, created_at).await
+}
+
+pub async fn create_request_for_agent(
+    node: &EmbeddedNode,
+    request_id: &str,
+    session_id: &str,
+    agent_did: &str,
     status: &str,
     created_at: &str,
 ) -> String {
@@ -350,12 +417,13 @@ pub async fn create_request(
     };
     let request_id = escape_graphql_string(request_id);
     let session_id = escape_graphql_string(session_id);
+    let agent_did = escape_graphql_string(agent_did);
     let created_at = escape_graphql_string(created_at);
     let mutation = format!(
         r#"mutation {{
             create_AgentRequest(input: {{
                 request_id: "{request_id}",
-                agent_did: "{AGENT_DID}",
+                agent_did: "{agent_did}",
                 behavior_id: "{AGENT_NAME}",
                 session_id: "{session_id}",
                 retry_parent_request: "",
@@ -809,7 +877,7 @@ pub async fn create_agent_tool_result(
                 tool_name: "{tool_name_escaped}",
                 tool_input: "{tool_input_escaped}",
                 output_text: "{output_text_escaped}",
-                truncated: false,
+                model_output_truncated: false,
                 truncation_metadata: "",
                 conversation_doc_id: "",
                 created_at: "{created_at_escaped}"

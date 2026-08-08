@@ -214,6 +214,37 @@ pub(crate) async fn lookup_backend_by_doc_id(
     Ok(backend)
 }
 
+pub(crate) async fn lookup_backend_at_cid(
+    node: &EmbeddedNode,
+    composite_commit_cid: &str,
+) -> Result<Option<(String, InferenceBackend)>> {
+    let escaped_cid = escape_graphql_string(composite_commit_cid);
+    let query = format!(
+        r#"query {{ InferenceBackend(cid: ["{escaped_cid}"]) {{ _docID backend_id name provider_kind openai_wire_api endpoint api_key api_key_env_var max_concurrent max_queue_depth enabled models probe_status }} }}"#,
+    );
+    let resp = node.execute(&query).await;
+    if resp.has_errors() {
+        anyhow::bail!("query InferenceBackend at CID failed: {:?}", resp.errors);
+    }
+    let backend = resp
+        .data
+        .as_ref()
+        .and_then(|data| data.get("InferenceBackend"))
+        .and_then(|value| value.as_array())
+        .and_then(|rows| rows.first())
+        .map(|row| {
+            Ok::<_, anyhow::Error>((
+                row.get("_docID")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("InferenceBackend row is missing _docID"))?
+                    .to_string(),
+                InferenceBackend::from_value(row)?,
+            ))
+        })
+        .transpose()?;
+    Ok(backend)
+}
+
 pub(crate) async fn list_backend_records(
     node: &EmbeddedNode,
 ) -> Result<Vec<(String, InferenceBackend)>> {

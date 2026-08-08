@@ -692,9 +692,10 @@ fn resolve_server_identity(
             .context("creating or loading agent identity key")?,
     );
     ensure_identity_matches_init_config(init_config, identity.did())?;
+    let node_identity_did = identity.did().to_string();
     Ok(ServerIdentity {
         identity,
-        node_identity_did: None,
+        node_identity_did: Some(node_identity_did),
     })
 }
 

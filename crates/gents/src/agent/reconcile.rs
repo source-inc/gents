@@ -9,7 +9,7 @@ use crate::admission::AdmissionRegistry;
 use crate::config::AgentBehavior;
 use crate::retry::RetryPolicy;
 use crate::runtime_snapshot::ActiveRuntimeSnapshot;
-use crate::runtime_snapshot::ResolvedRuntimeSnapshot;
+use crate::runtime_snapshot::{ResolvedRuntimeSnapshot, ScopedBehaviorConfigProvenance};
 use crate::runtime_status::{ReconcilePhase, RuntimeStatusHandle};
 use crate::tool_surface::ToolSurface;
 use crate::watcher::AgentRequest;
@@ -41,6 +41,7 @@ where
     F: Fn(
             Arc<AgentBehavior>,
             Arc<ToolSurface>,
+            ScopedBehaviorConfigProvenance,
             Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
             watch::Receiver<bool>,
         ) -> Fut
@@ -59,6 +60,7 @@ where
         shutdown: watch::Receiver<bool>,
         slot_failure_policy: Option<Arc<dyn SlotFailurePolicy>>,
     ) -> Result<Self> {
+        resolved_snapshot.validate_config_provenance_scope()?;
         admission_registry.reconcile(1, &resolved_snapshot.backend_admission_configs);
         let active_slots = spawn_slots(
             &resolved_snapshot,
@@ -213,6 +215,7 @@ where
         active_snapshot_tx: &watch::Sender<Arc<ActiveRuntimeSnapshot>>,
         shutdown: watch::Receiver<bool>,
     ) -> Result<()> {
+        resolved_snapshot.validate_config_provenance_scope()?;
         let mut next_slots = HashMap::new();
         let mut retired_slots = Vec::new();
         let mut retired_behaviors: Vec<(String, bool)> = Vec::new();
@@ -223,11 +226,19 @@ where
                 .get(behavior_id)
                 .cloned()
                 .ok_or_else(|| anyhow!("missing tool surface for behavior {behavior_id}"))?;
+            let config_provenance = resolved_snapshot.scoped_config_provenance_for(behavior_id);
             let executor_capacity =
                 behavior_executor_capacity(behavior, &resolved_snapshot.backend_admission_configs);
 
             match self.active_slots.remove(behavior_id) {
-                Some(existing) if existing.matches(behavior, &tool_surface, executor_capacity) => {
+                Some(existing)
+                    if existing.matches(
+                        behavior,
+                        &tool_surface,
+                        &config_provenance,
+                        executor_capacity,
+                    ) =>
+                {
                     next_slots.insert(behavior_id.clone(), existing);
                 }
                 Some(existing) => {
@@ -238,6 +249,7 @@ where
                         spawn_slot_with_capacity(
                             behavior.clone(),
                             tool_surface,
+                            config_provenance,
                             executor_capacity,
                             self.retry_policy.clone(),
                             self.runner.clone(),
@@ -252,6 +264,7 @@ where
                         spawn_slot_with_capacity(
                             behavior.clone(),
                             tool_surface,
+                            config_provenance,
                             executor_capacity,
                             self.retry_policy.clone(),
                             self.runner.clone(),

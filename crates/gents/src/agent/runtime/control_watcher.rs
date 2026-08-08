@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::runtime_snapshot::ResolvedRuntimeSnapshot;
 use crate::runtime_status::{ReconcilePhase, RuntimeStatusHandle};
@@ -13,22 +13,85 @@ use super::super::DocumentResolveContext;
 pub(super) const CONTROL_RECONCILE_DEBOUNCE: Duration = Duration::from_secs(5);
 const CONTROL_RECONCILE_SETTLE_RETRY: Duration = Duration::from_secs(1);
 const CONTROL_RECONCILE_SETTLE_WINDOW: Duration = Duration::from_secs(60);
+pub(super) const CONTROL_FULL_RESCAN_INTERVAL: Duration = Duration::from_secs(10);
 const CONTROL_WATCHER_IDLE_SLEEP: Duration = Duration::from_secs(60 * 60 * 24 * 365);
+
+/// Why the control view became dirty.
+///
+/// Subscription and measured-health wakes are deliberately debounced so a
+/// burst converges to one proposal. A periodic full scan is already the
+/// delayed correctness fallback for a missed wake and must be resolved
+/// immediately. Keeping this decision pure lets tests assert scheduling
+/// semantics without treating time spent in asynchronous DefraDB reads as
+/// debounce time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconcileWake {
+    LiveUpdate,
+    MeasuredHealth,
+    PeriodicRescan,
+}
+
+impl ReconcileWake {
+    fn delay(self) -> Duration {
+        match self {
+            Self::PeriodicRescan => Duration::ZERO,
+            Self::LiveUpdate | Self::MeasuredHealth => CONTROL_RECONCILE_DEBOUNCE,
+        }
+    }
+}
+
+fn reconcile_deadline(wake: ReconcileWake) -> tokio::time::Instant {
+    tokio::time::Instant::now() + wake.delay()
+}
 
 pub(super) async fn run_control_watcher(
     node: Arc<defra_node::EmbeddedNode>,
-    mut subscription: events::Subscription,
+    subscription: events::Subscription,
+    agent_did: String,
+    resolve_context: DocumentResolveContext,
+    proposals_tx: mpsc::Sender<ResolvedRuntimeSnapshot>,
+    runtime_status: RuntimeStatusHandle,
+    health_events_rx: mpsc::Receiver<()>,
+    shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    run_control_watcher_inner(
+        node,
+        Some(subscription),
+        agent_did,
+        resolve_context,
+        proposals_tx,
+        runtime_status,
+        health_events_rx,
+        shutdown,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn run_control_watcher_inner(
+    node: Arc<defra_node::EmbeddedNode>,
+    mut subscription: Option<events::Subscription>,
     agent_did: String,
     resolve_context: DocumentResolveContext,
     proposals_tx: mpsc::Sender<ResolvedRuntimeSnapshot>,
     runtime_status: RuntimeStatusHandle,
     mut health_events_rx: mpsc::Receiver<()>,
     mut shutdown: watch::Receiver<bool>,
+    startup_ready: Option<oneshot::Sender<()>>,
 ) -> Result<()> {
     let mut document_view =
         document_view::load_document_runtime_view(node.as_ref(), &agent_did).await?;
     let sleep = tokio::time::sleep(CONTROL_WATCHER_IDLE_SLEEP);
     tokio::pin!(sleep);
+    let mut full_rescan = tokio::time::interval(CONTROL_FULL_RESCAN_INTERVAL);
+    full_rescan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // `interval` ticks immediately once. Consume that tick so the fallback is
+    // genuinely periodic and does not manufacture a startup reconcile.
+    full_rescan.tick().await;
+    if let Some(startup_ready) = startup_ready {
+        let _ = startup_ready.send(());
+    }
     let mut dirty = false;
     let mut pending_visibility = false;
     let mut settle_deadline = None;
@@ -37,6 +100,37 @@ pub(super) async fn run_control_watcher(
     loop {
         tokio::select! {
             _ = shutdown.changed() => return Ok(()),
+            _ = full_rescan.tick() => {
+                match document_view::load_document_runtime_view(node.as_ref(), &agent_did).await {
+                    Ok(reloaded) => {
+                        document_view = reloaded;
+                        pending_visibility = document_view.has_unresolved_behavior_references();
+                        dirty = true;
+                        settle_deadline = pending_visibility.then(|| {
+                            tokio::time::Instant::now() + CONTROL_RECONCILE_SETTLE_WINDOW
+                        });
+                        runtime_status
+                            .set_reconcile_phase(ReconcilePhase::Debouncing)
+                            .await;
+                        // A periodic rescan is already the delayed fallback for a
+                        // missed or closed subscription. Resolve it immediately:
+                        // applying the event debounce here would make the runtime
+                        // non-idle for half of every rescan interval even when the
+                        // loaded configuration is unchanged.
+                        sleep
+                            .as_mut()
+                            .reset(reconcile_deadline(ReconcileWake::PeriodicRescan));
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            agent_did = %agent_did,
+                            error = %error,
+                            "runtime control watcher periodic full rescan failed"
+                        );
+                        runtime_status.publish_error(&format!("{error:#}")).await;
+                    }
+                }
+            }
             _ = &mut sleep, if dirty => {
                 if pending_visibility || settle_deadline.is_some() {
                     match document_view::load_document_runtime_view(node.as_ref(), &agent_did).await {
@@ -136,14 +230,64 @@ pub(super) async fn run_control_watcher(
                 runtime_status
                     .set_reconcile_phase(ReconcilePhase::Debouncing)
                     .await;
-                sleep.as_mut().reset(tokio::time::Instant::now() + CONTROL_RECONCILE_DEBOUNCE);
+                sleep
+                    .as_mut()
+                    .reset(reconcile_deadline(ReconcileWake::MeasuredHealth));
             }
-            message = subscription.recv() => {
+            message = async {
+                subscription
+                    .as_mut()
+                    .expect("open control subscription must be present")
+                    .recv()
+                    .await
+            }, if subscription.is_some() => {
                 let Some(message) = message else {
-                    return Ok(());
+                    tracing::warn!(
+                        agent_did = %agent_did,
+                        "runtime control update subscription closed; forcing durable rescan before reopen"
+                    );
+                    match document_view::load_document_runtime_view(node.as_ref(), &agent_did).await {
+                        Ok(reloaded) => {
+                            document_view = reloaded;
+                            pending_visibility = document_view.has_unresolved_behavior_references();
+                            dirty = true;
+                            settle_deadline = pending_visibility.then(|| {
+                                tokio::time::Instant::now() + CONTROL_RECONCILE_SETTLE_WINDOW
+                            });
+                            runtime_status
+                                .set_reconcile_phase(ReconcilePhase::Debouncing)
+                                .await;
+                            sleep
+                                .as_mut()
+                                .reset(reconcile_deadline(ReconcileWake::PeriodicRescan));
+                        }
+                        Err(error) => {
+                            tracing::error!(
+                                agent_did = %agent_did,
+                                error = %error,
+                                "runtime control watcher durable rescan after subscription close failed"
+                            );
+                            runtime_status.publish_error(&format!("{error:#}")).await;
+                        }
+                    }
+                    tokio::select! {
+                        _ = shutdown.changed() => return Ok(()),
+                        _ = tokio::time::sleep(
+                            crate::trigger_engine::subscription_source::UPDATE_SUBSCRIPTION_REOPEN_DELAY,
+                        ) => {}
+                    }
+                    subscription = Some(node.subscribe(&[defra_node::EventName::Update]));
+                    tracing::info!(
+                        agent_did = %agent_did,
+                        "runtime control watcher reopened global Update subscription"
+                    );
+                    continue;
                 };
 
-                let dropped = subscription.check_and_reset_dropped();
+                let dropped = subscription
+                    .as_mut()
+                    .expect("open control subscription must be present")
+                    .check_and_reset_dropped();
                 if dropped > 0 {
                     tracing::warn!(
                         agent_did = %agent_did,
@@ -171,7 +315,9 @@ pub(super) async fn run_control_watcher(
                     runtime_status
                         .set_reconcile_phase(ReconcilePhase::Debouncing)
                         .await;
-                    sleep.as_mut().reset(tokio::time::Instant::now() + CONTROL_RECONCILE_DEBOUNCE);
+                    sleep
+                        .as_mut()
+                        .reset(reconcile_deadline(ReconcileWake::LiveUpdate));
                     continue;
                 }
 
@@ -233,8 +379,28 @@ pub(super) async fn run_control_watcher(
                 runtime_status
                     .set_reconcile_phase(ReconcilePhase::Debouncing)
                     .await;
-                sleep.as_mut().reset(tokio::time::Instant::now() + CONTROL_RECONCILE_DEBOUNCE);
+                sleep
+                    .as_mut()
+                    .reset(reconcile_deadline(ReconcileWake::LiveUpdate));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod scheduling_tests {
+    use super::*;
+
+    #[test]
+    fn periodic_rescan_is_immediate_while_live_wakes_are_debounced() {
+        assert_eq!(ReconcileWake::PeriodicRescan.delay(), Duration::ZERO);
+        assert_eq!(
+            ReconcileWake::LiveUpdate.delay(),
+            CONTROL_RECONCILE_DEBOUNCE
+        );
+        assert_eq!(
+            ReconcileWake::MeasuredHealth.delay(),
+            CONTROL_RECONCILE_DEBOUNCE
+        );
     }
 }

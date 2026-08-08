@@ -72,6 +72,7 @@ pub(super) async fn trigger_engine_dispatch_matches_lean_generated_contract_case
             doc_vars: None,
             args_vars: None,
             pre_materialized_request_id: None,
+            materialization_request_id: None,
             on_result: Box::new(|_| {}),
         };
 

@@ -8,7 +8,8 @@ use rig::streaming::StreamingCompletionResponse;
 use tokio_util::sync::CancellationToken;
 
 use super::controller::PendingCallMetadata;
-use super::stream_guard::hold_stream_guard;
+use super::provenance::RunningInferenceCallProvenance;
+use super::stream_guard::hold_stream_guard_with_running_call;
 use super::AdmissionRegistry;
 use crate::watcher::AgentRequest;
 
@@ -64,6 +65,7 @@ where
         request: CompletionRequest,
     ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
         let mut permit = self.admission.acquire_current_call().await?;
+        let running_call = permit.running_call_provenance().clone();
         let token = current_context().ok().and_then(|c| c.inference_token);
         match token {
             Some(token) => {
@@ -73,8 +75,9 @@ where
                         permit.mark_interrupted();
                         Err(CompletionError::ProviderError(CANCELLED_BY_INTERRUPT_MSG.into()))
                     }
-                    result = self.inner.completion(request) => match result {
+                    result = scope_running_call(running_call, self.inner.completion(request)) => match result {
                         Ok(response) => {
+                            permit.require_rendered_request_binding().await?;
                             permit.finish_success(Some(response.usage)).await;
                             Ok(response)
                         }
@@ -85,8 +88,9 @@ where
                     }
                 }
             }
-            None => match self.inner.completion(request).await {
+            None => match scope_running_call(running_call, self.inner.completion(request)).await {
                 Ok(response) => {
+                    permit.require_rendered_request_binding().await?;
                     permit.finish_success(Some(response.usage)).await;
                     Ok(response)
                 }
@@ -103,6 +107,7 @@ where
         request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
         let mut permit = self.admission.acquire_current_call().await?;
+        let running_call = permit.running_call_provenance().clone();
         let token = current_context().ok().and_then(|c| c.inference_token);
         match token {
             Some(token) => {
@@ -112,8 +117,10 @@ where
                         permit.mark_interrupted();
                         Err(CompletionError::ProviderError(CANCELLED_BY_INTERRUPT_MSG.into()))
                     }
-                    result = self.inner.stream(request) => match result {
-                        Ok(stream) => Ok(hold_stream_guard(stream, permit)),
+                    result = scope_running_call(running_call.clone(), self.inner.stream(request)) => match result {
+                        Ok(stream) => {
+                            Ok(hold_stream_guard_with_running_call(stream, permit, running_call))
+                        }
                         Err(error) => {
                             permit.finish_failure(&error.to_string()).await;
                             Err(error)
@@ -121,13 +128,19 @@ where
                     }
                 }
             }
-            None => match self.inner.stream(request).await {
-                Ok(stream) => Ok(hold_stream_guard(stream, permit)),
-                Err(error) => {
-                    permit.finish_failure(&error.to_string()).await;
-                    Err(error)
+            None => {
+                match scope_running_call(running_call.clone(), self.inner.stream(request)).await {
+                    Ok(stream) => Ok(hold_stream_guard_with_running_call(
+                        stream,
+                        permit,
+                        running_call,
+                    )),
+                    Err(error) => {
+                        permit.finish_failure(&error.to_string()).await;
+                        Err(error)
+                    }
                 }
-            },
+            }
         }
     }
 }
@@ -167,6 +180,27 @@ pub(crate) struct AdmissionCallContext {
 }
 
 impl AdmissionCallContext {
+    pub(crate) fn for_oneoff(
+        request_id: impl Into<String>,
+        session_id: impl Into<String>,
+        behavior_id: impl Into<String>,
+        backend_id: impl Into<String>,
+        agent_did: impl Into<String>,
+    ) -> Self {
+        Self {
+            request_id: request_id.into(),
+            backend_id: backend_id.into(),
+            behavior_id: behavior_id.into(),
+            agent_did: agent_did.into(),
+            session_id: session_id.into(),
+            call_kind: CallKind::OneOff,
+            attempt: 1,
+            call_seq: Arc::new(AtomicU64::new(0)),
+            inference_token: None,
+            terminal_failure_reason: None,
+        }
+    }
+
     pub(crate) fn for_request(
         request: &AgentRequest,
         behavior_id: impl Into<String>,
@@ -204,6 +238,39 @@ impl AdmissionCallContext {
 
 tokio::task_local! {
     static ADMISSION_CALL_CONTEXT: AdmissionCallContext;
+    static RUNNING_INFERENCE_CALL_PROVENANCE: RunningInferenceCallProvenance;
+}
+
+async fn scope_running_call<T>(
+    provenance: RunningInferenceCallProvenance,
+    future: impl Future<Output = T>,
+) -> T {
+    RUNNING_INFERENCE_CALL_PROVENANCE
+        .scope(provenance.clone(), async move {
+            provenance.mark_provider_path_entered();
+            future.await
+        })
+        .await
+}
+
+/// Exact signed running-call V1 visible only while the admitted provider
+/// future is constructing and sending its request.
+pub(crate) fn current_running_call_provenance() -> Option<RunningInferenceCallProvenance> {
+    RUNNING_INFERENCE_CALL_PROVENANCE
+        .try_with(Clone::clone)
+        .ok()
+}
+
+/// Poll a lazy provider stream inside the same running-call scope used to
+/// construct it. Some rig providers do not construct the HTTP request until
+/// the returned stream is first polled, so scoping only `CompletionModel::stream`
+/// would leave the innermost capture transport without the exact call V1.
+pub(super) fn scope_running_call_poll<T>(
+    provenance: &RunningInferenceCallProvenance,
+    poll: impl FnOnce() -> T,
+) -> T {
+    provenance.mark_provider_path_entered();
+    RUNNING_INFERENCE_CALL_PROVENANCE.sync_scope(provenance.clone(), poll)
 }
 
 pub(crate) async fn scope_request<T>(

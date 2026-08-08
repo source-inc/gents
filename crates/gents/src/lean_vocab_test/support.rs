@@ -53,6 +53,17 @@ pub(crate) struct LeanContractSnapshot {
     pub(crate) self_config_cases: Vec<LeanSelfConfigCase>,
     pub(crate) session_recovery_cases: Vec<LeanSessionRecoveryCase>,
     pub(crate) inference_slot_accounting_cases: Vec<LeanInferenceSlotAccountingCase>,
+    #[serde(default)]
+    pub(crate) inference_call_exact_target_cases: Vec<LeanInferenceCallExactTargetCase>,
+    #[serde(default)]
+    pub(crate) inference_call_exact_target_trace_cases: Vec<LeanInferenceCallExactTargetTraceCase>,
+    pub(crate) inference_rendered_capture_cases: Vec<LeanInferenceRenderedCaptureCase>,
+    pub(crate) tool_fact_cases: Vec<LeanToolFactCase>,
+    pub(crate) fork_provenance_cases: Vec<LeanForkProvenanceCase>,
+    pub(crate) compaction_source_manifest_cases: Vec<LeanCompactionSourceManifestCase>,
+    pub(crate) response_outcome_cases: Vec<LeanResponseOutcomeCase>,
+    pub(crate) response_persistence_cut_cases: Vec<LeanResponsePersistenceCutCase>,
+    pub(crate) response_recovery_cut_cases: Vec<LeanResponseRecoveryCutCase>,
     pub(crate) fleet_slot_accounting_cases: Vec<LeanFleetSlotAccountingCase>,
     pub(crate) persistence_failure_policy_cases: Vec<LeanPersistenceFailurePolicyCase>,
     pub(crate) storage_observation_runtime_cases: Vec<LeanStorageObservationRuntimeCase>,
@@ -133,6 +144,10 @@ pub(crate) struct LeanContractSnapshot {
     #[serde(default)]
     pub(crate) subagent_delegation_graph_cases: Vec<LeanSubagentDelegationGraphCase>,
     pub(crate) transcript_conformance_cases: Vec<LeanTranscriptCase>,
+    #[serde(default)]
+    pub(crate) transcript_finalization_cases: Vec<LeanTranscriptFinalizationCase>,
+    #[serde(default)]
+    pub(crate) transcript_provider_history_cases: Vec<LeanTranscriptProviderHistoryCase>,
     pub(crate) streaming_response_cases: Vec<LeanResponseTransitionCase>,
     #[serde(default)]
     pub(crate) streaming_response_interrupt_flow_cases: Vec<LeanResponseInterruptFlowCase>,
@@ -151,6 +166,10 @@ pub(crate) struct LeanContractSnapshot {
     pub(crate) rendered_capture_cases: Vec<LeanRenderedCaptureCase>,
     #[serde(default)]
     pub(crate) rendered_capture_key_cases: Vec<LeanRenderedCaptureKeyCase>,
+    #[serde(default)]
+    pub(crate) request_ingest_cases: Vec<LeanRequestIngestCase>,
+    #[serde(default)]
+    pub(crate) subagent_bridge_admission_cases: Vec<LeanSubagentBridgeAdmissionCase>,
     pub(crate) follow_up_hooks: Vec<String>,
     pub(crate) coverage_ledger: Vec<LeanCoverageEntry>,
     pub(crate) feature_surface_requirements: Vec<LeanFeatureSurfaceRequirement>,
@@ -170,6 +189,8 @@ pub(crate) struct LeanContractSnapshot {
     pub(crate) event_delivery_source_instances: Vec<LeanEventDeliverySourceInstance>,
     #[serde(default)]
     pub(crate) event_delivery_convergence_traces: Vec<LeanEventDeliveryConvergenceTrace>,
+    #[serde(default)]
+    pub(crate) event_delivery_durable_admission_cases: Vec<LeanDurableEventAdmissionCase>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -363,18 +384,32 @@ mod client_session;
 mod codex_shim;
 #[path = "command_identity_queue.rs"]
 mod command_identity_queue;
+#[path = "compaction_source_manifest.rs"]
+mod compaction_source_manifest;
 #[path = "composed_invariants.rs"]
 mod composed_invariants;
 #[path = "event_delivery.rs"]
 mod event_delivery;
+#[path = "fork_provenance.rs"]
+mod fork_provenance;
+#[path = "inference_rendered_capture.rs"]
+mod inference_rendered_capture;
 #[path = "prompt_assembly.rs"]
 mod prompt_assembly;
 #[path = "rendered_capture.rs"]
 mod rendered_capture;
+#[path = "request_ingest.rs"]
+mod request_ingest;
+#[path = "response_outcome.rs"]
+mod response_outcome;
 #[path = "self_config.rs"]
 mod self_config;
 #[path = "slot_persistence_health.rs"]
 mod slot_persistence_health;
+#[path = "subagent_bridge_admission.rs"]
+mod subagent_bridge_admission;
+#[path = "tool_fact.rs"]
+mod tool_fact;
 #[path = "tool_policy.rs"]
 mod tool_policy;
 #[path = "triggers_runtime_apply.rs"]
@@ -384,12 +419,19 @@ pub(crate) use background_transcript::*;
 pub(crate) use client_session::*;
 pub(crate) use codex_shim::*;
 pub(crate) use command_identity_queue::*;
+pub(crate) use compaction_source_manifest::*;
 pub(crate) use composed_invariants::*;
 pub(crate) use event_delivery::*;
+pub(crate) use fork_provenance::*;
+pub(crate) use inference_rendered_capture::*;
 pub(crate) use prompt_assembly::*;
 pub(crate) use rendered_capture::*;
+pub(crate) use request_ingest::*;
+pub(crate) use response_outcome::*;
 pub(crate) use self_config::*;
 pub(crate) use slot_persistence_health::*;
+pub(crate) use subagent_bridge_admission::*;
+pub(crate) use tool_fact::*;
 pub(crate) use tool_policy::*;
 pub(crate) use triggers_runtime_apply::*;
 
@@ -525,6 +567,46 @@ pub(crate) fn lean_request_lifecycle_operator_ui_cases() -> &'static [LeanClient
 
 pub(crate) fn lean_inference_slot_accounting_cases() -> &'static [LeanInferenceSlotAccountingCase] {
     &lean_contract_snapshot().inference_slot_accounting_cases
+}
+
+pub(crate) fn lean_inference_call_exact_target_cases() -> &'static [LeanInferenceCallExactTargetCase]
+{
+    &lean_contract_snapshot().inference_call_exact_target_cases
+}
+
+pub(crate) fn lean_inference_call_exact_target_trace_cases(
+) -> &'static [LeanInferenceCallExactTargetTraceCase] {
+    &lean_contract_snapshot().inference_call_exact_target_trace_cases
+}
+
+pub(crate) fn lean_inference_rendered_capture_cases() -> &'static [LeanInferenceRenderedCaptureCase]
+{
+    &lean_contract_snapshot().inference_rendered_capture_cases
+}
+
+pub(crate) fn lean_tool_fact_cases() -> &'static [LeanToolFactCase] {
+    &lean_contract_snapshot().tool_fact_cases
+}
+
+pub(crate) fn lean_fork_provenance_cases() -> &'static [LeanForkProvenanceCase] {
+    &lean_contract_snapshot().fork_provenance_cases
+}
+
+pub(crate) fn lean_compaction_source_manifest_cases() -> &'static [LeanCompactionSourceManifestCase]
+{
+    &lean_contract_snapshot().compaction_source_manifest_cases
+}
+
+pub(crate) fn lean_response_outcome_cases() -> &'static [LeanResponseOutcomeCase] {
+    &lean_contract_snapshot().response_outcome_cases
+}
+
+pub(crate) fn lean_response_persistence_cut_cases() -> &'static [LeanResponsePersistenceCutCase] {
+    &lean_contract_snapshot().response_persistence_cut_cases
+}
+
+pub(crate) fn lean_response_recovery_cut_cases() -> &'static [LeanResponseRecoveryCutCase] {
+    &lean_contract_snapshot().response_recovery_cut_cases
 }
 
 pub(crate) fn lean_inference_slot_accounting_case(
@@ -825,6 +907,15 @@ pub(crate) fn lean_transcript_case(name: &str) -> &'static LeanTranscriptCase {
         .unwrap_or_else(|| panic!("Lean transcript case {name:?} was not emitted"))
 }
 
+pub(crate) fn lean_transcript_finalization_cases() -> &'static [LeanTranscriptFinalizationCase] {
+    &lean_contract_snapshot().transcript_finalization_cases
+}
+
+pub(crate) fn lean_transcript_provider_history_cases(
+) -> &'static [LeanTranscriptProviderHistoryCase] {
+    &lean_contract_snapshot().transcript_provider_history_cases
+}
+
 pub(crate) fn lean_response_transition_cases() -> &'static [LeanResponseTransitionCase] {
     &lean_contract_snapshot().streaming_response_cases
 }
@@ -884,6 +975,14 @@ pub(crate) fn lean_rendered_capture_key_cases() -> &'static [LeanRenderedCapture
     &lean_contract_snapshot().rendered_capture_key_cases
 }
 
+pub(crate) fn lean_request_ingest_cases() -> &'static [LeanRequestIngestCase] {
+    &lean_contract_snapshot().request_ingest_cases
+}
+
+pub(crate) fn lean_subagent_bridge_admission_cases() -> &'static [LeanSubagentBridgeAdmissionCase] {
+    &lean_contract_snapshot().subagent_bridge_admission_cases
+}
+
 pub(crate) fn lean_compaction_reducer_case(name: &str) -> &'static LeanCompactionReducerCase {
     lean_contract_snapshot()
         .compaction_reducer_cases
@@ -903,6 +1002,11 @@ pub(crate) fn lean_event_delivery_source_instances() -> &'static [LeanEventDeliv
 pub(crate) fn lean_event_delivery_convergence_traces(
 ) -> &'static [LeanEventDeliveryConvergenceTrace] {
     &lean_contract_snapshot().event_delivery_convergence_traces
+}
+
+pub(crate) fn lean_event_delivery_durable_admission_cases(
+) -> &'static [LeanDurableEventAdmissionCase] {
+    &lean_contract_snapshot().event_delivery_durable_admission_cases
 }
 
 pub(crate) fn lean_tool_retry_case(name: &str) -> &'static LeanToolRetryCase {

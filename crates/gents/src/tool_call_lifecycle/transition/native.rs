@@ -193,6 +193,99 @@ impl ToolCallLifecycle {
         Ok(())
     }
 
+    /// Bind the exact signed immutable full-output fact before terminalizing
+    /// the mutable lifecycle row. Failure is fail-closed: no terminal success
+    /// may claim an output that cannot be resolved exactly.
+    pub(crate) async fn attach_result_fact(
+        &mut self,
+        result: &crate::SignedDocumentVersionRef,
+    ) -> Result<()> {
+        self.ensure_state(&[ToolCallState::Running], "attach_result_fact")?;
+        let doc_id = self
+            .doc_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("attach_result_fact called before persistence"))?;
+        let started_at = self
+            .started_at
+            .ok_or_else(|| anyhow!("attach_result_fact called without started_at"))?;
+        let mutation = format!(
+            r#"mutation {{
+                update_AgentToolCall(
+                    filter: {{ _docID: {{ _eq: "{}" }}, lifecycle_state: {{ _eq: "running" }} }},
+                    input: {{
+                        result_doc_id: "{}",
+                        result_composite_commit_cid: "{}",
+                        result_signer_did: "{}",
+                        started_at: "{}",
+                        deadline_at: "{}"
+                    }}
+                ) {{ _docID }}
+            }}"#,
+            escape_graphql_string(doc_id),
+            escape_graphql_string(&result.version.doc_id),
+            escape_graphql_string(&result.version.composite_commit_cid),
+            escape_graphql_string(&result.signer_did),
+            started_at.to_rfc3339(),
+            self.deadline_at.to_rfc3339(),
+        );
+        let response =
+            execute_mutation_with_retry(&self.node, &mutation, "attach exact AgentToolResult fact")
+                .await?;
+        if !response
+            .data
+            .as_ref()
+            .and_then(|data| data.get("update_AgentToolCall"))
+            .is_some_and(response_has_documents)
+        {
+            anyhow::bail!("tool call left running before exact result fact could be attached");
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn attach_approval_fact(
+        &mut self,
+        approval: &crate::SignedDocumentVersionRef,
+    ) -> Result<()> {
+        self.ensure_state(&[ToolCallState::AwaitingApproval], "attach_approval_fact")?;
+        let doc_id = self
+            .doc_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("attach_approval_fact called before persistence"))?;
+        let mutation = format!(
+            r#"mutation {{
+                update_AgentToolCall(
+                    filter: {{ _docID: {{ _eq: "{}" }}, lifecycle_state: {{ _eq: "awaitingApproval" }} }},
+                    input: {{
+                        approval_doc_id: "{}",
+                        approval_composite_commit_cid: "{}",
+                        approval_signer_did: "{}",
+                        deadline_at: "{}"
+                    }}
+                ) {{ _docID }}
+            }}"#,
+            escape_graphql_string(doc_id),
+            escape_graphql_string(&approval.version.doc_id),
+            escape_graphql_string(&approval.version.composite_commit_cid),
+            escape_graphql_string(&approval.signer_did),
+            self.deadline_at.to_rfc3339(),
+        );
+        let response = execute_mutation_with_retry(
+            &self.node,
+            &mutation,
+            "attach exact AgentToolApproval fact",
+        )
+        .await?;
+        if !response
+            .data
+            .as_ref()
+            .and_then(|data| data.get("update_AgentToolCall"))
+            .is_some_and(response_has_documents)
+        {
+            anyhow::bail!("tool call left awaitingApproval before approval fact attachment");
+        }
+        Ok(())
+    }
+
     /// Running → Failed. For tool errors during execution. Sets failure_class.
     pub async fn fail(&mut self, result: &str, failure: super::FailureClass) -> Result<()> {
         self.fail_with_details(result, failure, None).await

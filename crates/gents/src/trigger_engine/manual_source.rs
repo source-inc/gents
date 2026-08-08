@@ -62,6 +62,7 @@ impl ManualTriggerHandle {
             doc_vars: None,
             args_vars: Some(args),
             pre_materialized_request_id: None,
+            materialization_request_id: None,
             on_result: Box::new(move |result| {
                 let _ = result_tx.send(result);
             }),

@@ -46,7 +46,7 @@ fn transcript_tool_result_message(result_id: &str, text: &str) -> Message {
 }
 
 async fn transcript_hook_fixture(test_name: &str) -> (support::TestDb, DefraSessionHook, String) {
-    let db = test_db(test_name).await;
+    let db = signed_materializer_test_db(test_name).await;
     let session_id = format!("{test_name}-session");
     let hook = DefraSessionHook::resume_or_create_with_identity_policy(
         db.node.clone(),
@@ -342,6 +342,135 @@ fn assert_transcript_case_shape() {
             "transcript case {} should preserve ordering",
             case.name
         );
+    }
+}
+
+pub(super) fn generated_transcript_finalization_and_provider_history_cases_pin_split_contract() {
+    let finalization = lean_transcript_finalization_cases();
+    assert_eq!(
+        finalization.len(),
+        11,
+        "Lean must emit checkpoint, authoritative publication, and evidence rejection classes"
+    );
+    let finalization_names = finalization
+        .iter()
+        .map(|case| case.name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        finalization_names,
+        [
+            "checkpoint_revision_is_mutable_and_non_authoritative",
+            "post_checkpoint_publish_creates_authoritative_fact",
+            "checkpoint_payload_does_not_constrain_publication",
+            "direct_publish_uses_same_authoritative_rule",
+            "identical_publish_replay_is_observation",
+            "conflicting_payload_replay_is_rejected",
+            "logical_twins_reject_even_if_unique_index_has_a_winner",
+            "missing_result_commit_cid_is_rejected",
+            "empty_signer_evidence_is_rejected",
+            "invalid_final_signature_is_rejected",
+            "policy_unauthorized_signer_is_rejected",
+        ]
+        .into_iter()
+        .collect()
+    );
+
+    for case in finalization {
+        assert!(case.sibling_isolated, "{} rewrote a sibling", case.name);
+        assert!(matches!(
+            case.action.as_str(),
+            "update_checkpoint" | "publish_final_fact"
+        ));
+        assert!(matches!(
+            case.disposition.as_str(),
+            "applied" | "observed_identical" | "rejected"
+        ));
+        if case.disposition == "observed_identical" {
+            assert!(case.fact_present_before && case.fact_present_after);
+            assert_eq!(case.fact_payload_hash, Some(case.write_payload_hash));
+            assert!(case.fact_commit_cid.is_some_and(|cid| cid != 0));
+            assert!(case.fact_signer_did.is_some_and(|did| did != 0));
+        }
+        if case.action == "publish_final_fact" && case.disposition == "applied" {
+            assert!(case.fact_present_after);
+            assert!(case.fact_commit_cid.is_some_and(|cid| cid != 0));
+            assert_eq!(case.fact_payload_hash, Some(case.write_payload_hash));
+            assert_eq!(case.fact_signer_did, case.write_signer_did);
+            assert_eq!(case.write_signature_valid, Some(true));
+            assert_eq!(case.write_policy_authorized, Some(true));
+            assert!(case.write_signer_did.is_some_and(|did| did != 0));
+            assert!(
+                case.checkpoint_preserved,
+                "publication must not consume or rewrite a checkpoint"
+            );
+        }
+        if case.name == "logical_twins_reject_even_if_unique_index_has_a_winner" {
+            assert_eq!(case.visible_logical_fact_count, 2);
+            assert_eq!(case.disposition, "rejected");
+            assert!(!case.fact_present_after);
+        }
+        if case.name == "checkpoint_payload_does_not_constrain_publication" {
+            assert!(case.checkpoint_present && case.checkpoint_preserved);
+            assert_ne!(case.checkpoint_payload_hash, case.fact_payload_hash);
+            assert_eq!(case.disposition, "applied");
+        }
+        if case.name == "direct_publish_uses_same_authoritative_rule" {
+            assert!(!case.checkpoint_present);
+            assert_eq!(case.disposition, "applied");
+        }
+        if matches!(
+            case.name.as_str(),
+            "missing_result_commit_cid_is_rejected"
+                | "empty_signer_evidence_is_rejected"
+                | "invalid_final_signature_is_rejected"
+                | "policy_unauthorized_signer_is_rejected"
+        ) {
+            assert_eq!(case.disposition, "rejected");
+            assert!(!case.fact_present_after);
+        }
+        if case.fact_present_after {
+            assert!(case.fact_commit_cid.is_some());
+        }
+    }
+
+    let provider = lean_transcript_provider_history_cases();
+    assert_eq!(
+        provider.len(),
+        7,
+        "Lean must emit every provider-history fence"
+    );
+    let accepted = provider
+        .iter()
+        .filter(|case| case.accepted)
+        .map(|case| case.name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        accepted,
+        [
+            "provider_accepts_one_finalized_exact_fact",
+            "provider_accepts_two_exact_facts_in_order",
+        ]
+        .into_iter()
+        .collect()
+    );
+    for case in provider {
+        assert!(
+            case.exact_finalized_domain_only,
+            "{} escaped the immutable fact domain",
+            case.name
+        );
+        if case.accepted {
+            assert_eq!(case.output_count, case.reference_count);
+            assert_eq!(case.output_payload_hashes.len(), case.output_count);
+            assert!(case.strictly_increasing);
+        } else {
+            assert_eq!(case.output_count, 0);
+            assert!(case.output_payload_hashes.is_empty());
+        }
+        if case.name == "provider_rejects_logical_twins_despite_canonical_index_winner" {
+            assert_eq!(case.visible_conflict_count, 2);
+            assert!(!case.accepted);
+        }
     }
 }
 

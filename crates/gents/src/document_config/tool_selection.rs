@@ -702,6 +702,66 @@ pub(crate) async fn load_tool_selection_by_doc_id(
     ))
 }
 
+pub(crate) async fn load_tool_selection_at_cid(
+    node: &EmbeddedNode,
+    composite_commit_cid: &str,
+) -> Result<Option<(String, ToolSelectionDocument)>> {
+    let escaped_cid = escape_graphql_string(composite_commit_cid);
+    let query = format!(
+        r#"{{
+            ToolSelection(cid: ["{escaped_cid}"]) {{
+                _docID
+                selection_id
+                agent_did
+                display_name
+                tool_policy_version
+                enable_file_tools
+                file_tools_mode
+                file_tool_root
+                enable_bash
+                bash_mode
+                command_execution_policy
+                command_allowed_argv_prefixes
+                command_forbidden_argv_prefixes
+                read_only_command_allowlist
+                command_network_mode
+                cli_tool_names
+                enable_meta_tools
+                allowed_mcp_service_ids
+                backgroundable_tool_names
+                approval_required_tools
+                subagent_targets
+                subagent_spawn_enabled
+                orchestration_enabled
+                subagent_steering_enabled
+                subagent_background_enabled
+                subagent_default_await_mode
+                subagent_allow_cross_deployment
+                cross_deployment_spawn_timeout_seconds
+                enable_memory
+                enable_session_history_tool
+                enable_context_budget
+                enable_defra_query
+                defra_query_collections
+                write_tools
+                enable_self_config
+                self_config_categories
+                self_config_no_lockout
+                self_config_dry_run
+            }}
+        }}"#
+    );
+    let resp = node.execute(&query).await;
+    if resp.has_errors() {
+        anyhow::bail!("query ToolSelection at CID failed: {:?}", resp.errors);
+    }
+    Ok(serde_helpers::first_row_with_doc_id(
+        resp.data.as_ref(),
+        "ToolSelection",
+    ))
+}
+
+#[allow(dead_code)]
 pub(crate) async fn list_tool_selection_records(
     node: &EmbeddedNode,
     agent_did: &str,

@@ -9,7 +9,14 @@ use crate::identity::{AgentIdentity, KeyIdentity};
 use crate::tool_surface::ToolCeiling;
 
 async fn test_node() -> Arc<defra_node::EmbeddedNode> {
-    Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap())
+    let node_identity = test_identity("document-view-node");
+    Arc::new(
+        defra_node::EmbeddedNode::builder()
+            .with_node_identity_did(node_identity.did())
+            .build()
+            .await
+            .unwrap(),
+    )
 }
 
 /// Extract a created document's `_docID` from a create/add mutation response,
@@ -31,6 +38,46 @@ fn created_skill_doc_id(data: Option<&serde_json::Value>) -> Option<String> {
 fn test_identity(name: &str) -> KeyIdentity {
     let path = std::env::temp_dir().join(format!("{name}-{}.key", uuid::Uuid::new_v4()));
     KeyIdentity::load_or_create(path, None).unwrap()
+}
+
+fn test_config_record(collection: &str, logical_id: &str, doc_id: &str) -> DocumentRecord<()> {
+    DocumentRecord::from_verified_fact(
+        crate::ConfigFactRef::new(
+            collection,
+            logical_id,
+            crate::SignedDocumentVersionRef::new(
+                crate::DocumentVersionRef::new(doc_id, format!("bafy-{doc_id}")),
+                "did:key:zSigner",
+            ),
+        ),
+        (),
+    )
+    .unwrap()
+}
+
+fn assert_exact_config_fact<T>(record: &DocumentRecord<T>, collection: &str, logical_id: &str) {
+    assert_eq!(record.fact.collection, collection);
+    assert_eq!(record.fact.logical_id, logical_id);
+    assert_eq!(record.fact.source.version.doc_id, record.doc_id);
+    assert!(!record.fact.source.version.composite_commit_cid.is_empty());
+    assert!(!record.fact.source.signer_did.is_empty());
+}
+
+#[test]
+fn duplicate_logical_configuration_ids_are_rejected_before_hashmap_overwrite() {
+    let mut records = std::collections::HashMap::new();
+    super::load::insert_unique(
+        &mut records,
+        test_config_record("Skill", "review", "doc-one"),
+    )
+    .unwrap();
+    let error = super::load::insert_unique(
+        &mut records,
+        test_config_record("Skill", "review", "doc-two"),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("duplicate documents"));
+    assert_eq!(records["review"].doc_id, "doc-one");
 }
 
 async fn bind_default_behavior_backend(
@@ -142,6 +189,33 @@ async fn load_document_runtime_view_includes_referenced_documents() {
     assert!(view.behaviors.contains_key(&default_behavior_id));
     assert!(view.tool_selections.contains_key(&selection_id));
     assert!(view.backends.contains_key("backend-document-view"));
+    assert_exact_config_fact(&view.principal, "AgentPrincipal", identity.did());
+    assert_exact_config_fact(
+        &view.behaviors[&default_behavior_id],
+        "AgentBehavior",
+        &default_behavior_id,
+    );
+    assert_exact_config_fact(
+        &view.tool_selections[&selection_id],
+        "ToolSelection",
+        &selection_id,
+    );
+    assert_exact_config_fact(
+        &view.backends["backend-document-view"],
+        "InferenceBackend",
+        "backend-document-view",
+    );
+
+    let profile_id = view.behaviors[&default_behavior_id]
+        .value
+        .inference_profile_id
+        .as_deref()
+        .unwrap();
+    assert_exact_config_fact(
+        &view.inference_profiles[profile_id],
+        "InferenceProfile",
+        profile_id,
+    );
 }
 
 #[tokio::test]
@@ -167,6 +241,12 @@ async fn apply_control_update_reconciles_tool_selection_via_doc_id() {
         .expect("initial document view");
 
     let default_behavior_id = crate::default_behavior_id_for_agent(identity.did());
+    let prior_behavior_cid = view.behaviors[&default_behavior_id]
+        .fact
+        .source
+        .version
+        .composite_commit_cid
+        .clone();
     let selection_id = crate::default_tool_selection_id_for_behavior(&default_behavior_id);
     crate::upsert_tool_selection(
         node.as_ref(),
@@ -225,6 +305,7 @@ async fn apply_control_update_reconciles_tool_selection_via_doc_id() {
     )
     .await
     .is_ok_and(|outcome| outcome == ControlUpdateOutcome::Applied));
+
     assert!(apply_control_update(
         node.as_ref(),
         identity.did(),
@@ -234,6 +315,17 @@ async fn apply_control_update_reconciles_tool_selection_via_doc_id() {
     )
     .await
     .is_ok_and(|outcome| outcome == ControlUpdateOutcome::Applied));
+
+    let updated_behavior = &view.behaviors[&default_behavior_id];
+    assert_ne!(
+        updated_behavior.fact.source.version.composite_commit_cid,
+        prior_behavior_cid
+    );
+    assert_eq!(
+        updated_behavior.value.tool_selection_id.as_deref(),
+        Some(selection_id.as_str())
+    );
+    assert_exact_config_fact(updated_behavior, "AgentBehavior", &default_behavior_id);
 
     let snapshot =
         resolve_document_runtime_snapshot_from_view(node.as_ref(), &resolve_context, &view)
@@ -314,6 +406,24 @@ async fn resolve_composes_principal_scoped_skill_into_prompt() {
     );
     let resp = node.execute(&create_skill).await;
     assert!(!resp.has_errors(), "create_Skill failed: {:?}", resp.errors);
+    let create_alpha_skill = format!(
+        r#"mutation {{ create_Skill(input: {{
+            skill_id: "skill-alpha",
+            agent_did: "{did}",
+            scope: "principal",
+            name: "Alpha",
+            description: "Canonical-order sentinel",
+            instructions: "Run before research.",
+            enabled: true
+        }}) {{ _docID }} }}"#,
+        did = escape_graphql_string(identity.did()),
+    );
+    let resp = node.execute(&create_alpha_skill).await;
+    assert!(
+        !resp.has_errors(),
+        "create alpha Skill failed: {:?}",
+        resp.errors
+    );
 
     let resolve_context = DocumentResolveContext {
         identity: identity.clone(),
@@ -323,10 +433,46 @@ async fn resolve_composes_principal_scoped_skill_into_prompt() {
     let view = load_document_runtime_view(node.as_ref(), identity.did())
         .await
         .expect("document view");
+    assert_exact_config_fact(&view.skills["skill-research"], "Skill", "skill-research");
     let snapshot =
         resolve_document_runtime_snapshot_from_view(node.as_ref(), &resolve_context, &view)
             .await
             .expect("snapshot");
+
+    for behavior_id in snapshot.behaviors.keys() {
+        assert!(
+            snapshot
+                .behavior_config_provenance
+                .contains_key(behavior_id),
+            "runnable behavior {behavior_id} must carry exact config provenance"
+        );
+    }
+    let provenance = &snapshot.behavior_config_provenance[&default_behavior_id];
+    assert_eq!(provenance.principal, view.principal.fact);
+    assert_eq!(
+        provenance.behavior,
+        view.behaviors[&default_behavior_id].fact
+    );
+    let behavior_document = &view.behaviors[&default_behavior_id].value;
+    let backend_id = behavior_document.backend_id.as_deref().unwrap();
+    let profile_id = behavior_document.inference_profile_id.as_deref().unwrap();
+    assert_eq!(provenance.inference_backend, view.backends[backend_id].fact);
+    assert_eq!(
+        provenance.inference_profile,
+        view.inference_profiles[profile_id].fact
+    );
+    assert_eq!(
+        provenance.tool_selection.as_ref(),
+        Some(&view.tool_selections[&selection_id].fact)
+    );
+    assert_eq!(
+        provenance.skills,
+        vec![
+            view.skills["skill-alpha"].fact.clone(),
+            view.skills["skill-research"].fact.clone(),
+        ],
+        "effective skill provenance must use canonical skill_id order"
+    );
 
     let behavior = snapshot
         .behaviors
@@ -334,10 +480,13 @@ async fn resolve_composes_principal_scoped_skill_into_prompt() {
         .expect("resolved default behavior");
     assert_eq!(
         behavior.skills.len(),
-        1,
-        "principal-scoped skill must be inherited by the behavior"
+        2,
+        "principal-scoped skills must be inherited by the behavior"
     );
-    assert_eq!(behavior.skills[0].skill_id, "skill-research");
+    assert!(behavior
+        .skills
+        .iter()
+        .any(|skill| skill.skill_id == "skill-research"));
 
     let tool_surface = snapshot
         .tool_surfaces
@@ -475,6 +624,7 @@ async fn apply_control_update_hot_reloads_skill() {
         .expect("apply skill create");
     assert_eq!(outcome, ControlUpdateOutcome::Applied);
     assert!(view.skills.contains_key("s-reload"), "skill added to view");
+    assert_exact_config_fact(&view.skills["s-reload"], "Skill", "s-reload");
 
     // A skill owned by a different principal is irrelevant.
     let foreign = "mutation { create_Skill(input: { skill_id: \"s-foreign\", agent_did: \"did:key:zOther\", scope: \"principal\", name: \"F\", enabled: true }) { _docID } }";
@@ -953,6 +1103,84 @@ async fn load_document_runtime_view_populates_tasks_and_schedules() {
         Some("task-alpha"),
         "schedule references task-alpha"
     );
+}
+
+#[tokio::test]
+async fn apply_control_update_ignores_schedule_runtime_only_writebacks() {
+    let node = test_node().await;
+    ensure_runtime_schemas(node.as_ref()).await.unwrap();
+    let identity = Arc::new(test_identity("document-view-schedule-runtime-writeback"));
+    bind_default_behavior_backend(
+        node.as_ref(),
+        identity.did(),
+        "backend-document-view-schedule-writeback",
+        "http://127.0.0.1:8130/v1",
+    )
+    .await;
+    create_schedule(node.as_ref(), "schedule-writeback", "task-writeback").await;
+
+    let mut view = load_document_runtime_view(node.as_ref(), identity.did())
+        .await
+        .expect("document view should load");
+    let doc_id = view
+        .schedules
+        .get("schedule-writeback")
+        .expect("schedule-writeback present")
+        .doc_id
+        .clone();
+
+    crate::document_config::update_schedule_runtime_fields(
+        node.as_ref(),
+        "schedule-writeback",
+        crate::document_config::ScheduleRuntimeUpdate {
+            next_run_at: Some("2030-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let runtime_only = apply_control_update(
+        node.as_ref(),
+        identity.did(),
+        "schedule",
+        &doc_id,
+        &mut view,
+    )
+    .await
+    .unwrap();
+    assert_eq!(runtime_only, ControlUpdateOutcome::Irrelevant);
+    assert_eq!(
+        view.schedules["schedule-writeback"]
+            .value
+            .next_run_at
+            .as_deref(),
+        Some("2030-01-01T00:00:00Z"),
+        "runtime-only writes should still refresh the cached document"
+    );
+
+    let mutation = r#"mutation {
+        update_Schedule(
+            filter: { schedule_id: { _eq: "schedule-writeback" } },
+            input: { enabled: false }
+        ) { _docID }
+    }"#;
+    let response = node.execute(mutation).await;
+    assert!(
+        !response.has_errors(),
+        "disable Schedule failed: {:?}",
+        response.errors
+    );
+    let configuration_update = apply_control_update(
+        node.as_ref(),
+        identity.did(),
+        "schedule",
+        &doc_id,
+        &mut view,
+    )
+    .await
+    .unwrap();
+    assert_eq!(configuration_update, ControlUpdateOutcome::Applied);
+    assert!(!view.schedules["schedule-writeback"].value.enabled);
 }
 
 #[tokio::test]

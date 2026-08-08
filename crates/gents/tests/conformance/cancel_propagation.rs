@@ -20,7 +20,7 @@ use crate::lean_vocab_test::lean_cancel_propagation_cases;
 use crate::support::fixtures::{bind_default_behavior_backend, test_identity};
 use crate::support::interrupt::{wait_for_runtime_ready, BootedAgent};
 use crate::support::mock_endpoint::MockModelEndpoint;
-use crate::support::{first_optional_row, test_p2p_db, TestDb};
+use crate::support::{first_optional_row, test_p2p_db_with_identity, TestDb};
 
 struct RunningAgent {
     db: TestDb,
@@ -82,8 +82,9 @@ async fn drive_declarative_cancel_propagation() {
     let coord_behavior_id = default_behavior_id_for_agent(&coord_did);
     let host_behavior_id = default_behavior_id_for_agent(&host_did);
 
-    let coord_db = test_p2p_db("cancel-propagation-coord").await;
-    let host_db = test_p2p_db("cancel-propagation-host").await;
+    let coord_db =
+        test_p2p_db_with_identity("cancel-propagation-coord", coord_identity.clone()).await;
+    let host_db = test_p2p_db_with_identity("cancel-propagation-host", host_identity.clone()).await;
     let coord_addr = wait_for_listen_addr(coord_db.node.as_ref()).await;
     let host_addr = wait_for_listen_addr(host_db.node.as_ref()).await;
 

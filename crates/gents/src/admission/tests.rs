@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use defra_node::EmbeddedNode;
@@ -25,7 +25,14 @@ use crate::schema::ensure_schemas;
 use crate::watcher::AgentRequest;
 
 async fn test_node() -> Arc<EmbeddedNode> {
-    let node = Arc::new(EmbeddedNode::builder().build().await.unwrap());
+    let identity = test_identity();
+    let node = Arc::new(
+        EmbeddedNode::builder()
+            .with_node_identity_did(identity.did())
+            .build()
+            .await
+            .unwrap(),
+    );
     ensure_schemas(node.as_ref()).await.unwrap();
     node
 }
@@ -50,7 +57,7 @@ fn request(request_id: &str) -> AgentRequest {
     AgentRequest {
         doc_id: format!("doc-{request_id}"),
         request_id: request_id.to_string(),
-        agent_did: "did:test:test".to_string(),
+        agent_did: test_agent_did(),
         requester_did: None,
         behavior_id: Some("default".to_string()),
         session_id: format!("session-{request_id}"),
@@ -67,6 +74,15 @@ fn request(request_id: &str) -> AgentRequest {
         caused_by_parent_request_id: None,
         caused_by_parent_tool_call_id: None,
     }
+}
+
+fn test_agent_did() -> String {
+    test_identity().did().to_owned()
+}
+
+fn test_identity() -> &'static crate::test_support::SignedTestIdentity {
+    static IDENTITY: OnceLock<crate::test_support::SignedTestIdentity> = OnceLock::new();
+    IDENTITY.get_or_init(|| crate::test_support::signed_test_identity("gents-admission-tests"))
 }
 
 #[tokio::test]
@@ -175,6 +191,7 @@ async fn call_rows(node: &EmbeddedNode) -> Vec<Value> {
                     call_kind
                     call_state
                     failure_reason
+                    controller_generation
                     queue_depth_at_enqueue
                 }
             }"#,
@@ -1023,6 +1040,10 @@ async fn scoped_oneoff_calls_are_persisted_with_oneoff_kind() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["call_kind"], "oneoff");
     assert_eq!(rows[0]["call_state"], "completed");
+    assert_eq!(
+        rows[0]["controller_generation"], 1,
+        "daemon-scoped oneoff work must remain capacity-controlled"
+    );
     assert_reconstructed_slot_count(&rows, "backend-a", 0);
 }
 
@@ -1159,7 +1180,7 @@ fn pending_call(request_id: &str, backend_id: &str) -> super::controller::Pendin
         call_seq: 1,
         backend_id: backend_id.to_string(),
         behavior_id: "default".to_string(),
-        agent_did: "did:test:test".to_string(),
+        agent_did: test_agent_did(),
         call_kind: CallKind::Inference,
         attempt: 1,
     }

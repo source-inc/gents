@@ -21,6 +21,57 @@ pub(crate) struct LeanInferenceSlotAccountingCase {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct LeanInferenceCallExactTargetCase {
+    pub(crate) name: String,
+    pub(crate) action: String,
+    pub(crate) write_target: String,
+    pub(crate) target_present: bool,
+    pub(crate) expected_state: String,
+    pub(crate) target_owner: usize,
+    pub(crate) target_epoch: usize,
+    pub(crate) expected_owner: usize,
+    pub(crate) expected_epoch: usize,
+    pub(crate) requested_post_state: String,
+    pub(crate) target_pre_state: Option<String>,
+    pub(crate) target_post_state: Option<String>,
+    pub(crate) sibling_pre_state: String,
+    pub(crate) sibling_post_state: String,
+    pub(crate) write_matched: bool,
+    pub(crate) sibling_isolated: bool,
+    pub(crate) same_logical_call_id: bool,
+    pub(crate) terminal_pre_state: bool,
+    pub(crate) terminal_irreversible: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct LeanInferenceCallExactTargetTraceCase {
+    pub(crate) name: String,
+    pub(crate) scenario: String,
+    pub(crate) target_pre_state: String,
+    pub(crate) sibling_pre_state: String,
+    pub(crate) visible_logical_document_count: usize,
+    pub(crate) unique_admission_required: bool,
+    pub(crate) raw_independent_cas_possible: bool,
+    pub(crate) first_target: String,
+    pub(crate) first_action: String,
+    pub(crate) first_expected_state: String,
+    pub(crate) first_expected_owner: usize,
+    pub(crate) first_expected_epoch: usize,
+    pub(crate) first_requested_post_state: String,
+    pub(crate) first_cas_matched: bool,
+    pub(crate) second_target: String,
+    pub(crate) second_action: String,
+    pub(crate) second_expected_state: String,
+    pub(crate) second_expected_owner: usize,
+    pub(crate) second_expected_epoch: usize,
+    pub(crate) second_requested_post_state: String,
+    pub(crate) second_cas_matched: bool,
+    pub(crate) second_disposition: String,
+    pub(crate) final_target_state: String,
+    pub(crate) final_sibling_state: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct LeanFleetSlotAccountingCase {
     pub(crate) name: String,
     pub(crate) property: String,

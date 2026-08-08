@@ -437,6 +437,9 @@ mod tests {
             paired_peer_dids: HashSet::from([PARENT_DID.to_string()]),
             default_behavior_id: "child-behavior".to_string(),
             behaviors: HashMap::new(),
+            config_provenance_scope:
+                crate::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+            behavior_config_provenance: HashMap::new(),
             tool_surfaces: HashMap::new(),
             backend_admission_configs: HashMap::new(),
             unavailable_behaviors: HashMap::new(),

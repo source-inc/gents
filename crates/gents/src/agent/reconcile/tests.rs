@@ -102,6 +102,40 @@ async fn snapshot_for_behaviors_with_admission(
     .with_principal(stub_principal())
 }
 
+#[tokio::test]
+async fn generation_supervisor_rejects_reconciled_snapshot_with_dropped_config_bundle() {
+    let node = test_node().await;
+    ensure_runtime_schemas(node.as_ref()).await.unwrap();
+    let behavior = Arc::new(
+        PendingAgentBehavior::new("general")
+            .build_with_identity_for_test(test_identity("missing-config-provenance")),
+    );
+    let mut snapshot = snapshot_for_behaviors(node.as_ref(), "general", vec![behavior]).await;
+    snapshot.config_provenance_scope =
+        crate::rendered_request::ConfigProvenanceScope::ReconciledDocumentRuntime;
+    let runner = |_behavior: Arc<AgentBehavior>,
+                  _tool_surface: Arc<ToolSurface>,
+                  _config_provenance: crate::runtime_snapshot::ScopedBehaviorConfigProvenance,
+                  _request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
+                  _shutdown: watch::Receiver<bool>| async move { Ok(()) };
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let result = GenerationSupervisor::bootstrap(
+        snapshot,
+        crate::admission::AdmissionRegistry::new(node.clone()),
+        crate::retry::RetryPolicy::default(),
+        runner,
+        RuntimeStatusHandle::new(node, "did:test:missing-config-provenance"),
+        shutdown_rx,
+        None,
+    );
+    let error = match result {
+        Ok(_) => panic!("reconcile bootstrap must reject a dropped exact config bundle"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("has no exact config provenance"));
+}
+
 fn backend_admission_config(
     backend_id: &str,
     max_concurrent: usize,
@@ -407,6 +441,7 @@ async fn slot_panic_restarts_behavior(node: &defra_node::EmbeddedNode) -> bool {
         let starts = starts.clone();
         move |_behavior: Arc<AgentBehavior>,
               _tool_surface: Arc<ToolSurface>,
+              _config_provenance: crate::runtime_snapshot::ScopedBehaviorConfigProvenance,
               request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
               mut shutdown: watch::Receiver<bool>| {
             let starts = starts.clone();
@@ -483,6 +518,7 @@ async fn behavior_slot_fans_out_background_children_to_backend_capacity() {
         let release = release.clone();
         move |_behavior: Arc<AgentBehavior>,
               _tool_surface: Arc<ToolSurface>,
+              _config_provenance: crate::runtime_snapshot::ScopedBehaviorConfigProvenance,
               request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
               mut shutdown: watch::Receiver<bool>| {
             let started_tx = started_tx.clone();
@@ -599,24 +635,26 @@ async fn generation_supervisor_rotates_dispatcher_on_backend_capacity_change() {
     )
     .await;
 
-    let runner = move |_behavior: Arc<AgentBehavior>,
-                       _tool_surface: Arc<ToolSurface>,
-                       request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
-                       mut shutdown: watch::Receiver<bool>| async move {
-        loop {
-            tokio::select! {
-                _ = shutdown.changed() => return Ok(()),
-                message = async {
-                    let mut receiver = request_rx.lock().await;
-                    receiver.recv().await
-                } => {
-                    if message.is_none() {
-                        return Ok(());
+    let runner =
+        move |_behavior: Arc<AgentBehavior>,
+              _tool_surface: Arc<ToolSurface>,
+              _config_provenance: crate::runtime_snapshot::ScopedBehaviorConfigProvenance,
+              request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
+              mut shutdown: watch::Receiver<bool>| async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => return Ok(()),
+                    message = async {
+                        let mut receiver = request_rx.lock().await;
+                        receiver.recv().await
+                    } => {
+                        if message.is_none() {
+                            return Ok(());
+                        }
                     }
                 }
             }
-        }
-    };
+        };
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let supervisor = GenerationSupervisor::bootstrap(
@@ -745,6 +783,7 @@ async fn generation_supervisor_rotates_dispatcher_on_behavior_change() {
         let starts = starts.clone();
         move |behavior: Arc<AgentBehavior>,
               _tool_surface: Arc<ToolSurface>,
+              _config_provenance: crate::runtime_snapshot::ScopedBehaviorConfigProvenance,
               request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
               mut shutdown: watch::Receiver<bool>| {
             let starts = starts.clone();
@@ -896,24 +935,26 @@ async fn generation_supervisor_keeps_previous_generation_after_failed_apply() {
     )
     .with_principal(stub_principal());
 
-    let runner = move |_behavior: Arc<AgentBehavior>,
-                       _tool_surface: Arc<ToolSurface>,
-                       request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
-                       mut shutdown: watch::Receiver<bool>| async move {
-        loop {
-            tokio::select! {
-                _ = shutdown.changed() => return Ok(()),
-                message = async {
-                    let mut receiver = request_rx.lock().await;
-                    receiver.recv().await
-                } => {
-                    if message.is_none() {
-                        return Ok(());
+    let runner =
+        move |_behavior: Arc<AgentBehavior>,
+              _tool_surface: Arc<ToolSurface>,
+              _config_provenance: crate::runtime_snapshot::ScopedBehaviorConfigProvenance,
+              request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
+              mut shutdown: watch::Receiver<bool>| async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => return Ok(()),
+                    message = async {
+                        let mut receiver = request_rx.lock().await;
+                        receiver.recv().await
+                    } => {
+                        if message.is_none() {
+                            return Ok(());
+                        }
                     }
                 }
             }
-        }
-    };
+        };
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let supervisor = GenerationSupervisor::bootstrap(
@@ -1079,6 +1120,7 @@ async fn generation_supervisor_rotates_dispatcher_on_tool_surface_change() {
         let observed_tool_names = observed_tool_names.clone();
         move |_behavior: Arc<AgentBehavior>,
               tool_surface: Arc<ToolSurface>,
+              _config_provenance: crate::runtime_snapshot::ScopedBehaviorConfigProvenance,
               request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
               mut shutdown: watch::Receiver<bool>| {
             let observed_tool_names = observed_tool_names.clone();
@@ -1199,6 +1241,7 @@ async fn retiring_a_slot_notifies_the_failure_policy() {
     // the mid-startup window the retirement release exists for.
     let runner = |_behavior: Arc<AgentBehavior>,
                   _tool_surface: Arc<ToolSurface>,
+                  _config_provenance: crate::runtime_snapshot::ScopedBehaviorConfigProvenance,
                   _request_rx: Arc<Mutex<mpsc::Receiver<AgentRequest>>>,
                   mut shutdown: watch::Receiver<bool>| async move {
         let _ = shutdown.changed().await;

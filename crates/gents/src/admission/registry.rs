@@ -10,7 +10,8 @@ use super::client::{scope_request, AdmissionCallContext, CallKind};
 use super::config::BackendAdmissionConfig;
 use super::controller::{BackendAdmissionController, InferenceCallRecord};
 use super::permit::AdmissionPermit;
-use super::persistence::persist_terminal_call;
+use super::persistence::{persist_call_started, persist_terminal_call};
+use super::provenance::RunningInferenceCallProvenance;
 
 #[derive(Clone)]
 pub(crate) struct AdmissionRegistry {
@@ -20,6 +21,7 @@ pub(crate) struct AdmissionRegistry {
 pub(super) struct AdmissionRegistryInner {
     node: Arc<EmbeddedNode>,
     runtime_instance_id: String,
+    direct_oneoff: bool,
     state: Mutex<RegistryState>,
 }
 
@@ -42,6 +44,21 @@ impl AdmissionRegistry {
             inner: Arc::new(AdmissionRegistryInner {
                 node,
                 runtime_instance_id: uuid::Uuid::new_v4().to_string(),
+                direct_oneoff: false,
+                state: Mutex::new(RegistryState::default()),
+            }),
+        }
+    }
+
+    /// Standalone one-shot execution has no reconciled runtime generation or
+    /// admission controller. It still persists the exact call/render fence,
+    /// but only this explicitly constructed registry may issue a direct call.
+    pub(crate) fn new_direct_oneshot(node: Arc<EmbeddedNode>) -> Self {
+        Self {
+            inner: Arc::new(AdmissionRegistryInner {
+                node,
+                runtime_instance_id: uuid::Uuid::new_v4().to_string(),
+                direct_oneoff: true,
                 state: Mutex::new(RegistryState::default()),
             }),
         }
@@ -175,6 +192,24 @@ impl AdmissionRegistry {
         let cancel_observer = context.inference_token.clone();
         let terminal_failure_observer = context.terminal_failure_reason.clone();
         let pending = context.next_call(&self.inner.runtime_instance_id);
+        if self.inner.direct_oneoff {
+            if pending.call_kind != super::CallKind::OneOff {
+                return Err(CompletionError::ProviderError(
+                    "direct one-shot admission registry received a non-oneoff call".into(),
+                ));
+            }
+            let call = InferenceCallRecord::without_controller(pending);
+            let running = persist_call_started(self.inner.node.clone(), &call).await?;
+            let provenance =
+                RunningInferenceCallProvenance::new(self.inner.node.clone(), call.clone(), running);
+            return Ok(AdmissionPermit::new_direct(
+                self.inner.node.clone(),
+                call,
+                provenance,
+                cancel_observer,
+                terminal_failure_observer,
+            ));
+        }
         if pending.backend_id.trim().is_empty() {
             return Err(CompletionError::ProviderError(format!(
                 "behavior {} has no backend binding",

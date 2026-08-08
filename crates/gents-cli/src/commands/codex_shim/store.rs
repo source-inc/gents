@@ -65,7 +65,7 @@ async fn execute_committed_once(node: &EmbeddedNode, mutation: &str) -> Result<V
         .await
         .map_err(|error| anyhow::anyhow!("begin_txn: {error}"))?;
     let request = QueryRequest::new(mutation);
-    let response = node.runner().execute_in_txn(request, &handle).await;
+    let response = node.execute_request_in_txn(request, &handle).await;
     if response.has_errors() {
         let _ = node.runner().rollback_txn(&handle).await;
         anyhow::bail!("GENTS Codex shim mutation failed: {:?}", response.errors);

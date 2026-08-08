@@ -572,6 +572,7 @@ pub struct ToolResultSnapshot {
     pub tool_name: String,
     pub tool_input: String,
     pub output_text: String,
+    #[serde(rename = "model_output_truncated")]
     pub truncated: bool,
     pub truncation_metadata: String,
     pub conversation_doc_id: String,
@@ -590,7 +591,7 @@ pub async fn fetch_tool_result_snapshots_for_session(
                 order: {{ created_at: ASC }}
             ) {{
                 agent_did session_id tool_name tool_input output_text
-                truncated truncation_metadata conversation_doc_id created_at
+                model_output_truncated truncation_metadata conversation_doc_id created_at
             }}
         }}"#
     );

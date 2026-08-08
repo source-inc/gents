@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use gents::defra_node::{EmbeddedNode, QueryResponse};
 use gents::{
-    ActiveRuntimeSnapshot, AgentRequest, ConcurrencyMode, DefraWatcher, EventSource,
+    ActiveRuntimeSnapshot, AgentRequest, ConcurrencyMode, DefraWatcher, EventSource, GoalSource,
     ResolvedEventTrigger, ResolvedTask, SubagentSource, TriggerSource, Watcher,
 };
 use tokio::sync::{mpsc, watch};
@@ -59,6 +59,56 @@ pub(super) fn event_delivery_source_instances_match_runtime() {
         lean_event_delivery_source_instances().len(),
         "runtime source introspection should not expose unmodeled sources"
     );
+}
+
+pub(super) fn durable_event_admission_cases_match_contract() {
+    let cases = lean_event_delivery_durable_admission_cases()
+        .iter()
+        .map(|case| (case.name.as_str(), case))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(cases.len(), 15);
+    assert_eq!(
+        cases["activation_baselines_current_docs"].disposition,
+        "activated"
+    );
+    assert_eq!(cases["baseline_doc_is_not_fired"].disposition, "baselined");
+    assert!(cases["baseline_doc_is_not_fired"].baseline_contains_source);
+    for name in [
+        "offline_creation_is_admitted_by_rescan",
+        "dropped_wake_is_admitted_by_rescan",
+    ] {
+        assert_eq!(cases[name].disposition, "admitted", "case {name}");
+        assert_eq!(cases[name].durable_deliveries, 1);
+    }
+    assert_eq!(
+        cases["same_trigger_doc_config_change_does_not_readmit"].disposition,
+        "already_delivered"
+    );
+    assert_eq!(
+        cases["source_update_does_not_reclassify_created"].disposition,
+        "already_delivered"
+    );
+    assert_eq!(cases["delivery_twins_fail_closed"].delivery_twins, 2);
+    assert_eq!(
+        cases["admission_durable_request_absent_recovers"].disposition,
+        "recovering_request"
+    );
+    assert_eq!(
+        cases["request_durable_admission_absent_recovers"].disposition,
+        "recovered_admission"
+    );
+    assert_eq!(
+        cases["config_edit_gets_new_activation_snapshot"].disposition,
+        "activated"
+    );
+    for name in [
+        "activation_twins_fail_closed",
+        "unsigned_activation_rejected",
+        "delivery_twins_fail_closed",
+        "unsigned_source_rejected",
+    ] {
+        assert_eq!(cases[name].disposition, "rejected", "case {name}");
+    }
 }
 
 pub(super) async fn event_delivery_convergence_traces_match_runtime_or_deviation() {
@@ -118,6 +168,99 @@ pub(super) async fn event_delivery_convergence_traces_match_runtime_or_deviation
     }
 }
 
+pub(super) async fn event_delivery_sources_reopen_closed_subscriptions() {
+    let watcher_db = signed_materializer_test_db("closed-subscription-watcher").await;
+    let watcher_subs = MockUpdateSubscriptionSource::new();
+    let mut watcher = DefraWatcher::with_subscription_source(
+        Arc::new(watcher_subs.clone()),
+        watcher_db.node.clone(),
+        AGENT_DID,
+    );
+    watcher_subs.close_and_replace_bus();
+    let watcher_task = tokio::spawn(async move { watcher.next_request().await });
+    assert!(
+        watcher_subs.wait_for_subscribers(2, DELIVERY_TIMEOUT).await,
+        "Watcher did not reopen a closed Update subscription"
+    );
+    watcher_task.abort();
+
+    let goal_db = signed_materializer_test_db("closed-subscription-goal-source").await;
+    let goal_subs = MockUpdateSubscriptionSource::new();
+    let goal_cancel = CancellationToken::new();
+    let (_goal_snapshot_tx, goal_snapshot_rx) =
+        watch::channel(active_snapshot_without_event_triggers(AGENT_DID));
+    let mut goal_source = GoalSource::with_subscription_source(
+        Arc::new(goal_subs.clone()),
+        goal_snapshot_rx,
+        goal_db.node.clone(),
+        goal_cancel.clone(),
+    )
+    .with_rescan_interval(RESCAN_TEST_INTERVAL);
+    let goal_task = tokio::spawn(async move { goal_source.next_fire().await });
+    assert!(
+        goal_subs.wait_for_subscribers(1, DELIVERY_TIMEOUT).await,
+        "GoalSource did not open its initial Update subscription"
+    );
+    goal_subs.close_and_replace_bus();
+    assert!(
+        goal_subs.wait_for_subscribers(2, DELIVERY_TIMEOUT).await,
+        "GoalSource did not reopen a closed Update subscription"
+    );
+    goal_cancel.cancel();
+    goal_task.abort();
+
+    for source_name in ["EventSource", "SubagentSource"] {
+        let source = runtime_event_delivery_source_contract(source_name);
+        let mut driver =
+            ProductionEventDeliveryDriver::new(source, &empty_event_delivery_world()).await;
+
+        driver.mock_subs.close_and_replace_bus();
+        assert!(
+            driver
+                .mock_subs
+                .wait_for_subscribers(2, DELIVERY_TIMEOUT)
+                .await,
+            "{source_name} did not reopen a closed Update subscription"
+        );
+
+        // Continuously mark the runtime snapshot changed while the durable row
+        // is pending. The biased source loop must still service its bounded
+        // rescan instead of starving behind configuration churn.
+        let snapshot_tx = driver
+            ._snapshot_tx
+            .as_ref()
+            .expect("event-driven source owns a snapshot sender")
+            .clone();
+        let snapshot = snapshot_tx.borrow().clone();
+        let churn_cancel = CancellationToken::new();
+        let churn_task = {
+            let churn_cancel = churn_cancel.clone();
+            tokio::spawn(async move {
+                while !churn_cancel.is_cancelled() {
+                    let _ = snapshot_tx.send(snapshot.clone());
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        let doc = format!("closed-subscription-{source_name}");
+        driver
+            .apply(&LeanEventDeliveryAction::Persist { doc: doc.clone() })
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{source_name} failed to persist recovery row: {error}")
+            });
+        driver
+            .drive_rescan(std::slice::from_ref(&doc))
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{source_name} did not recover by durable rescan: {error}")
+            });
+        churn_cancel.cancel();
+        churn_task.abort();
+    }
+}
+
 struct ProductionEventDeliveryDriver {
     source: EventDeliverySourceContract,
     db: super::support::TestDb,
@@ -143,7 +286,8 @@ impl ProductionEventDeliveryDriver {
         source: EventDeliverySourceContract,
         world: &lean_vocab_test::LeanEventDeliveryWorld,
     ) -> Self {
-        let db = test_db(&format!("event-delivery-{}", source.name)).await;
+        let db = signed_materializer_test_db(&format!("event-delivery-{}", source.name)).await;
+        let node_agent_did = signed_materializer_agent_did(&db).to_string();
         let mock_subs = MockUpdateSubscriptionSource::new();
         let cancel = CancellationToken::new();
         let mut driver = match source.name {
@@ -192,13 +336,14 @@ impl ProductionEventDeliveryDriver {
                 }
             }
             "SubagentSource" => {
-                install_subagent_source_fixture(db.node.as_ref())
+                install_subagent_source_fixture(db.node.as_ref(), &node_agent_did)
                     .await
                     .expect("install SubagentSource event-delivery fixture");
                 let (runner, emitted_rx, snapshot_tx) = spawn_subagent_source_runner(
                     db.node.clone(),
                     mock_subs.clone(),
                     cancel.clone(),
+                    node_agent_did,
                 );
                 assert!(
                     mock_subs
@@ -416,15 +561,21 @@ impl ProductionEventDeliveryDriver {
     }
 
     async fn create_subagent_tool_call_doc(&self, doc: &str) -> Result<String, String> {
+        let agent_did = self
+            .db
+            .node
+            .node_identity_did()
+            .ok_or_else(|| "SubagentSource fixture requires a node identity".to_string())?;
         let tool_call_id = escape_graphql_string(doc);
         let tool_call_key = escape_graphql_string(&format!("event-delivery-session:{doc}"));
         let parent_request_id = format!("event-delivery-parent-{doc}");
         let parent_session_id = format!("event-delivery-session-{doc}");
         let child_request_id = format!("event-delivery-child-{doc}");
-        create_request(
+        super::support::create_request_for_agent(
             self.db.node.as_ref(),
             &parent_request_id,
             &parent_session_id,
+            agent_did,
             "processing",
             "2026-05-20T00:00:00Z",
         )
@@ -435,17 +586,19 @@ impl ProductionEventDeliveryDriver {
         let args = escape_graphql_string(
             &serde_json::json!({
                 "name": AGENT_NAME,
-                "agent_did": AGENT_DID,
+                "agent_did": agent_did,
                 "behavior_id": AGENT_NAME,
                 "prompt": "materialize event-delivery child",
             })
             .to_string(),
         );
+        let escaped_agent_did = escape_graphql_string(agent_did);
         let mutation = format!(
             r#"mutation {{
                 create_AgentToolCall(input: {{
                     tool_call_key: "{tool_call_key}",
                     request_id: "{parent_request_id}",
+                    agent_did: "{escaped_agent_did}",
                     session_id: "{parent_session_id}",
                     message_sequence: 1,
                     tool_name: "spawn_subagent",
@@ -715,12 +868,13 @@ fn spawn_subagent_source_runner(
     node: Arc<EmbeddedNode>,
     mock_subs: MockUpdateSubscriptionSource,
     cancel: CancellationToken,
+    agent_did: String,
 ) -> (
     tokio::task::JoinHandle<()>,
     mpsc::Receiver<String>,
     watch::Sender<Arc<ActiveRuntimeSnapshot>>,
 ) {
-    let snapshot = active_snapshot_without_event_triggers();
+    let snapshot = active_snapshot_without_event_triggers(&agent_did);
     let (snapshot_tx, snapshot_rx) = watch::channel(snapshot);
     let mut source =
         SubagentSource::with_subscription_source(Arc::new(mock_subs), snapshot_rx, node, cancel)
@@ -760,18 +914,33 @@ async fn install_event_delivery_source_schema(node: &EmbeddedNode) {
     node.add_schema(schema)
         .await
         .expect("add_schema for EventDeliveryDoc");
+    let trigger = format!(
+        r#"mutation {{ create_EventTrigger(input: {{
+            trigger_id: "{EVENT_SOURCE_TRIGGER_ID}"
+            task_id: "{EVENT_SOURCE_TASK_ID}"
+            source_collection: "{EVENT_SOURCE_COLLECTION}"
+            event_kind: "created"
+            enabled: true
+            concurrency: "serial"
+        }}) {{ _docID }} }}"#
+    );
+    let response = node.execute(&trigger).await;
+    assert!(!response.has_errors(), "{:?}", response.errors);
 }
 
-async fn install_subagent_source_fixture(node: &EmbeddedNode) -> Result<(), String> {
+async fn install_subagent_source_fixture(
+    node: &EmbeddedNode,
+    agent_did: &str,
+) -> Result<(), String> {
     const TOOL_SELECTION_ID: &str = "event-delivery-subagent-tools";
 
     upsert_tool_selection(
         node,
         &ToolSelectionDocument {
             selection_id: TOOL_SELECTION_ID.to_string(),
-            agent_did: AGENT_DID.to_string(),
+            agent_did: agent_did.to_string(),
             subagent_targets: Some(vec![gents::subagent_target_entry(
-                AGENT_NAME, AGENT_DID, AGENT_NAME, None,
+                AGENT_NAME, agent_did, AGENT_NAME, None,
             )]),
             subagent_spawn_enabled: Some(true),
             subagent_background_enabled: Some(true),
@@ -785,7 +954,7 @@ async fn install_subagent_source_fixture(node: &EmbeddedNode) -> Result<(), Stri
         node,
         &AgentBehaviorDocument {
             behavior_id: AGENT_NAME.to_string(),
-            agent_did: AGENT_DID.to_string(),
+            agent_did: agent_did.to_string(),
             display_name: Some("Event delivery subagent fixture".to_string()),
             description: None,
             summary: None,
@@ -830,24 +999,31 @@ fn active_snapshot_with_event_trigger() -> Arc<ActiveRuntimeSnapshot> {
     active_snapshot(
         HashMap::from([(trigger.trigger_id.clone(), trigger)]),
         HashMap::from([(task.task_id.clone(), task)]),
+        AGENT_DID,
     )
 }
 
-fn active_snapshot_without_event_triggers() -> Arc<ActiveRuntimeSnapshot> {
-    active_snapshot(HashMap::new(), HashMap::new())
+fn active_snapshot_without_event_triggers(agent_did: &str) -> Arc<ActiveRuntimeSnapshot> {
+    active_snapshot(HashMap::new(), HashMap::new(), agent_did)
 }
 
 fn active_snapshot(
     active_event_triggers: HashMap<String, ResolvedEventTrigger>,
     active_tasks: HashMap<String, ResolvedTask>,
+    agent_did: &str,
 ) -> Arc<ActiveRuntimeSnapshot> {
     Arc::new(ActiveRuntimeSnapshot {
         generation: 1,
         principal: None,
-        local_did: AGENT_DID.to_string(),
+        local_did: agent_did.to_string(),
         paired_peer_dids: HashSet::new(),
         default_behavior_id: AGENT_NAME.to_string(),
-        behaviors: HashMap::from([(AGENT_NAME.to_string(), runtime_behavior(AGENT_NAME))]),
+        behaviors: HashMap::from([(
+            AGENT_NAME.to_string(),
+            runtime_behavior(AGENT_NAME, agent_did),
+        )]),
+        config_provenance_scope: gents::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+        behavior_config_provenance: HashMap::new(),
         tool_surfaces: HashMap::new(),
         backend_admission_configs: HashMap::new(),
         unavailable_behaviors: HashMap::new(),
@@ -862,12 +1038,12 @@ fn active_snapshot(
     })
 }
 
-fn runtime_behavior(behavior_id: &str) -> Arc<gents::AgentBehavior> {
+fn runtime_behavior(behavior_id: &str, agent_did: &str) -> Arc<gents::AgentBehavior> {
     let identity: Arc<dyn gents::AgentIdentity> = Arc::new(
         crate::support::fixtures::test_identity(&format!("event-delivery-{behavior_id}")),
     );
     let principal = Arc::new(gents::AgentPrincipal {
-        agent_did: AGENT_DID.to_string(),
+        agent_did: agent_did.to_string(),
         identity,
         default_behavior_id: AGENT_NAME.to_string(),
         display_name: None,

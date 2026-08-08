@@ -150,7 +150,7 @@ def featureSurfaceRequirements : List FeatureSurfaceRequirement :=
         ]
     }
   , { feature := "subagents-cross-deployment"
-    , required := [Surface.agentFacing, Surface.api, Surface.operatorUi]
+    , required := [Surface.agentFacing, Surface.api, Surface.operatorUi, Surface.runtimeInternal]
     , deferred := []
     }
   , { feature := "interrupt-and-cancel"
@@ -539,6 +539,16 @@ def caseCoverage : List CoverageEntry :=
       "conformance::generated_inference_slot_accounting_cases_drive_db_backed_reconstruction")
       "inference-call" [Surface.runtimeInternal]
   , tagged (consumerCoverage
+      "inference_exact_target_cases"
+      "InferenceCallExactTarget"
+      "conformance::generated_inference_call_exact_target_cases_drive_fenced_updates")
+      "inference-call" [Surface.runtimeInternal]
+  , tagged (consumerCoverage
+      "inference_exact_target_trace_cases"
+      "InferenceCallExactTargetTraces"
+      "conformance::generated_inference_call_exact_target_cases_drive_fenced_updates")
+      "inference-call" [Surface.runtimeInternal]
+  , tagged (consumerCoverage
       "completion_retry_cases"
       "completionRetry"
       "conformance::completion_retry_lean_witness_cases_hold")
@@ -843,6 +853,16 @@ def caseCoverage : List CoverageEntry :=
       "conformance::generated_transcript_cases_drive_agent_message_ordering_contract")
       "transcript" [Surface.agentFacing]
   , tagged (consumerCoverage
+      "transcript_finalization_cases"
+      "TranscriptFinalizationCases"
+      "conformance::generated_transcript_finalization_and_provider_history_cases_pin_split_contract")
+      "transcript" [Surface.agentFacing, Surface.runtimeInternal]
+  , tagged (consumerCoverage
+      "transcript_provider_history_cases"
+      "TranscriptProviderHistoryCases"
+      "conformance::generated_transcript_finalization_and_provider_history_cases_pin_split_contract")
+      "transcript" [Surface.agentFacing, Surface.runtimeInternal]
+  , tagged (consumerCoverage
       "transcript_cases"
       "TranscriptConformanceCases"
       "gents_desktop_bridge::snapshot::tests::session_state::session_snapshot_transcript_rendering_consumes_generated_transcript_cases")
@@ -922,6 +942,16 @@ def caseCoverage : List CoverageEntry :=
       "RenderedCaptureKeyCases"
       "conformance::rendered_capture::generated_rendered_capture_key_cases_pin_the_capture_key_tuple")
       "rendered-capture" [Surface.runtimeInternal]
+  , tagged (consumerCoverage
+      "request_ingest_cases"
+      "RequestIngestCases"
+      "conformance::request_ingest::generated_request_ingest_cases_fence_provenance_invariants")
+      "request-lifecycle" [Surface.runtimeInternal]
+  , tagged (consumerCoverage
+      "subagent_bridge_admission_cases"
+      "SubagentBridgeAdmissionCases"
+      "conformance::subagent_source::generated_bridge_admission_cases_require_signed_exact_parent_evidence")
+      "subagents-cross-deployment" [Surface.runtimeInternal]
   , tagged (consumerCoverage
       "event_delivery_cases"
       "EventDeliveryTransitionCases"

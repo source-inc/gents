@@ -81,6 +81,7 @@ enum CaptureDecision {
         scope: std::sync::Arc<RequestCaptureScope>,
         pending: PendingCapture,
         source: RenderedRequestSource,
+        running_call: Option<crate::admission::RunningInferenceCallProvenance>,
         durable_body_fingerprint: Option<[u8; 32]>,
         /// Scheme and authority of the URI this body was actually posted to,
         /// e.g. `https://api.openai.com`. Observed at the seam rather than read
@@ -125,6 +126,7 @@ fn decide(path: &str, provider_endpoint: Option<String>) -> CaptureDecision {
             scope,
             pending,
             source,
+            running_call: crate::admission::current_running_call_provenance(),
             durable_body_fingerprint: None,
             provider_endpoint,
         },
@@ -135,6 +137,7 @@ fn decide(path: &str, provider_endpoint: Option<String>) -> CaptureDecision {
             scope,
             pending,
             source,
+            running_call: crate::admission::current_running_call_provenance(),
             durable_body_fingerprint,
             provider_endpoint,
         },
@@ -147,34 +150,37 @@ fn decide(path: &str, provider_endpoint: Option<String>) -> CaptureDecision {
 
 /// Persist the body, or produce the transport error that refuses the send.
 async fn capture_or_refuse(decision: CaptureDecision, body: &Bytes) -> http_client::Result<()> {
-    let (scope, pending, source, durable_body_fingerprint, provider_endpoint) = match decision {
-        CaptureDecision::Forward => return Ok(()),
-        CaptureDecision::Refuse { scope, path } => {
-            tracing::error!(
-                request_id = %scope.context().request_id,
-                session_id = %scope.context().session_id,
-                path = %path,
-                "refusing provider send: a completion body reached the transport with no armed \
-                 rendered-request capture"
-            );
-            return Err(http_client::Error::Instance(
-                anyhow::anyhow!(scope::unexplained_send_message(scope.context(), &path)).into(),
-            ));
-        }
-        CaptureDecision::Capture {
-            scope,
-            pending,
-            source,
-            durable_body_fingerprint,
-            provider_endpoint,
-        } => (
-            scope,
-            pending,
-            source,
-            durable_body_fingerprint,
-            provider_endpoint,
-        ),
-    };
+    let (scope, pending, source, running_call, durable_body_fingerprint, provider_endpoint) =
+        match decision {
+            CaptureDecision::Forward => return Ok(()),
+            CaptureDecision::Refuse { scope, path } => {
+                tracing::error!(
+                    request_id = %scope.context().request_id,
+                    session_id = %scope.context().session_id,
+                    path = %path,
+                    "refusing provider send: a completion body reached the transport with no armed \
+                     rendered-request capture"
+                );
+                return Err(http_client::Error::Instance(
+                    anyhow::anyhow!(scope::unexplained_send_message(scope.context(), &path)).into(),
+                ));
+            }
+            CaptureDecision::Capture {
+                scope,
+                pending,
+                source,
+                running_call,
+                durable_body_fingerprint,
+                provider_endpoint,
+            } => (
+                scope,
+                pending,
+                source,
+                running_call,
+                durable_body_fingerprint,
+                provider_endpoint,
+            ),
+        };
 
     let mut hasher = Sha256::new();
     hasher.update(match source {
@@ -201,6 +207,7 @@ async fn capture_or_refuse(decision: CaptureDecision, body: &Bytes) -> http_clie
         scope.as_ref(),
         pending,
         source,
+        running_call,
         provider_endpoint,
         body.as_ref(),
     )
@@ -422,6 +429,16 @@ mod tests {
     fn context() -> RenderedRequestContext {
         RenderedRequestContext {
             request_doc_id: "doc-1".to_string(),
+            request_provenance: Some(crate::document_version::test_request_execution_provenance(
+                "doc-1",
+                "did:key:agent",
+            )),
+            inference_call_provenance_scope:
+                crate::rendered_request::InferenceCallProvenanceScope::StaticOrTest,
+            transcript_snapshot: Vec::new(),
+            config_provenance_scope:
+                crate::rendered_request::ConfigProvenanceScope::StaticOrOneShot,
+            config_provenance: None,
             request_id: "req-1".to_string(),
             agent_did: "did:key:agent".to_string(),
             requester_did: "did:key:requester".to_string(),
@@ -441,7 +458,7 @@ mod tests {
             let seen = Arc::clone(&sink_seen);
             Box::pin(async move {
                 seen.lock().expect("seen").push(rendered);
-                Ok(())
+                Ok(crate::rendered_request::test_static_rendered_request_version())
             })
         });
         (sink, seen)

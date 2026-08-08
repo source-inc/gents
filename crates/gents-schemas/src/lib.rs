@@ -21,8 +21,13 @@ pub const AGENT_REQUEST_NAME: &str = "AgentRequest";
 pub const AGENT_REQUEST: &str = include_str!("../schemas/agent/agent_request.graphql");
 pub const AGENT_RESPONSE_NAME: &str = "AgentResponse";
 pub const AGENT_RESPONSE: &str = include_str!("../schemas/agent/agent_response.graphql");
+pub const AGENT_RESPONSE_OUTCOME_NAME: &str = "AgentResponseOutcome";
+pub const AGENT_RESPONSE_OUTCOME: &str =
+    include_str!("../schemas/agent/agent_response_outcome.graphql");
 pub const AGENT_MESSAGE_NAME: &str = "AgentMessage";
 pub const AGENT_MESSAGE: &str = include_str!("../schemas/agent/agent_message.graphql");
+pub const AGENT_MESSAGE_DRAFT_NAME: &str = "AgentMessageDraft";
+pub const AGENT_MESSAGE_DRAFT: &str = include_str!("../schemas/agent/agent_message_draft.graphql");
 pub const AGENT_SESSION_NAME: &str = "AgentSession";
 pub const AGENT_SESSION: &str = include_str!("../schemas/agent/agent_session.graphql");
 pub const GOAL_NAME: &str = "Goal";
@@ -52,6 +57,12 @@ pub const SCHEDULE_NAME: &str = "Schedule";
 pub const SCHEDULE: &str = include_str!("../schemas/agent/schedule.graphql");
 pub const EVENT_TRIGGER_NAME: &str = "EventTrigger";
 pub const EVENT_TRIGGER: &str = include_str!("../schemas/agent/event_trigger.graphql");
+pub const EVENT_TRIGGER_ACTIVATION_NAME: &str = "EventTriggerActivation";
+pub const EVENT_TRIGGER_ACTIVATION: &str =
+    include_str!("../schemas/agent/event_trigger_activation.graphql");
+pub const EVENT_DELIVERY_ADMISSION_NAME: &str = "EventDeliveryAdmission";
+pub const EVENT_DELIVERY_ADMISSION: &str =
+    include_str!("../schemas/agent/event_delivery_admission.graphql");
 pub const PEER_PAIRING_DESIRED_NAME: &str = "PeerPairingDesired";
 pub const PEER_PAIRING_DESIRED: &str =
     include_str!("../schemas/agent/peer_pairing_desired.graphql");
@@ -101,9 +112,11 @@ pub const ALL: &[&str] = &[
     AGENT_CONVERSATION,
     AGENT_REQUEST,
     AGENT_RESPONSE,
+    AGENT_RESPONSE_OUTCOME,
     AGENT_TOOL_RESULT,
     AGENT_SESSION,
     GOAL,
+    AGENT_MESSAGE_DRAFT,
     AGENT_MESSAGE,
     AGENT_TOOL_CALL,
     AGENT_TOOL_APPROVAL,
@@ -113,6 +126,8 @@ pub const ALL: &[&str] = &[
     TASK,
     SCHEDULE,
     EVENT_TRIGGER,
+    EVENT_TRIGGER_ACTIVATION,
+    EVENT_DELIVERY_ADMISSION,
     PEER_PAIRING_DESIRED,
     DATA_PLANE_PAIRING_DESIRED,
     PEER_PAIRING_APPLIED,
@@ -141,9 +156,11 @@ pub const ALL_COLLECTION_NAMES: &[&str] = &[
     AGENT_CONVERSATION_NAME,
     AGENT_REQUEST_NAME,
     AGENT_RESPONSE_NAME,
+    AGENT_RESPONSE_OUTCOME_NAME,
     AGENT_TOOL_RESULT_NAME,
     AGENT_SESSION_NAME,
     GOAL_NAME,
+    AGENT_MESSAGE_DRAFT_NAME,
     AGENT_MESSAGE_NAME,
     AGENT_TOOL_CALL_NAME,
     AGENT_TOOL_APPROVAL_NAME,
@@ -153,6 +170,8 @@ pub const ALL_COLLECTION_NAMES: &[&str] = &[
     TASK_NAME,
     SCHEDULE_NAME,
     EVENT_TRIGGER_NAME,
+    EVENT_TRIGGER_ACTIVATION_NAME,
+    EVENT_DELIVERY_ADMISSION_NAME,
     PEER_PAIRING_DESIRED_NAME,
     DATA_PLANE_PAIRING_DESIRED_NAME,
     PEER_PAIRING_APPLIED_NAME,
@@ -178,8 +197,10 @@ pub const BRANCHABLE_COLLECTION_NAMES: &[&str] = &[
     AGENT_DIRECTORY_ENTRY_NAME,
     AGENT_MEMORY_NAME,
     AGENT_CONVERSATION_NAME,
+    AGENT_MESSAGE_DRAFT_NAME,
     AGENT_REQUEST_NAME,
     AGENT_RESPONSE_NAME,
+    AGENT_RESPONSE_OUTCOME_NAME,
     AGENT_TOOL_RESULT_NAME,
     AGENT_SESSION_NAME,
     GOAL_NAME,
@@ -190,6 +211,8 @@ pub const BRANCHABLE_COLLECTION_NAMES: &[&str] = &[
     TASK_NAME,
     SCHEDULE_NAME,
     EVENT_TRIGGER_NAME,
+    EVENT_TRIGGER_ACTIVATION_NAME,
+    EVENT_DELIVERY_ADMISSION_NAME,
 ];
 
 #[cfg(test)]

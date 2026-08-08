@@ -11,7 +11,7 @@ use gents::llm::message::{
 };
 use gents::llm::ToolCallHookAction;
 use gents::tool_call_lifecycle::{
-    create_subagent_request_with_request_id, AwaitMode, CancelPolicy, ToolCallLifecycle,
+    create_subagent_request_with_request_id_for_test, AwaitMode, CancelPolicy, ToolCallLifecycle,
 };
 use gents::{
     fetch_interrupt_requested_at, upsert_agent_behavior, upsert_tool_selection,
@@ -183,7 +183,7 @@ async fn create_child_and_bridge(
     message_sequence: u32,
 ) -> (String, String) {
     let child_request_id = format!("{parent_request_id}-{tool_call_id}-child");
-    create_subagent_request_with_request_id(
+    create_subagent_request_with_request_id_for_test(
         node.as_ref(),
         child_request_id.clone(),
         parent_request_id.to_string(),

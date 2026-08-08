@@ -8,9 +8,15 @@ use crate::document_config::{
     load_task_by_doc_id, load_tool_selection_by_doc_id,
 };
 
+use super::load::{
+    load_verified_backend_by_doc_id, load_verified_behavior_by_doc_id,
+    load_verified_principal_by_doc_id, load_verified_profile_by_doc_id,
+    load_verified_skill_by_doc_id, load_verified_tool_selection_by_doc_id,
+};
 use super::snapshot::behavior_references_ready;
 use super::{
     validate_subagent_targets_resolve, ControlUpdateOutcome, DocumentRecord, DocumentRuntimeView,
+    UnversionedDocumentRecord,
 };
 
 pub(crate) async fn apply_control_update(
@@ -20,19 +26,30 @@ pub(crate) async fn apply_control_update(
     doc_id: &str,
     view: &mut DocumentRuntimeView,
 ) -> Result<ControlUpdateOutcome> {
-    if let Some((loaded_doc_id, principal)) = load_agent_principal_by_doc_id(node, doc_id).await? {
+    if load_agent_principal_by_doc_id(node, doc_id)
+        .await?
+        .is_some()
+    {
+        let record = load_verified_principal_by_doc_id(node, doc_id).await?;
+        let principal = &record.value;
         if principal.agent_did != agent_did {
             return Ok(ControlUpdateOutcome::Irrelevant);
+        }
+        if view.principal.doc_id != doc_id && view.principal.value.agent_did == principal.agent_did
+        {
+            anyhow::bail!(
+                "AgentPrincipal logical id {} resolves to duplicate documents {} and {}",
+                principal.agent_did,
+                view.principal.doc_id,
+                doc_id
+            );
         }
         let default_behavior_visible = principal
             .default_behavior_id
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .is_none_or(|behavior_id| view.behaviors.contains_key(behavior_id));
-        view.principal = DocumentRecord {
-            doc_id: loaded_doc_id,
-            value: principal,
-        };
+        view.principal = record;
         return Ok(if default_behavior_visible {
             ControlUpdateOutcome::Applied
         } else {
@@ -43,59 +60,44 @@ pub(crate) async fn apply_control_update(
         return Ok(ControlUpdateOutcome::PendingVisibility);
     }
 
-    if let Some((loaded_doc_id, behavior)) = load_agent_behavior_by_doc_id(node, doc_id).await? {
+    if load_agent_behavior_by_doc_id(node, doc_id).await?.is_some() {
+        let record = load_verified_behavior_by_doc_id(node, doc_id).await?;
+        let behavior = &record.value;
         if behavior.agent_did != agent_did {
             return Ok(ControlUpdateOutcome::Irrelevant);
         }
         if !behavior_references_ready(view, &behavior) {
             return Ok(ControlUpdateOutcome::PendingVisibility);
         }
-        view.remove_behavior_by_doc_id(doc_id);
-        view.behaviors.insert(
-            behavior.behavior_id.clone(),
-            DocumentRecord {
-                doc_id: loaded_doc_id,
-                value: behavior,
-            },
-        );
+        replace_verified_record(&mut view.behaviors, record)?;
         return Ok(ControlUpdateOutcome::Applied);
     }
     if view.has_behavior_doc_id(doc_id) {
         return Ok(ControlUpdateOutcome::PendingVisibility);
     }
 
-    if let Some((loaded_doc_id, selection)) = load_tool_selection_by_doc_id(node, doc_id).await? {
+    if load_tool_selection_by_doc_id(node, doc_id).await?.is_some() {
+        let record = load_verified_tool_selection_by_doc_id(node, doc_id).await?;
+        let selection = &record.value;
         if selection.agent_did != agent_did {
             return Ok(ControlUpdateOutcome::Irrelevant);
         }
         selection.validate()?;
         validate_subagent_targets_resolve(&selection, view)?;
-        view.remove_tool_selection_by_doc_id(doc_id);
-        view.tool_selections.insert(
-            selection.selection_id.clone(),
-            DocumentRecord {
-                doc_id: loaded_doc_id,
-                value: selection,
-            },
-        );
+        replace_verified_record(&mut view.tool_selections, record)?;
         return Ok(ControlUpdateOutcome::Applied);
     }
     if view.has_tool_selection_doc_id(doc_id) {
         return Ok(ControlUpdateOutcome::PendingVisibility);
     }
 
-    if let Some((loaded_doc_id, skill)) = load_skill_by_doc_id(node, doc_id).await? {
+    if load_skill_by_doc_id(node, doc_id).await?.is_some() {
+        let record = load_verified_skill_by_doc_id(node, doc_id).await?;
+        let skill = &record.value;
         if skill.agent_did != agent_did {
             return Ok(ControlUpdateOutcome::Irrelevant);
         }
-        view.remove_skill_by_doc_id(doc_id);
-        view.skills.insert(
-            skill.skill_id.clone(),
-            DocumentRecord {
-                doc_id: loaded_doc_id,
-                value: skill,
-            },
-        );
+        replace_verified_record(&mut view.skills, record)?;
         return Ok(ControlUpdateOutcome::Applied);
     }
     if view.has_skill_doc_id(doc_id) {
@@ -103,38 +105,31 @@ pub(crate) async fn apply_control_update(
         return Ok(ControlUpdateOutcome::Applied);
     }
 
-    if let Some((loaded_doc_id, profile)) = load_inference_profile_by_doc_id(node, doc_id).await? {
+    if load_inference_profile_by_doc_id(node, doc_id)
+        .await?
+        .is_some()
+    {
+        let record = load_verified_profile_by_doc_id(node, doc_id).await?;
+        let profile = &record.value;
         if !view.references_profile(&profile.profile_id)
             && !view.has_inference_profile_doc_id(doc_id)
         {
             return Ok(ControlUpdateOutcome::Irrelevant);
         }
-        view.remove_inference_profile_by_doc_id(doc_id);
-        view.inference_profiles.insert(
-            profile.profile_id.clone(),
-            DocumentRecord {
-                doc_id: loaded_doc_id,
-                value: profile,
-            },
-        );
+        replace_verified_record(&mut view.inference_profiles, record)?;
         return Ok(ControlUpdateOutcome::Applied);
     }
     if view.has_inference_profile_doc_id(doc_id) {
         return Ok(ControlUpdateOutcome::PendingVisibility);
     }
 
-    if let Some((loaded_doc_id, backend)) = lookup_backend_by_doc_id(node, doc_id).await? {
+    if lookup_backend_by_doc_id(node, doc_id).await?.is_some() {
+        let record = load_verified_backend_by_doc_id(node, doc_id).await?;
+        let backend = &record.value;
         if !view.references_backend(&backend.backend_id) && !view.has_backend_doc_id(doc_id) {
             return Ok(ControlUpdateOutcome::Irrelevant);
         }
-        view.remove_backend_by_doc_id(doc_id);
-        view.backends.insert(
-            backend.backend_id.clone(),
-            DocumentRecord {
-                doc_id: loaded_doc_id,
-                value: backend,
-            },
-        );
+        replace_verified_record(&mut view.backends, record)?;
         return Ok(ControlUpdateOutcome::Applied);
     }
     if view.has_backend_doc_id(doc_id) {
@@ -148,7 +143,7 @@ pub(crate) async fn apply_control_update(
         view.remove_task_by_doc_id(doc_id);
         view.tasks.insert(
             task.task_id.clone(),
-            DocumentRecord {
+            UnversionedDocumentRecord {
                 doc_id: loaded_doc_id,
                 value: task,
             },
@@ -164,15 +159,26 @@ pub(crate) async fn apply_control_update(
         if schedule.schedule_id.trim().is_empty() {
             return Ok(ControlUpdateOutcome::Irrelevant);
         }
+        let configuration_changed = view
+            .schedules
+            .get(&schedule.schedule_id)
+            .is_none_or(|record| !same_schedule_configuration(&record.value, &schedule));
         view.remove_schedule_by_doc_id(doc_id);
         view.schedules.insert(
             schedule.schedule_id.clone(),
-            DocumentRecord {
+            UnversionedDocumentRecord {
                 doc_id: loaded_doc_id,
                 value: schedule,
             },
         );
-        return Ok(ControlUpdateOutcome::Applied);
+        return Ok(if configuration_changed {
+            ControlUpdateOutcome::Applied
+        } else {
+            // ScheduleSource persists bookkeeping on the same document after
+            // every fire attempt. Keep the cached document current, but do
+            // not restart the configuration debounce for runtime-only fields.
+            ControlUpdateOutcome::Irrelevant
+        });
     }
     if view.has_schedule_doc_id(doc_id) {
         view.remove_schedule_by_doc_id(doc_id);
@@ -186,7 +192,7 @@ pub(crate) async fn apply_control_update(
         view.remove_event_trigger_by_doc_id(doc_id);
         view.event_triggers.insert(
             trigger.trigger_id.clone(),
-            DocumentRecord {
+            UnversionedDocumentRecord {
                 doc_id: loaded_doc_id,
                 value: trigger,
             },
@@ -211,7 +217,7 @@ pub(crate) async fn apply_control_update(
         view.remove_oauth_credential_by_doc_id(doc_id);
         view.oauth_credentials.insert(
             credential.credential_id.clone(),
-            DocumentRecord {
+            UnversionedDocumentRecord {
                 doc_id: loaded_doc_id,
                 value: credential,
             },
@@ -224,4 +230,44 @@ pub(crate) async fn apply_control_update(
     }
 
     Ok(ControlUpdateOutcome::Irrelevant)
+}
+
+fn replace_verified_record<T>(
+    records: &mut std::collections::HashMap<String, DocumentRecord<T>>,
+    record: DocumentRecord<T>,
+) -> Result<()> {
+    let logical_id = record.fact.logical_id.clone();
+    if let Some(existing) = records.get(&logical_id) {
+        if existing.doc_id != record.doc_id {
+            anyhow::bail!(
+                "{} logical id {} resolves to duplicate documents {} and {}",
+                record.fact.collection,
+                logical_id,
+                existing.doc_id,
+                record.doc_id
+            );
+        }
+    }
+    let previous_logical_id = records.iter().find_map(|(logical_id, existing)| {
+        (existing.doc_id == record.doc_id).then_some(logical_id.clone())
+    });
+    if let Some(previous_logical_id) = previous_logical_id {
+        records.remove(&previous_logical_id);
+    }
+    records.insert(logical_id, record);
+    Ok(())
+}
+
+fn same_schedule_configuration(
+    previous: &crate::document_config::Schedule,
+    current: &crate::document_config::Schedule,
+) -> bool {
+    previous.schedule_id == current.schedule_id
+        && previous.task_id == current.task_id
+        && previous.interval_secs == current.interval_secs
+        && previous.cron == current.cron
+        && previous.timezone == current.timezone
+        && previous.missed_run_policy == current.missed_run_policy
+        && previous.enabled == current.enabled
+        && previous.concurrency == current.concurrency
 }

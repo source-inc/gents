@@ -1,5 +1,11 @@
 import Proofs.Conformance.ContractCases.Runtime
 import Proofs.Conformance.ContractCases.SlotAccounting
+import Proofs.Conformance.ContractCases.InferenceCallExactTarget
+import Proofs.Conformance.ContractCases.InferenceRenderedCapture
+import Proofs.Conformance.ContractCases.ToolFact
+import Proofs.Conformance.ContractCases.ForkProvenance
+import Proofs.Conformance.ContractCases.CompactionSourceManifest
+import Proofs.Conformance.ContractCases.ResponseOutcome
 import Proofs.Conformance.ContractCases.SessionRecovery
 import Proofs.Conformance.ContractCases.BoundaryRuntime
 import Proofs.Conformance.ContractCases.LifecycleTransitions
@@ -12,6 +18,9 @@ import Proofs.Conformance.ContractCases.ComposedInvariants
 import Proofs.Conformance.ContractCases.CancelPropagation
 import Proofs.Conformance.ContractCases.SubagentDelegation
 import Proofs.Conformance.ContractCases.Transcript
+import Proofs.Conformance.ContractCases.TranscriptFinalization
 import Proofs.Conformance.ContractCases.ManagedExec
 import Proofs.Conformance.ContractCases.PromptAssembly
 import Proofs.Conformance.ContractCases.RenderedCapture
+import Proofs.Conformance.ContractCases.RequestIngest
+import Proofs.Conformance.ContractCases.SubagentBridgeAdmission

@@ -47,14 +47,25 @@ fn hook_counters_for_test() -> HookCounters {
     }
 }
 
+async fn signed_test_node(
+    data_path: Option<&std::path::Path>,
+) -> (
+    Arc<defra_node::EmbeddedNode>,
+    crate::test_support::SignedTestIdentity,
+) {
+    let identity = crate::test_support::signed_test_identity("gents-hook-node");
+    let builder = defra_node::EmbeddedNode::builder().with_node_identity_did(identity.did());
+    let node = match data_path {
+        Some(data_path) => builder.data_path(data_path).build().await,
+        None => builder.build().await,
+    }
+    .expect("embedded node");
+    (Arc::new(node), identity)
+}
+
 #[tokio::test]
 async fn legacy_request_id_setter_clears_requester_lineage() {
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .build()
-            .await
-            .expect("embedded node"),
-    );
+    let (node, _signing_key_dir) = signed_test_node(None).await;
     let hook = DefraSessionHook::with_identity(
         node.clone(),
         "general",
@@ -81,13 +92,7 @@ async fn legacy_request_id_setter_clears_requester_lineage() {
 async fn dropping_hook_clone_preserves_in_flight_tool_lifecycle() {
     let data_path =
         std::env::temp_dir().join(format!("agent-hook-clone-drop-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_key_dir) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -320,7 +325,7 @@ fn generated_persistence_failure_policy_cases_match_hook_decisions() {
 async fn generated_storage_observation_cases_match_hook_runtime_classification() {
     let cases = lean_storage_observation_runtime_cases();
     assert_eq!(cases.len(), 8);
-    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    let (node, _signing_identity) = signed_test_node(None).await;
 
     for case in cases {
         if case.mutation_result == "notApplicable" {
@@ -476,6 +481,7 @@ async fn fetch_tool_call_row(
                     }},
                     limit: 1
                 ) {{
+                    _docID
                     request_id
                     deadline_at
                     lifecycle_state
@@ -483,6 +489,12 @@ async fn fetch_tool_call_row(
                     status
                     tool_failure_class
                     cancel_cause
+                    result_doc_id
+                    result_composite_commit_cid
+                    result_signer_did
+                    approval_doc_id
+                    approval_composite_commit_cid
+                    approval_signer_did
                     await_mode
                     cancel_policy
                 }}
@@ -520,8 +532,14 @@ async fn fetch_tool_result_spill_row(
                     }},
                     limit: 1
                 ) {{
+                    _docID
+                    result_key
+                    tool_call_key
+                    tool_call_doc_id
+                    tool_call_composite_commit_cid
+                    tool_call_signer_did
                     output_text
-                    truncated
+                    model_output_truncated
                     truncation_metadata
                 }}
             }}"#
@@ -545,13 +563,7 @@ async fn fetch_tool_result_spill_row(
 async fn hook_attaches_active_request_deadline_to_tool_call_lifecycle() {
     let data_path =
         std::env::temp_dir().join(format!("agent-hook-deadline-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -600,13 +612,7 @@ async fn hook_attaches_active_request_deadline_to_tool_call_lifecycle() {
 async fn update_goal_blocked_cannot_resurrect_budget_limited_goal() {
     let data_path =
         std::env::temp_dir().join(format!("agent-hook-goal-guard-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .expect("embedded node"),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -673,13 +679,7 @@ async fn update_goal_blocked_cannot_resurrect_budget_limited_goal() {
 async fn completion_call_persists_context_once_before_prompt() {
     let data_path =
         std::env::temp_dir().join(format!("agent-hook-context-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -734,13 +734,7 @@ async fn context_and_prompt_deduped_across_retry_attempts() {
     // request-scoped dedup (keyed on session_id + request_id + content) must
     // keep them exactly-once across attempts.
     let data_path = std::env::temp_dir().join(format!("agent-hook-retry-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let context = user_text_message("<context>\nnow=2026-06-15T00:00:00Z\n</context>");
@@ -812,13 +806,7 @@ async fn context_and_prompt_deduped_across_retry_attempts() {
 async fn hook_maps_managed_timeout_result_to_timed_out_lifecycle() {
     let data_path =
         std::env::temp_dir().join(format!("agent-hook-timeout-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -886,13 +874,7 @@ async fn hook_maps_managed_timeout_result_to_timed_out_lifecycle() {
 async fn hook_maps_unknown_tool_dispatch_to_failed_lifecycle() {
     let data_path =
         std::env::temp_dir().join(format!("agent-hook-unknown-tool-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -952,13 +934,7 @@ async fn hook_maps_unknown_tool_dispatch_to_failed_lifecycle() {
 async fn hook_spills_full_tool_output_and_persists_bounded_observation() {
     let data_path =
         std::env::temp_dir().join(format!("agent-hook-full-spill-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -990,6 +966,32 @@ async fn hook_spills_full_tool_output_and_persists_bounded_observation() {
             .await,
         ToolCallHookAction::Continue
     ));
+    let truncator =
+        crate::truncation::DefraSpillTruncator::new(node.clone(), "did:test:general", &session_id)
+            .with_tool_call_id("internal-oversized");
+    let retained = crate::truncation::Truncator::truncate(
+        &truncator,
+        "oversized",
+        tool_args,
+        &full_output,
+        crate::truncation::tool_result_truncation_mode("oversized"),
+        &hook.truncation_limits,
+        None,
+    )
+    .await
+    .expect("create immutable full-output fact");
+    let replayed = crate::truncation::Truncator::truncate(
+        &truncator,
+        "oversized",
+        tool_args,
+        &full_output,
+        crate::truncation::tool_result_truncation_mode("oversized"),
+        &hook.truncation_limits,
+        None,
+    )
+    .await
+    .expect("identical full-output replay converges");
+    assert_eq!(retained.spill_ref, replayed.spill_ref);
     assert!(matches!(
         hook.on_tool_result(
             "oversized",
@@ -1016,8 +1018,69 @@ async fn hook_spills_full_tool_output_and_persists_bounded_observation() {
     );
 
     let spill = fetch_tool_result_spill_row(&node, &session_id, "oversized").await;
+    let call_doc_id = tool_call
+        .get("_docID")
+        .and_then(|value| value.as_str())
+        .expect("physical tool call document id");
+    let spill_doc_id = spill
+        .get("_docID")
+        .and_then(|value| value.as_str())
+        .expect("physical result document id");
     assert_eq!(
-        spill.get("truncated").and_then(|value| value.as_bool()),
+        spill.get("result_key").and_then(|value| value.as_str()),
+        Some(call_doc_id),
+        "one immutable result fact is keyed by the physical call"
+    );
+    assert_eq!(
+        spill
+            .get("tool_call_doc_id")
+            .and_then(|value| value.as_str()),
+        Some(call_doc_id)
+    );
+    assert_eq!(
+        tool_call
+            .get("result_doc_id")
+            .and_then(|value| value.as_str()),
+        Some(spill_doc_id),
+        "the call must carry the exact forward result edge"
+    );
+    let spill_ref = crate::document_version::verified_current_signed_document_version(
+        &node,
+        "AgentToolResult",
+        spill_doc_id,
+    )
+    .await
+    .expect("cryptographically verified current result fact");
+    assert_eq!(
+        tool_call
+            .get("result_composite_commit_cid")
+            .and_then(|value| value.as_str()),
+        Some(spill_ref.version.composite_commit_cid.as_str())
+    );
+    assert_eq!(
+        tool_call
+            .get("result_signer_did")
+            .and_then(|value| value.as_str()),
+        Some(spill_ref.signer_did.as_str())
+    );
+    let pinned_call_cid = spill
+        .get("tool_call_composite_commit_cid")
+        .and_then(|value| value.as_str())
+        .expect("result pins exact call commit");
+    let pinned_call_signer = spill
+        .get("tool_call_signer_did")
+        .and_then(|value| value.as_str())
+        .expect("result pins exact call signer");
+    assert_eq!(
+        node.verified_block_signer_did(pinned_call_cid)
+            .await
+            .expect("cryptographically verify pinned historical call commit"),
+        pinned_call_signer
+    );
+    assert_eq!(
+        spill
+            .get("model_output_truncated")
+            .and_then(|value| value.as_bool()),
         Some(true)
     );
     assert_eq!(
@@ -1045,13 +1108,7 @@ async fn hook_spills_full_tool_output_and_persists_bounded_observation() {
 async fn cancelling_one_hook_does_not_cancel_unrelated_live_tool_call() {
     let data_path =
         std::env::temp_dir().join(format!("agent-hook-cancel-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook_a = DefraSessionHook::with_identity(
@@ -1125,13 +1182,7 @@ async fn cancelling_cascade_subagent_tool_latches_child_interrupt() {
         "agent-hook-cascade-cancel-{}",
         uuid::Uuid::new_v4()
     ));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let session_id = "session-cascade";
@@ -1189,13 +1240,7 @@ async fn cancelling_cascade_subagent_tool_latches_child_interrupt() {
 async fn cancelling_detached_subagent_tool_does_not_interrupt_child() {
     let data_path =
         std::env::temp_dir().join(format!("agent-hook-detach-cancel-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let session_id = "session-detach";
@@ -1257,13 +1302,7 @@ async fn cancelling_in_flight_terminalizes_fan_out_composite_and_children() {
         "agent-hook-composite-cancel-{}",
         uuid::Uuid::new_v4()
     ));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let session_id = "session-composite";
@@ -1406,13 +1445,7 @@ async fn cancelling_in_flight_terminalizes_fan_out_composite_and_children() {
 #[tokio::test]
 async fn hook_can_fail_live_tool_call_without_conflating_timeout_or_cancel() {
     let data_path = std::env::temp_dir().join(format!("agent-hook-fail-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -1462,13 +1495,7 @@ async fn hook_can_fail_live_tool_call_without_conflating_timeout_or_cancel() {
 #[tokio::test]
 async fn streaming_turn_persists_full_assistant_history_in_sequence() {
     let data_path = std::env::temp_dir().join(format!("gents-hook-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -1643,13 +1670,7 @@ async fn assistant_turn_materializes_durable_reasoning_into_agent_message() {
         "agent-hook-durable-reasoning-{}",
         uuid::Uuid::new_v4()
     ));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -1740,13 +1761,7 @@ async fn read_file_result_persists_raw_output_but_models_compact_observation() {
         "agent-hook-read-file-model-observation-{}",
         uuid::Uuid::new_v4()
     ));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -1859,13 +1874,7 @@ async fn duplicate_tool_result_message_observation_reuses_transcript_row() {
         "agent-hook-tool-result-message-dedupe-{}",
         uuid::Uuid::new_v4()
     ));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -2021,13 +2030,7 @@ async fn tool_result_message_dedupe_preserves_distinct_result_ids() {
         "agent-hook-tool-result-distinct-message-{}",
         uuid::Uuid::new_v4()
     ));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -2080,13 +2083,7 @@ async fn tool_result_message_dedupe_preserves_distinct_result_ids() {
 async fn tool_call_after_saved_assistant_starts_new_turn_without_orphan_result() {
     let data_path =
         std::env::temp_dir().join(format!("agent-hook-tool-turn-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -2236,37 +2233,26 @@ async fn tool_call_after_saved_assistant_starts_new_turn_without_orphan_result()
 }
 
 async fn write_approval_document(
-    node: &defra_node::EmbeddedNode,
+    node: &Arc<defra_node::EmbeddedNode>,
     tool_call_id: &str,
     agent_did: &str,
+    approver_did: &str,
     decision: &str,
     reason: &str,
 ) {
-    let escaped_tool_call_id = crate::graphql::escape_graphql_string(tool_call_id);
-    let escaped_agent_did = crate::graphql::escape_graphql_string(agent_did);
-    let escaped_decision = crate::graphql::escape_graphql_string(decision);
-    let escaped_reason = crate::graphql::escape_graphql_string(reason);
-    let created_at = chrono::Utc::now().to_rfc3339();
-    let mutation = format!(
-        r#"mutation {{
-            create_AgentToolApproval(input: {{
-                approval_id: "approval-{escaped_tool_call_id}",
-                tool_call_id: "{escaped_tool_call_id}",
-                request_id: "req-hold",
-                agent_did: "{escaped_agent_did}",
-                decision: "{escaped_decision}",
-                approver_did: "did:key:operator",
-                reason: "{escaped_reason}",
-                created_at: "{created_at}"
-            }}) {{ _docID }}
-        }}"#
-    );
-    let resp = node.execute(&mutation).await;
-    assert!(
-        !resp.has_errors(),
-        "create AgentToolApproval failed: {:?}",
-        resp.errors
-    );
+    crate::config_client::write_tool_approval(
+        &crate::config_client::ConfigAccess::Local(node.clone()),
+        &crate::config_client::ToolApprovalVerdict {
+            tool_call_id: tool_call_id.to_string(),
+            agent_did: agent_did.to_string(),
+            request_id: Some("req-hold".to_string()),
+            approve: decision == "approved",
+            approver_did: approver_did.to_string(),
+            reason: (!reason.is_empty()).then(|| reason.to_string()),
+        },
+    )
+    .await
+    .expect("create exact signed AgentToolApproval fact");
 }
 
 async fn wait_for_lifecycle_state(
@@ -2313,17 +2299,86 @@ async fn wait_for_lifecycle_state(
     panic!("tool call {tool_call_id} never reached lifecycle_state {expected}");
 }
 
+async fn assert_exact_approval_edge(node: &defra_node::EmbeddedNode, call: &serde_json::Value) {
+    let call_doc_id = call
+        .get("_docID")
+        .and_then(serde_json::Value::as_str)
+        .expect("physical held call document id");
+    let approval_doc_id = call
+        .get("approval_doc_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("exact approval forward document id");
+    let approval = crate::document_version::verified_current_signed_document_version(
+        node,
+        "AgentToolApproval",
+        approval_doc_id,
+    )
+    .await
+    .expect("cryptographically verified approval fact");
+    assert_eq!(
+        call.get("approval_composite_commit_cid")
+            .and_then(serde_json::Value::as_str),
+        Some(approval.version.composite_commit_cid.as_str())
+    );
+    assert_eq!(
+        call.get("approval_signer_did")
+            .and_then(serde_json::Value::as_str),
+        Some(approval.signer_did.as_str())
+    );
+
+    let response = node
+        .execute(&format!(
+            r#"{{ AgentToolApproval(filter: {{ tool_call_doc_id: {{ _eq: "{}" }} }}) {{ tool_call_doc_id tool_call_composite_commit_cid tool_call_signer_did approver_did }} }}"#,
+            crate::graphql::escape_graphql_string(call_doc_id)
+        ))
+        .await;
+    assert!(
+        !response.has_errors(),
+        "query exact approval fact failed: {:?}",
+        response.errors
+    );
+    let rows = response
+        .data
+        .as_ref()
+        .and_then(|data| data.get("AgentToolApproval"))
+        .and_then(serde_json::Value::as_array)
+        .expect("approval fact rows");
+    let [row] = rows.as_slice() else {
+        panic!("approval fact resolved to {} physical rows", rows.len());
+    };
+    assert_eq!(
+        row.get("tool_call_doc_id")
+            .and_then(serde_json::Value::as_str),
+        Some(call_doc_id)
+    );
+    assert_eq!(
+        node.verified_block_signer_did(
+            row.get("tool_call_composite_commit_cid")
+                .and_then(serde_json::Value::as_str)
+                .expect("pinned approval parent CID")
+        )
+        .await
+        .expect("cryptographically verify approval parent"),
+        row.get("tool_call_signer_did")
+            .and_then(serde_json::Value::as_str)
+            .expect("pinned approval parent signer")
+    );
+    assert_eq!(
+        row.get("approver_did").and_then(serde_json::Value::as_str),
+        Some(approval.signer_did.as_str())
+    );
+}
+
 async fn hook_with_held_tool(
     data_path: &std::path::Path,
     deadline: chrono::DateTime<chrono::Utc>,
-) -> (Arc<defra_node::EmbeddedNode>, DefraSessionHook, String) {
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+) -> (
+    Arc<defra_node::EmbeddedNode>,
+    DefraSessionHook,
+    String,
+    crate::test_support::SignedTestIdentity,
+) {
+    let (node, signing_identity) = signed_test_node(Some(data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -2343,7 +2398,7 @@ async fn hook_with_held_tool(
     hook.set_request_deadline_at(Some(deadline)).await;
     hook.set_approval_required_tools(vec!["guarded".to_string()])
         .await;
-    (node, hook, session_id)
+    (node, hook, session_id, signing_identity)
 }
 
 #[tokio::test]
@@ -2351,10 +2406,12 @@ async fn held_tool_call_dispatches_after_operator_approval() {
     let data_path =
         std::env::temp_dir().join(format!("agent-hook-approve-{}", uuid::Uuid::new_v4()));
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(60);
-    let (node, hook, session_id) = hook_with_held_tool(&data_path, deadline).await;
+    let (node, hook, session_id, signing_identity) =
+        hook_with_held_tool(&data_path, deadline).await;
 
     let approver_node = node.clone();
     let approver_session = session_id.clone();
+    let approver_did = signing_identity.did().to_string();
     let approver = tokio::spawn(async move {
         wait_for_lifecycle_state(
             &approver_node,
@@ -2367,6 +2424,7 @@ async fn held_tool_call_dispatches_after_operator_approval() {
             &approver_node,
             "internal-approve",
             "did:test:general",
+            &approver_did,
             "approved",
             "",
         )
@@ -2387,6 +2445,7 @@ async fn held_tool_call_dispatches_after_operator_approval() {
         row.get("lifecycle_state").and_then(|value| value.as_str()),
         Some("running")
     );
+    assert_exact_approval_edge(&node, &row).await;
 
     let _ = std::fs::remove_dir_all(&data_path);
 }
@@ -2395,10 +2454,12 @@ async fn held_tool_call_dispatches_after_operator_approval() {
 async fn held_tool_call_denied_skips_with_operator_reason() {
     let data_path = std::env::temp_dir().join(format!("agent-hook-deny-{}", uuid::Uuid::new_v4()));
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(60);
-    let (node, hook, session_id) = hook_with_held_tool(&data_path, deadline).await;
+    let (node, hook, session_id, signing_identity) =
+        hook_with_held_tool(&data_path, deadline).await;
 
     let approver_node = node.clone();
     let approver_session = session_id.clone();
+    let approver_did = signing_identity.did().to_string();
     let approver = tokio::spawn(async move {
         wait_for_lifecycle_state(
             &approver_node,
@@ -2411,6 +2472,7 @@ async fn held_tool_call_denied_skips_with_operator_reason() {
             &approver_node,
             "internal-deny",
             "did:test:general",
+            &approver_did,
             "denied",
             "not on my watch",
         )
@@ -2436,6 +2498,7 @@ async fn held_tool_call_denied_skips_with_operator_reason() {
         row.get("lifecycle_state").and_then(|value| value.as_str()),
         Some("failed")
     );
+    assert_exact_approval_edge(&node, &row).await;
     assert_eq!(
         row.get("tool_failure_class")
             .and_then(|value| value.as_str()),
@@ -2451,7 +2514,8 @@ async fn held_tool_call_times_out_when_unanswered() {
         std::env::temp_dir().join(format!("agent-hook-hold-timeout-{}", uuid::Uuid::new_v4()));
     // Deadline already exceeded: the first watcher pass drives timeoutWhileHeld.
     let deadline = chrono::Utc::now() - chrono::Duration::seconds(1);
-    let (node, hook, session_id) = hook_with_held_tool(&data_path, deadline).await;
+    let (node, hook, session_id, _signing_identity) =
+        hook_with_held_tool(&data_path, deadline).await;
 
     let action = hook
         .on_tool_call("guarded", None, "internal-hold-timeout", "{}")
@@ -2496,7 +2560,18 @@ async fn flushed_sequence_commit_cannot_resurrect_removed_live_output() {
     state.record_flushed_seq_if_live("removed-tool", 7).await;
     assert!(!state.flushed_seq.lock().await.contains_key("removed-tool"));
 
-    let _writer = state.writer_for("live-tool").await;
+    let _writer = state
+        .writer_for(
+            "live-tool",
+            LiveOutputRowTarget {
+                doc_id: "doc-live".to_string(),
+                request_id: "request-live".to_string(),
+                session_id: "session-live".to_string(),
+                agent_did: "did:test:live".to_string(),
+            },
+        )
+        .await
+        .unwrap();
     state.record_flushed_seq_if_live("live-tool", 9).await;
     assert_eq!(
         state.flushed_seq.lock().await.get("live-tool").copied(),
@@ -2504,6 +2579,154 @@ async fn flushed_sequence_commit_cannot_resurrect_removed_live_output() {
     );
     state.remove("live-tool").await;
     assert!(!state.flushed_seq.lock().await.contains_key("live-tool"));
+}
+
+async fn fetch_live_output_row_by_doc_id(
+    node: &defra_node::EmbeddedNode,
+    doc_id: &str,
+) -> serde_json::Value {
+    let doc_id = crate::graphql::escape_graphql_string(doc_id);
+    let response = node
+        .execute(&format!(
+            r#"{{
+                AgentToolCall(filter: {{ _docID: {{ _eq: "{doc_id}" }} }}) {{
+                    _docID
+                    lifecycle_state
+                    partial_output_tail
+                    partial_output_seq
+                }}
+            }}"#
+        ))
+        .await;
+    assert!(
+        !response.has_errors(),
+        "query exact AgentToolCall failed: {:?}",
+        response.errors
+    );
+    response
+        .data
+        .as_ref()
+        .and_then(|data| data.get("AgentToolCall"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|rows| rows.first())
+        .cloned()
+        .expect("exact AgentToolCall row")
+}
+
+#[tokio::test]
+async fn live_output_flush_updates_only_registered_physical_row_when_tool_call_ids_collide() {
+    let data_path = std::env::temp_dir().join(format!(
+        "agent-hook-live-output-exact-row-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
+    ensure_schemas(&node).await.unwrap();
+
+    let hook = DefraSessionHook::with_identity(
+        node.clone(),
+        "general",
+        "did:test:general",
+        FailurePolicy::default(),
+    );
+    assert!(matches!(
+        hook.on_completion_call(&user_text_message("Run a tool"), &[])
+            .await,
+        HookAction::Continue
+    ));
+    hook.set_active_request_id(Some("request-live-target".to_string()))
+        .await;
+    hook.set_request_deadline_at(Some(chrono::Utc::now() + chrono::Duration::minutes(5)))
+        .await;
+    assert!(matches!(
+        hook.on_tool_call(
+            "read_file",
+            Some("provider-collision".to_string()),
+            "provider-collision",
+            "{}"
+        )
+        .await,
+        ToolCallHookAction::Continue
+    ));
+
+    let target = {
+        let lifecycles = hook.in_flight_lifecycles.lock().await;
+        LiveOutputRowTarget::from_lifecycle(
+            lifecycles
+                .get("provider-collision")
+                .expect("target lifecycle"),
+        )
+        .unwrap()
+    };
+    let mut sibling = ToolCallLifecycle::new(
+        node.clone(),
+        "request-live-sibling".to_string(),
+        "session-live-sibling".to_string(),
+        "did:test:general".to_string(),
+        "provider-collision".to_string(),
+        1,
+        "read_file".to_string(),
+        "{}".to_string(),
+        chrono::Utc::now() + chrono::Duration::minutes(5),
+    );
+    sibling.start_running().await.unwrap();
+    let sibling_doc_id = sibling.doc_id().expect("sibling doc id").to_string();
+
+    // Keep the periodic worker parked so this test can drive one deterministic
+    // flush while still exercising the production foreground registration
+    // path that captures the lifecycle's physical row identity.
+    hook.background_live_outputs
+        .flusher_running
+        .store(true, Ordering::Release);
+    let writer = hook
+        .foreground_live_output_writer("provider-collision")
+        .await
+        .expect("live output writer");
+    writer
+        .append(
+            crate::background_tools::LiveOutputStream::Stdout,
+            b"target output only",
+        )
+        .await;
+
+    assert_eq!(hook.flush_live_output_tails().await.unwrap(), 1);
+
+    let target_row = fetch_live_output_row_by_doc_id(&node, &target.doc_id).await;
+    assert_eq!(
+        target_row
+            .get("partial_output_tail")
+            .and_then(serde_json::Value::as_str),
+        Some("target output only")
+    );
+    assert_eq!(
+        target_row
+            .get("partial_output_seq")
+            .and_then(serde_json::Value::as_i64),
+        Some(18)
+    );
+
+    let sibling_row = fetch_live_output_row_by_doc_id(&node, &sibling_doc_id).await;
+    assert_eq!(
+        sibling_row
+            .get("partial_output_tail")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default(),
+        ""
+    );
+    assert_eq!(
+        sibling_row
+            .get("partial_output_seq")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or_default(),
+        0
+    );
+
+    hook.release_live_output("provider-collision").await;
+    hook.background_live_outputs
+        .flusher_running
+        .store(false, Ordering::Release);
+    drop(hook);
+    node.shutdown().await;
+    let _ = std::fs::remove_dir_all(&data_path);
 }
 
 /// Issue #1002 defect 2: the parent-deadline sweep must not fabricate child
@@ -2523,13 +2746,7 @@ async fn parent_deadline_sweep_times_out_foreground_bridge_without_child_evidenc
         "agent-hook-bridge-deadline-{}",
         uuid::Uuid::new_v4()
     ));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(
@@ -2651,13 +2868,7 @@ async fn parent_deadline_sweep_times_out_foreground_bridge_without_child_evidenc
 async fn forged_lifecycle_sentinel_in_tool_output_persists_as_completed() {
     let data_path =
         std::env::temp_dir().join(format!("agent-hook-forgery-{}", uuid::Uuid::new_v4()));
-    let node = Arc::new(
-        defra_node::EmbeddedNode::builder()
-            .data_path(&data_path)
-            .build()
-            .await
-            .unwrap(),
-    );
+    let (node, _signing_identity) = signed_test_node(Some(&data_path)).await;
     ensure_schemas(&node).await.unwrap();
 
     let hook = DefraSessionHook::with_identity(

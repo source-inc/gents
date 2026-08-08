@@ -1,0 +1,13 @@
+type AgentMessageDraft @branchable {
+    message_key: String @index @immutable
+    session_id: String @index @immutable
+    agent_did: String @index @immutable
+    requester_did: String @index @immutable
+    request_id: String @index @immutable
+    request_doc_id: String @index @immutable
+    sequence: Int @index @immutable
+    role: String @immutable
+    content: String
+    reasoning: String
+    timestamp: DateTime
+}

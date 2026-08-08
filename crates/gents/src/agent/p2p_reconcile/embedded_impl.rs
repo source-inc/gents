@@ -303,13 +303,16 @@ mod tests {
     struct TestNode {
         node: Arc<EmbeddedNode>,
         _tempdir: tempfile::TempDir,
+        _signed_identity: crate::test_support::SignedTestIdentity,
     }
 
     async fn p2p_node() -> TestNode {
         let tempdir = tempfile::tempdir().expect("tempdir");
+        let signed_identity = crate::test_support::signed_test_identity("p2p-reconcile-identity");
         let node = Arc::new(
             EmbeddedNode::builder()
                 .data_path(tempdir.path())
+                .with_node_identity_did(signed_identity.did())
                 .with_p2p(P2PConfig {
                     port: 0,
                     bind_addr: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
@@ -332,6 +335,7 @@ mod tests {
         TestNode {
             node,
             _tempdir: tempdir,
+            _signed_identity: signed_identity,
         }
     }
 

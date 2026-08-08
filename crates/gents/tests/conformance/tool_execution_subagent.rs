@@ -1159,7 +1159,7 @@ async fn integration_v3_schema_defaults_populate_correctly() {
 
 #[tokio::test]
 async fn integration_create_subagent_request_at_max_depth_succeeds() {
-    let db = test_db("tc-sa-csr-1").await;
+    let db = crate::signed_materializer_test_db("tc-sa-csr-1").await;
     crate::support::create_request(
         &db.node,
         "parent-req-csr-1",

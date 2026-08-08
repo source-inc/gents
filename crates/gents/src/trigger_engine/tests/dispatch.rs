@@ -18,6 +18,7 @@ async fn dispatch_skips_when_schedule_not_in_active_schedules() {
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
 
@@ -49,6 +50,7 @@ async fn dispatch_reports_pre_materialized_request_without_materializer_call() {
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: Some("child-pre-materialized".to_string()),
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
 
@@ -84,6 +86,7 @@ async fn dispatch_renders_and_materializes_when_schedule_active() {
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
 
@@ -121,6 +124,7 @@ async fn dispatch_parallel_materializes_every_intent() {
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
     let intent2 = FireIntent {
@@ -132,6 +136,7 @@ async fn dispatch_parallel_materializes_every_intent() {
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
 
@@ -172,6 +177,7 @@ async fn dispatch_serial_materializes_when_no_inflight() {
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
 
@@ -209,6 +215,7 @@ async fn dispatch_serial_skips_when_inflight_exists() {
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
 
@@ -250,6 +257,7 @@ async fn dispatch_latest_only_supersedes_prior_and_fires_new() {
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
 
@@ -297,6 +305,7 @@ async fn dispatch_latest_only_lock_blocks_second_supersede_until_first_materiali
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
 
@@ -397,6 +406,7 @@ async fn dispatch_errors_and_skips_materialize_on_template_render_failure() {
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(move |r| {
             *capture.lock().unwrap() = Some(r);
         }),
@@ -456,6 +466,7 @@ async fn dispatch_latest_only_serializes_parallel_fires() {
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
 
@@ -527,6 +538,7 @@ async fn dispatch_scopes_concurrency_by_the_behaviors_agent_did() {
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
     assert!(matches!(
@@ -544,6 +556,7 @@ async fn dispatch_scopes_concurrency_by_the_behaviors_agent_did() {
         doc_vars: None,
         args_vars: None,
         pre_materialized_request_id: None,
+        materialization_request_id: None,
         on_result: Box::new(|_| {}),
     };
     assert!(matches!(

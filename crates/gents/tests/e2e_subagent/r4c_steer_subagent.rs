@@ -2,7 +2,7 @@ use gents::defra_node::EmbeddedNode;
 use gents::graphql::escape_graphql_string;
 use gents::llm::ToolCallHookAction;
 use gents::tool_call_lifecycle::{
-    create_subagent_request_with_request_id, AwaitMode, CancelPolicy, ToolCallLifecycle,
+    create_subagent_request_with_request_id_for_test, AwaitMode, CancelPolicy, ToolCallLifecycle,
 };
 use gents::{
     fetch_interrupt_requested_at, upsert_agent_behavior, upsert_tool_selection,
@@ -688,7 +688,7 @@ async fn steer_subagent_interrupt_cascades_to_grandchild_subagents() {
         AGENT_DID.to_string(),
     );
     descendant_bridge.start_running().await.unwrap();
-    let _grandchild_session_id = create_subagent_request_with_request_id(
+    let _grandchild_session_id = create_subagent_request_with_request_id_for_test(
         db.node.as_ref(),
         grandchild_request_id.to_string(),
         child_request_id.clone(),

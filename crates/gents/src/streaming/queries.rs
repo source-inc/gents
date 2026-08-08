@@ -2,11 +2,21 @@ use anyhow::Result;
 use defra_node::EmbeddedNode;
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub(super) struct PersistedResponseState {
     #[serde(rename = "_docID")]
     pub doc_id: String,
     pub request_id: String,
+    #[serde(default)]
+    pub request_doc_id: Option<String>,
+    #[serde(default)]
+    pub request_source_composite_commit_cid: Option<String>,
+    #[serde(default)]
+    pub request_source_signer_did: Option<String>,
+    #[serde(default)]
+    pub request_claim_composite_commit_cid: Option<String>,
+    #[serde(default)]
+    pub request_claim_signer_did: Option<String>,
     #[serde(default)]
     pub agent_did: Option<String>,
     #[serde(default)]
@@ -20,6 +30,18 @@ pub(super) struct PersistedResponseState {
     pub token_count: usize,
     #[serde(default)]
     pub interrupted_at: Option<String>,
+    #[serde(default)]
+    pub requester_did: Option<String>,
+    #[serde(default)]
+    pub final_message_doc_id: Option<String>,
+    #[serde(default)]
+    pub final_message_composite_commit_cid: Option<String>,
+    #[serde(default)]
+    pub final_message_signer_did: Option<String>,
+    #[serde(default)]
+    pub final_message_sequence: Option<u32>,
+    #[serde(default)]
+    pub outcome_terminalized_at: Option<String>,
 }
 
 pub(super) fn extract_mutation_doc_id<'a>(
@@ -63,7 +85,13 @@ pub(super) async fn load_response_state(
             ) {{
                 _docID
                 request_id
+                request_doc_id
+                request_source_composite_commit_cid
+                request_source_signer_did
+                request_claim_composite_commit_cid
+                request_claim_signer_did
                 agent_did
+                requester_did
                 behavior_id
                 session_id
                 content
@@ -71,6 +99,11 @@ pub(super) async fn load_response_state(
                 error_message
                 token_count
                 interrupted_at
+                final_message_doc_id
+                final_message_composite_commit_cid
+                final_message_signer_did
+                final_message_sequence
+                outcome_terminalized_at
             }}
         }}"#
     );
@@ -108,7 +141,13 @@ pub(super) async fn load_response_state_by_key(
             ) {{
                 _docID
                 request_id
+                request_doc_id
+                request_source_composite_commit_cid
+                request_source_signer_did
+                request_claim_composite_commit_cid
+                request_claim_signer_did
                 agent_did
+                requester_did
                 behavior_id
                 session_id
                 content
@@ -116,6 +155,11 @@ pub(super) async fn load_response_state_by_key(
                 error_message
                 token_count
                 interrupted_at
+                final_message_doc_id
+                final_message_composite_commit_cid
+                final_message_signer_did
+                final_message_sequence
+                outcome_terminalized_at
             }}
         }}"#
     );
