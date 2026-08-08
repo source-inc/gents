@@ -363,9 +363,10 @@ pub async fn reconcile_directory_tick(
 pub async fn run_directory_projection(
     node: Arc<EmbeddedNode>,
     source_did: String,
+    ceiling_root: Option<std::path::PathBuf>,
     cancel: CancellationToken,
 ) -> Result<()> {
-    let store = GraphqlDirectoryStore::new(node.clone());
+    let store = GraphqlDirectoryStore::new(node.clone(), ceiling_root);
     let mut subscription = node.subscribe(&[EventName::Update]);
     let mut interval =
         tokio::time::interval(crate::agent::p2p_reconcile::intervals::sweep_interval());
@@ -418,11 +419,14 @@ async fn sweep_directory(store: &GraphqlDirectoryStore, source_did: &str) {
 // tie-in) — this is the only reason it needs to be more than module-private.
 pub(crate) struct GraphqlDirectoryStore {
     node: Arc<EmbeddedNode>,
+    /// Operator tool-root ceiling (`--tool-root`); see
+    /// [`filter_roots_to_ceiling`].
+    ceiling_root: Option<std::path::PathBuf>,
 }
 
 impl GraphqlDirectoryStore {
-    pub(crate) fn new(node: Arc<EmbeddedNode>) -> Self {
-        Self { node }
+    pub(crate) fn new(node: Arc<EmbeddedNode>, ceiling_root: Option<std::path::PathBuf>) -> Self {
+        Self { node, ceiling_root }
     }
 }
 
@@ -494,7 +498,7 @@ impl DirectoryStore for GraphqlDirectoryStore {
             behaviors: parse_behaviors(&response)?,
             runtimes: parse_runtime_states(&response)?,
             selections: parse_tool_selections(&response)?,
-            options: parse_catalog_options(&response)?,
+            options: parse_catalog_options(&response, self.ceiling_root.as_deref())?,
         })
     }
 
@@ -921,7 +925,38 @@ fn render_profile_params_json(
     format!("{{{}}}", fields.join(","))
 }
 
-fn parse_catalog_options(response: &QueryResponse) -> Result<CatalogOptions> {
+/// Keep only workspace roots inside the operator tool-root ceiling
+/// (`gents server --tool-root`). The serve-time guard in
+/// `tool_surface::build` refuses any behavior whose file tool root escapes
+/// the ceiling, so publishing such a root in the catalog — or admitting it
+/// into a persona — mints admitted-yet-unusable config (#1051). Resolution
+/// mirrors the guard exactly (`resolve_configured_tool_root` +
+/// `starts_with`); a root (or ceiling) that fails to resolve is dropped,
+/// fail-closed: never offer what the guard may refuse.
+pub(crate) fn filter_roots_to_ceiling(
+    roots: Vec<String>,
+    ceiling_root: Option<&std::path::Path>,
+) -> Vec<String> {
+    let Some(ceiling) = ceiling_root else {
+        return roots;
+    };
+    let Ok(ceiling) = crate::tool_surface::resolve_configured_tool_root(ceiling) else {
+        return Vec::new();
+    };
+    roots
+        .into_iter()
+        .filter(|root| {
+            crate::tool_surface::resolve_configured_tool_root(std::path::Path::new(root))
+                .map(|resolved| resolved.starts_with(&ceiling))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn parse_catalog_options(
+    response: &QueryResponse,
+    ceiling_root: Option<&std::path::Path>,
+) -> Result<CatalogOptions> {
     // Backend rows always carry `enabled` (backend_registry treats it as
     // required on decode), so the conservative null-means-disabled default
     // here is a dead branch — deliberately stricter than `parse_behaviors`'
@@ -943,11 +978,14 @@ fn parse_catalog_options(response: &QueryResponse) -> Result<CatalogOptions> {
     available_models.sort();
     available_models.dedup();
 
-    let mut allowed_roots: Vec<String> = rows::<WorkspaceRootRow>(response, "WorkspaceRoot")?
-        .into_iter()
-        .filter(|row| row.enabled.unwrap_or(false))
-        .filter_map(|row| row.root_path)
-        .collect();
+    let mut allowed_roots: Vec<String> = filter_roots_to_ceiling(
+        rows::<WorkspaceRootRow>(response, "WorkspaceRoot")?
+            .into_iter()
+            .filter(|row| row.enabled.unwrap_or(false))
+            .filter_map(|row| row.root_path)
+            .collect(),
+        ceiling_root,
+    );
     allowed_roots.sort();
 
     // Sort pairs first, then split (mirrors how `behaviors`/`behavior_ids`
@@ -1132,6 +1170,33 @@ struct DirectoryRow {
 
 #[cfg(test)]
 mod tests {
+    use super::filter_roots_to_ceiling;
+
+    #[test]
+    fn ceiling_filter_matrix() {
+        let roots = vec![
+            "/ceil/ws/app".to_string(),
+            "/ceil/ws".to_string(),
+            "/ceil/wsx/app".to_string(),
+            "/outside/app".to_string(),
+        ];
+
+        // No ceiling: untouched.
+        assert_eq!(
+            filter_roots_to_ceiling(roots.clone(), None),
+            roots,
+            "no ceiling must publish every enabled root"
+        );
+
+        // Component-wise containment: "/ceil/wsx" is NOT within "/ceil/ws"
+        // (the sibling-prefix trap a string prefix check would fall into).
+        assert_eq!(
+            filter_roots_to_ceiling(roots, Some(std::path::Path::new("/ceil/ws"))),
+            vec!["/ceil/ws/app".to_string(), "/ceil/ws".to_string()],
+            "only roots within the ceiling (incl. the ceiling itself) survive"
+        );
+    }
+
     use super::*;
 
     fn entry(agent_did: &str, last_seen: &str) -> DirectoryEntry {
@@ -1442,7 +1507,7 @@ mod tests {
         let response = node.execute(&seed).await;
         ensure_no_errors(&response, "seed runtime-format updated_at")?;
 
-        let store = GraphqlDirectoryStore::new(node.clone());
+        let store = GraphqlDirectoryStore::new(node.clone(), None);
         let first = reconcile_directory_tick(&store, "did:key:home").await?;
         assert_eq!(first.upserted, BTreeSet::from(["did:key:real".to_string()]));
 
@@ -1578,7 +1643,7 @@ mod tests {
         let response = node.execute(seed).await;
         ensure_no_errors(&response, "seed directory projection principals")?;
 
-        let store = GraphqlDirectoryStore::new(node.clone());
+        let store = GraphqlDirectoryStore::new(node.clone(), None);
         let outcome = reconcile_directory_tick(&store, "did:key:home").await?;
         assert_eq!(
             outcome.upserted,
@@ -1757,7 +1822,7 @@ mod source_partition_regression_tests {
             "seed same-DID source partitions",
         )?;
 
-        let store = GraphqlDirectoryStore::new(node.clone());
+        let store = GraphqlDirectoryStore::new(node.clone(), None);
         let first = reconcile_directory_tick(&store, local_source).await?;
         assert_eq!(first.upserted, BTreeSet::from([agent_did.to_string()]));
         assert_eq!(

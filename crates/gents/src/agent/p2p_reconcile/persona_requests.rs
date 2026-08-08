@@ -160,9 +160,10 @@ async fn process_one_request(
 
 pub async fn run_persona_request_reconciler(
     node: Arc<EmbeddedNode>,
+    ceiling_root: Option<std::path::PathBuf>,
     cancel: CancellationToken,
 ) -> Result<()> {
-    let store = GraphqlPersonaRequestStore::new(node.clone());
+    let store = GraphqlPersonaRequestStore::with_ceiling(node.clone(), ceiling_root);
     let mut subscription = node.subscribe(&[EventName::Update]);
     let mut interval = tokio::time::interval(super::intervals::sweep_interval());
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -210,11 +211,25 @@ async fn sweep_persona_requests(store: &GraphqlPersonaRequestStore, node: &Arc<E
 
 pub struct GraphqlPersonaRequestStore {
     node: Arc<EmbeddedNode>,
+    /// Operator tool-root ceiling (`--tool-root`); see
+    /// `directory_projection::filter_roots_to_ceiling`. `None` when the
+    /// caller has no ceiling in scope (e.g. the self-config tool's read-only
+    /// `list`): admission always runs against the reconciler's own
+    /// ceiling-aware store, so a `None` here can never admit an unusable
+    /// root.
+    ceiling_root: Option<std::path::PathBuf>,
 }
 
 impl GraphqlPersonaRequestStore {
     pub fn new(node: Arc<EmbeddedNode>) -> Self {
-        Self { node }
+        Self {
+            node,
+            ceiling_root: None,
+        }
+    }
+
+    pub fn with_ceiling(node: Arc<EmbeddedNode>, ceiling_root: Option<std::path::PathBuf>) -> Self {
+        Self { node, ceiling_root }
     }
 }
 
@@ -252,7 +267,7 @@ impl PersonaRequestStore for GraphqlPersonaRequestStore {
     }
 
     async fn load_catalog_view(&self, agent_did: &str) -> Result<PersonaCatalogView> {
-        load_catalog_view_from_node(&self.node, agent_did).await
+        load_catalog_view_from_node(&self.node, agent_did, self.ceiling_root.as_deref()).await
     }
 
     async fn mark_applied(&self, request_key: &str, behavior_id: &str) -> Result<()> {
@@ -286,6 +301,7 @@ impl PersonaRequestStore for GraphqlPersonaRequestStore {
 async fn load_catalog_view_from_node(
     node: &Arc<EmbeddedNode>,
     agent_did: &str,
+    ceiling_root: Option<&std::path::Path>,
 ) -> Result<PersonaCatalogView> {
     let escaped_agent_did = escape_graphql_string(agent_did);
     let query = format!(
@@ -340,10 +356,20 @@ async fn load_catalog_view_from_node(
             })
             .collect();
 
-    let allowed_roots: BTreeSet<String> = rows::<WorkspaceRootRow>(&response, "WorkspaceRoot")?
+    // Ceiling-filtered through the same predicate the directory catalog
+    // publishes with, so admission can never admit a root the serve-time
+    // guard would refuse (#1051): the `root ∈ allowed_roots` conjunct
+    // enforces the operator ceiling for free.
+    let allowed_roots: BTreeSet<String> =
+        crate::agent::directory_projection::filter_roots_to_ceiling(
+            rows::<WorkspaceRootRow>(&response, "WorkspaceRoot")?
+                .into_iter()
+                .filter(|row| row.enabled.unwrap_or(false))
+                .filter_map(|row| row.root_path)
+                .collect(),
+            ceiling_root,
+        )
         .into_iter()
-        .filter(|row| row.enabled.unwrap_or(false))
-        .filter_map(|row| row.root_path)
         .collect();
 
     let available_profile_ids: BTreeSet<String> =
@@ -955,7 +981,7 @@ mod tests {
         // materialized persona.
         use crate::agent::directory_projection::DirectoryStore as _;
         let directory_store =
-            crate::agent::directory_projection::GraphqlDirectoryStore::new(node.clone());
+            crate::agent::directory_projection::GraphqlDirectoryStore::new(node.clone(), None);
         let directory_source_did = "did:key:home";
         let directory_outcome = crate::agent::directory_projection::reconcile_directory_tick(
             &directory_store,
@@ -973,6 +999,89 @@ mod tests {
         assert!(entry.behaviors.contains(&"Research Assistant".to_string()));
         assert!(entry.behavior_ids.contains(&behavior_id.to_string()));
 
+        Ok(())
+    }
+
+    /// #1051: the reconciler's catalog view is ceiling-filtered, so the
+    /// `root ∈ allowed_roots` conjunct rejects a root the serve-time
+    /// operator-ceiling guard would refuse — a persona can no longer be
+    /// admitted-yet-unusable.
+    #[tokio::test]
+    async fn ceiling_filtered_view_rejects_out_of_ceiling_root() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let node = build_node(&tempdir).await;
+
+        let seed = r#"mutation {
+            create_AgentPrincipal(input: {
+                agent_did: "did:key:ceiling-agent",
+                display_name: "Ceiling Agent",
+                enabled: true,
+                created_at: "2026-08-06T00:00:00Z"
+            }) { _docID }
+            create_InferenceBackend(input: {
+                backend_id: "openai",
+                name: "OpenAI",
+                enabled: true,
+                models: ["gpt-5"]
+            }) { _docID }
+            create_InferenceProfile(input: {
+                profile_id: "profile-1",
+                display_name: "Fast"
+            }) { _docID }
+            create_WorkspaceRoot(input: {
+                root_path: "/ceil/ws/inside",
+                display_name: "inside",
+                enabled: true
+            }) { _docID }
+            create_WorkspaceRoot(input: {
+                root_path: "/outside/app",
+                display_name: "outside",
+                enabled: true
+            }) { _docID }
+        }"#;
+        ensure_no_errors(&node.execute(seed).await, "seed ceiling fixtures")?;
+
+        let store = GraphqlPersonaRequestStore::with_ceiling(
+            node.clone(),
+            Some(std::path::PathBuf::from("/ceil/ws")),
+        );
+        let catalog = store.load_catalog_view("did:key:ceiling-agent").await?;
+        assert!(
+            catalog.allowed_roots.contains("/ceil/ws/inside"),
+            "in-ceiling root must stay published"
+        );
+        assert!(
+            !catalog.allowed_roots.contains("/outside/app"),
+            "out-of-ceiling root must never enter the admission set"
+        );
+
+        let doc = PersonaRequestDoc {
+            request_key: "pcr-ceiling".to_string(),
+            requester_did: "did:key:phone".to_string(),
+            agent_did: "did:key:ceiling-agent".to_string(),
+            op_raw: "create".to_string(),
+            op: Some(PersonaOp::Create { clone_from: None }),
+            behavior_id: None,
+            persona_name: Some("Escapee".to_string()),
+            backend_model: Some("openai|gpt-5".to_string()),
+            root: Some("/outside/app".to_string()),
+            preset: Some("readonly".to_string()),
+            profile_id: Some("profile-1".to_string()),
+            created_at: None,
+            status: Some("pending".to_string()),
+            status_detail: None,
+            applied_behavior_id: None,
+            processed_at: None,
+        };
+        match crate::agent::persona_ops::decide_persona_request(&doc, &catalog) {
+            crate::agent::persona_ops::PersonaVerdict::Reject(detail) => {
+                assert!(
+                    detail.contains("/outside/app"),
+                    "rejection must name the offending root: {detail}"
+                );
+            }
+            verdict => panic!("out-of-ceiling root must be rejected, got {verdict:?}"),
+        }
         Ok(())
     }
 }

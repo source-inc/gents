@@ -266,7 +266,7 @@ pub(super) fn resolve_effective_tool_root(
     }
 }
 
-pub(super) fn resolve_configured_tool_root(path: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_configured_tool_root(path: &Path) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {

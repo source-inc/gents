@@ -456,11 +456,16 @@ pub(in crate::agent) async fn run_agent(
     });
 
     let persona_request_node = agent.node.clone();
+    let persona_request_ceiling = agent
+        .document_runtime_context()
+        .and_then(|context| context.tool_ceiling.root())
+        .map(std::path::Path::to_path_buf);
     let persona_request_cancel = cancel.child_token();
     background_tasks.spawn(async move {
         BackgroundTaskResult::PersonaRequestReconcile(
             crate::agent::p2p_reconcile::run_persona_request_reconciler(
                 persona_request_node,
+                persona_request_ceiling,
                 persona_request_cancel,
             )
             .await,
@@ -483,12 +488,17 @@ pub(in crate::agent) async fn run_agent(
 
     let directory_node = agent.node.clone();
     let directory_source_did = agent.agent_did().to_string();
+    let directory_ceiling = agent
+        .document_runtime_context()
+        .and_then(|context| context.tool_ceiling.root())
+        .map(std::path::Path::to_path_buf);
     let directory_cancel = cancel.child_token();
     background_tasks.spawn(async move {
         BackgroundTaskResult::DirectoryProjection(
             crate::agent::directory_projection::run_directory_projection(
                 directory_node,
                 directory_source_did,
+                directory_ceiling,
                 directory_cancel,
             )
             .await,

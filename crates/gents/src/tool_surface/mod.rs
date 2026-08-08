@@ -7,6 +7,7 @@ mod runtime_context;
 mod selection;
 
 pub use behavior_config::BehaviorToolConfig;
+pub(crate) use build::resolve_configured_tool_root;
 pub use explain::{ToolSurfaceExplanation, ToolSurfaceWarning};
 pub use modes::{BashMode, FileToolMode, ToolCeiling};
 pub use policy::{
