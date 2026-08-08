@@ -1,0 +1,9 @@
+{
+  "trigger_id": "exp-stage2",
+  "task_id": "exp-stage2-task",
+  "source_collection": "ExperimentFinding",
+  "event_kind": "created",
+  "filter": null,
+  "enabled": true,
+  "concurrency": "parallel"
+}

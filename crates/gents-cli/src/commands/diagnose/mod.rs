@@ -43,6 +43,7 @@ pub(crate) async fn diagnose(args: DiagnoseArgs) -> Result<()> {
         agent_principal: None,
         agent_behaviors: Vec::new(),
         skills: Vec::new(),
+        datastore_tool_surfaces: Vec::new(),
         workspace_roots: Vec::new(),
         tool_selections: Vec::new(),
         inference_backends: Vec::new(),

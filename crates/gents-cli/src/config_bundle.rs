@@ -10,7 +10,8 @@ use crate::shared::ConfigExportBundle;
 use crate::{
     graphql_rows, graphql_rows_or_empty_if_collection_missing, graphql_string_list_literal,
     CONFIG_EXPORT_FORMAT, EXPORT_AGENT_BEHAVIOR_FIELDS, EXPORT_AGENT_PRINCIPAL_FIELDS,
-    EXPORT_EVENT_TRIGGER_FIELDS, EXPORT_INFERENCE_BACKEND_FIELDS, EXPORT_INFERENCE_PROFILE_FIELDS,
+    EXPORT_DATASTORE_TOOL_SURFACE_FIELDS, EXPORT_EVENT_TRIGGER_FIELDS,
+    EXPORT_INFERENCE_BACKEND_FIELDS, EXPORT_INFERENCE_PROFILE_FIELDS,
     EXPORT_PROJECTION_ACP_BINDING_FIELDS, EXPORT_SCHEDULE_FIELDS, EXPORT_SKILL_FIELDS,
     EXPORT_TASK_FIELDS, EXPORT_TOOL_SELECTION_FIELDS, EXPORT_TOOL_SERVICE_REGISTRY_FIELDS,
 };
@@ -206,6 +207,24 @@ pub(crate) async fn build_config_export_bundle(
     .await?;
     sort_document_rows(&mut skill_rows, "skill_id");
 
+    let mut datastore_tool_surface_rows = graphql_rows_or_empty_if_collection_missing(
+        access,
+        "DatastoreToolSurface",
+        &format!(
+            r#"{{
+                DatastoreToolSurface(
+                    filter: {{ agent_did: {{ _eq: "{agent_did}" }} }}
+                ) {{
+                    {fields}
+                }}
+            }}"#,
+            agent_did = escape_graphql_string(agent_did),
+            fields = EXPORT_DATASTORE_TOOL_SURFACE_FIELDS,
+        ),
+    )
+    .await?;
+    sort_document_rows(&mut datastore_tool_surface_rows, "surface_id");
+
     let mut projection_acp_binding_rows = graphql_rows_or_empty_if_collection_missing(
         access,
         "ProjectionAcpBinding",
@@ -233,6 +252,7 @@ pub(crate) async fn build_config_export_bundle(
         agent_principal: principal_rows.into_iter().next(),
         agent_behaviors: behavior_rows,
         skills: skill_rows,
+        datastore_tool_surfaces: datastore_tool_surface_rows,
         // WorkspaceRoot has no live-query wiring yet; see shared::ConfigExportBundle::workspace_roots.
         workspace_roots: Vec::new(),
         tool_selections: tool_selection_rows,
@@ -495,6 +515,24 @@ pub(crate) async fn build_desired_state_live_bundle(
     .await?;
     sort_document_rows(&mut skill_rows, "skill_id");
 
+    let mut datastore_tool_surface_rows = graphql_rows_or_empty_if_collection_missing(
+        access,
+        "DatastoreToolSurface",
+        &format!(
+            r#"{{
+                DatastoreToolSurface(
+                    filter: {{ agent_did: {{ _eq: "{agent_did}" }} }}
+                ) {{
+                    {fields}
+                }}
+            }}"#,
+            agent_did = escape_graphql_string(agent_did),
+            fields = EXPORT_DATASTORE_TOOL_SURFACE_FIELDS,
+        ),
+    )
+    .await?;
+    sort_document_rows(&mut datastore_tool_surface_rows, "surface_id");
+
     let desired_binding_ids = desired_manifest
         .projection_acp_bindings
         .iter()
@@ -531,6 +569,7 @@ pub(crate) async fn build_desired_state_live_bundle(
         agent_principal: principal_rows.into_iter().next(),
         agent_behaviors: behavior_rows,
         skills: skill_rows,
+        datastore_tool_surfaces: datastore_tool_surface_rows,
         // WorkspaceRoot has no live-query wiring yet; see shared::ConfigExportBundle::workspace_roots.
         workspace_roots: Vec::new(),
         tool_selections: tool_selection_rows,
@@ -562,6 +601,7 @@ pub(crate) fn live_manifest_from_bundle(
                 agent_principal: desired_manifest.agent_principal.clone(),
                 agent_behaviors: Vec::new(),
                 skills: Vec::new(),
+                datastore_tool_surfaces: Vec::new(),
                 tool_selections: Vec::new(),
                 inference_backends: Vec::new(),
                 inference_profiles: Vec::new(),

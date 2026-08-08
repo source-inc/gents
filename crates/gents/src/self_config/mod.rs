@@ -746,7 +746,7 @@ impl Tool for ConfigureToolsTool {
             description: format!(
                 "Patch this agent's own ToolSelection document (tool gates and scopes, \
                  including the self-config gate itself). tool_policy_version and \
-                 write_tools are operator/apply-managed and protected. {EFFECT_TIMING_NOTE}"
+                 write_tools and datastore_tool_surface_ids are operator/apply-managed and protected. {EFFECT_TIMING_NOTE}"
             ),
             parameters: json!({
                 "type": "object",

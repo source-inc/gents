@@ -1,4 +1,5 @@
 mod behavior;
+mod datastore_tool_surface;
 mod event_trigger;
 mod graphql_fields;
 mod inference_profile;
@@ -45,6 +46,10 @@ pub(crate) use tool_selection::{
 
 pub use subagent_target::{subagent_target_entry, SubagentTarget};
 
+pub(crate) use datastore_tool_surface::{
+    list_datastore_tool_surface_records, load_datastore_tool_surface_by_doc_id,
+    DatastoreToolSurfaceDocument,
+};
 #[allow(unused_imports)]
 pub(crate) use skill::{list_skill_records, load_skill_by_doc_id, SkillDocument};
 

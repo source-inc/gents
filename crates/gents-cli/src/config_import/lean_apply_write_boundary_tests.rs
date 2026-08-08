@@ -796,6 +796,10 @@ fn desired_manifest_from_lean(
             .into_iter()
             .map(|doc| desired_skill(doc, &agent_did))
             .collect(),
+        datastore_tool_surfaces: docs_for_collection(case, Collection::DatastoreToolSurface)
+            .into_iter()
+            .map(|doc| desired_datastore_tool_surface(doc, &agent_did))
+            .collect(),
         tool_selections: docs_for_collection(case, Collection::ToolSelection)
             .into_iter()
             .map(|doc| desired_tool_selection(doc, &agent_did))
@@ -883,6 +887,19 @@ fn desired_skill(doc: &LeanApplyDesiredDoc, agent_did: &str) -> desired_state::D
     }
 }
 
+fn desired_datastore_tool_surface(
+    doc: &LeanApplyDesiredDoc,
+    agent_did: &str,
+) -> desired_state::DesiredDatastoreToolSurface {
+    desired_state::DesiredDatastoreToolSurface {
+        surface_id: doc.id.clone(),
+        agent_did: agent_did.to_string(),
+        display_name: Some(doc.content.clone()),
+        enabled: true,
+        entries: Vec::new(),
+    }
+}
+
 fn desired_tool_selection(
     doc: &LeanApplyDesiredDoc,
     agent_did: &str,
@@ -928,6 +945,7 @@ fn desired_tool_selection(
         subagent_allow_cross_deployment: false,
         cross_deployment_spawn_timeout_seconds: None,
         write_tools: Vec::new(),
+        datastore_tool_surface_ids: Vec::new(),
         enable_self_config: false,
         self_config_categories: Vec::new(),
         self_config_no_lockout: false,
@@ -1057,6 +1075,7 @@ fn diff_report_from_lean(case: &LeanApplyReconcileCase) -> desired_state::Desire
         agent_principal: diff_for_collection(case, Collection::AgentPrincipal),
         agent_behaviors: diff_for_collection(case, Collection::AgentBehavior),
         skills: diff_for_collection(case, Collection::Skill),
+        datastore_tool_surfaces: diff_for_collection(case, Collection::DatastoreToolSurface),
         // WorkspaceRoot is not part of Collection::ALL yet, so no Lean
         // fixture ever references it; this is always an empty diff.
         workspace_roots: diff_for_collection(case, Collection::WorkspaceRoot),
@@ -1195,6 +1214,7 @@ fn count_for_collection(counts: &ConfigApplyCounts, collection: Collection) -> u
         Collection::AgentPrincipal => counts.agent_principal,
         Collection::AgentBehavior => counts.agent_behaviors,
         Collection::Skill => counts.skills,
+        Collection::DatastoreToolSurface => counts.datastore_tool_surfaces,
         Collection::WorkspaceRoot => counts.workspace_roots,
         Collection::ToolSelection => counts.tool_selections,
         Collection::InferenceBackend => counts.inference_backends,

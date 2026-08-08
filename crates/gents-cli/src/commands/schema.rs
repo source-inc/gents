@@ -22,15 +22,15 @@ struct SchemaInput {
     kind: SchemaInputKind,
 }
 
-#[derive(Debug, Serialize)]
-struct SchemaApplyFileResult {
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SchemaApplyFileResult {
     path: String,
     status: &'static str,
     collections: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
-struct SchemaApplyPatchResult {
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SchemaApplyPatchResult {
     path: String,
     status: &'static str,
     collection: String,
@@ -74,21 +74,7 @@ pub(crate) async fn schema_apply(args: SchemaApplyArgs) -> Result<()> {
         ConfigAccess::Local(_) => None,
     };
 
-    let mut schema_files = Vec::new();
-    for input in inputs
-        .iter()
-        .filter(|input| input.kind == SchemaInputKind::Sdl)
-    {
-        schema_files.push(apply_sdl_file(&access, &input.path).await?);
-    }
-
-    let mut patch_files = Vec::new();
-    for input in inputs
-        .iter()
-        .filter(|input| input.kind == SchemaInputKind::Patch)
-    {
-        patch_files.push(apply_patch_file(&access, &input.path).await?);
-    }
+    let phase = apply_schema_inputs(&access, &root, &inputs).await?;
 
     let summary = SchemaApplySummary {
         status: "schema_applied",
@@ -96,11 +82,90 @@ pub(crate) async fn schema_apply(args: SchemaApplyArgs) -> Result<()> {
         mode: access.mode(),
         graphql,
         root: root.display().to_string(),
-        schema_files,
-        patch_files,
+        schema_files: phase.schema_files,
+        patch_files: phase.patch_files,
     };
     print_json(&serde_json::to_value(summary)?)?;
     Ok(())
+}
+
+/// Result of applying pack-local schemas during `config apply`.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PackSchemaPhase {
+    pub(crate) status: &'static str,
+    pub(crate) root: String,
+    pub(crate) schema_files: Vec<SchemaApplyFileResult>,
+    pub(crate) patch_files: Vec<SchemaApplyPatchResult>,
+}
+
+impl PackSchemaPhase {
+    /// Whether the schema phase actually mutated the node. A pack re-applied
+    /// against a converged node reports every file as `already_exists`, which
+    /// must stay a `noop` so idempotency checks can settle.
+    pub(crate) fn changed(&self) -> bool {
+        self.schema_files
+            .iter()
+            .any(|file| file.status != "already_exists")
+            || self
+                .patch_files
+                .iter()
+                .any(|patch| patch.status != "already_exists")
+    }
+}
+
+/// If `<pack_root>/schemas` exists, apply every SDL/patch under it (same
+/// discovery rules as `gents schema apply`). Returns `None` when the directory
+/// is absent so ordinary agent-config roots stay unchanged.
+///
+/// Scoped to the pack: only `schemas/` under the desired-state root is
+/// considered — never global product schemas.
+pub(crate) async fn apply_pack_schemas_if_present(
+    access: &ConfigAccess,
+    pack_root: &Path,
+) -> Result<Option<PackSchemaPhase>> {
+    let schemas_dir = pack_root.join("schemas");
+    if !schemas_dir.is_dir() {
+        return Ok(None);
+    }
+    let inputs = discover_schema_inputs(&schemas_dir, &[])?;
+    if inputs.is_empty() {
+        anyhow::bail!(
+            "pack root {} has a schemas/ directory but no *.graphql, *.gql, *.patch.json, or *.json-patch files",
+            pack_root.display()
+        );
+    }
+    Ok(Some(
+        apply_schema_inputs(access, &schemas_dir, &inputs).await?,
+    ))
+}
+
+async fn apply_schema_inputs(
+    access: &ConfigAccess,
+    root: &Path,
+    inputs: &[SchemaInput],
+) -> Result<PackSchemaPhase> {
+    let mut schema_files = Vec::new();
+    for input in inputs
+        .iter()
+        .filter(|input| input.kind == SchemaInputKind::Sdl)
+    {
+        schema_files.push(apply_sdl_file(access, &input.path).await?);
+    }
+
+    let mut patch_files = Vec::new();
+    for input in inputs
+        .iter()
+        .filter(|input| input.kind == SchemaInputKind::Patch)
+    {
+        patch_files.push(apply_patch_file(access, &input.path).await?);
+    }
+
+    Ok(PackSchemaPhase {
+        status: "schema_applied",
+        root: root.display().to_string(),
+        schema_files,
+        patch_files,
+    })
 }
 
 fn discover_schema_inputs(root: &Path, explicit_patches: &[PathBuf]) -> Result<Vec<SchemaInput>> {
@@ -612,5 +677,43 @@ mod tests {
         assert_eq!(filtered, patch);
         assert!(applied.is_empty());
         assert!(skipped.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod pack_schema_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn pack_schemas_dir_absent_means_skip() {
+        let dir = tempdir().unwrap();
+        // Can't call async without runtime for full apply; discovery path only.
+        assert!(!dir.path().join("schemas").is_dir());
+    }
+
+    #[test]
+    fn pack_schemas_dir_discovers_graphql() {
+        let dir = tempdir().unwrap();
+        let schemas = dir.path().join("schemas");
+        fs::create_dir_all(&schemas).unwrap();
+        fs::write(
+            schemas.join("widget.graphql"),
+            "type Widget { id: String }\n",
+        )
+        .unwrap();
+        let inputs = discover_schema_inputs(&schemas, &[]).unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].kind, SchemaInputKind::Sdl);
+    }
+
+    #[test]
+    fn pack_schemas_empty_dir_is_detectable() {
+        let dir = tempdir().unwrap();
+        let schemas = dir.path().join("schemas");
+        fs::create_dir_all(&schemas).unwrap();
+        let inputs = discover_schema_inputs(&schemas, &[]).unwrap();
+        assert!(inputs.is_empty());
     }
 }

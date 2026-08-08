@@ -125,6 +125,7 @@ fn validate_rejects_write_tool_with_empty_tool_name() {
             description: String::new(),
             fields: Vec::new(),
         }]),
+        datastore_tool_surface_ids: None,
         ..Default::default()
     };
     let result = doc.validate();
@@ -146,6 +147,7 @@ fn validate_rejects_write_tool_with_empty_collection() {
             description: String::new(),
             fields: Vec::new(),
         }]),
+        datastore_tool_surface_ids: None,
         ..Default::default()
     };
     let result = doc.validate();
@@ -171,6 +173,7 @@ fn validate_rejects_write_tool_field_with_empty_name() {
                 required: true,
             }],
         }]),
+        datastore_tool_surface_ids: None,
         ..Default::default()
     };
     let result = doc.validate();
@@ -194,6 +197,7 @@ fn validate_rejects_duplicate_write_tool_names() {
         selection_id: "test-tools".to_string(),
         agent_did: "did:test:test".to_string(),
         write_tools: Some(vec![decl("ActionRequest"), decl("OtherCollection")]),
+        datastore_tool_surface_ids: None,
         ..Default::default()
     };
     let result = doc.validate();
@@ -227,6 +231,7 @@ fn validate_accepts_well_formed_write_tools() {
                 fields: Vec::new(),
             },
         ]),
+        datastore_tool_surface_ids: None,
         ..Default::default()
     };
     assert!(
@@ -251,6 +256,7 @@ fn validate_rejects_write_tool_name_colliding_with_builtin() {
                 required: true,
             }],
         }]),
+        datastore_tool_surface_ids: None,
         ..Default::default()
     };
     let result = doc.validate();
@@ -276,6 +282,7 @@ fn validate_rejects_write_tool_name_colliding_with_defra_query() {
             description: String::new(),
             fields: Vec::new(),
         }]),
+        datastore_tool_surface_ids: None,
         ..Default::default()
     };
     assert!(
@@ -298,6 +305,7 @@ fn validate_rejects_write_tool_name_colliding_with_cli_tool() {
             description: String::new(),
             fields: Vec::new(),
         }]),
+        datastore_tool_surface_ids: None,
         ..Default::default()
     };
     let result = doc.validate();
@@ -332,6 +340,7 @@ fn validate_rejects_duplicate_field_names_within_decl() {
                 },
             ],
         }]),
+        datastore_tool_surface_ids: None,
         ..Default::default()
     };
     let result = doc.validate();
@@ -541,6 +550,7 @@ async fn tool_selection_document_round_trips_write_tools() {
                 },
             ],
         }]),
+        datastore_tool_surface_ids: None,
         ..Default::default()
     };
     upsert_tool_selection(&node, &doc)

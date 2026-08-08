@@ -83,6 +83,7 @@ def allFields : Target → List FieldKey
       , "cross_deployment_spawn_timeout_seconds", "enable_memory"
       , "enable_session_history_tool", "enable_context_budget"
       , "enable_defra_query", "defra_query_collections", "write_tools"
+      , "datastore_tool_surface_ids"
       , "enable_self_config", "self_config_categories"
       , "self_config_no_lockout", "self_config_dry_run", "updated_at" ]
   | .inferenceProfile =>

@@ -1,0 +1,10 @@
+type DatastoreToolSurface {
+    surface_id: String @index(unique: true)
+    agent_did: String @index
+    display_name: String
+    enabled: Boolean @index
+    # JSON-serialized WriteToolDecl entries (same dual-shape as ToolSelection.write_tools).
+    entries: [String]
+    created_at: String
+    updated_at: DateTime @index(direction: DESC)
+}

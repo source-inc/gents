@@ -23,6 +23,10 @@ pub(crate) fn diff_manifests(
         agent_principal,
         agent_behaviors: diff_manifest_collection(&desired.agent_behaviors, &live.agent_behaviors),
         skills: diff_manifest_collection(&desired.skills, &live.skills),
+        datastore_tool_surfaces: diff_manifest_collection(
+            &desired.datastore_tool_surfaces,
+            &live.datastore_tool_surfaces,
+        ),
         // WorkspaceRoot isn't tracked in DesiredStateManifest yet (see the
         // field doc on DesiredStateDiffCollections::workspace_roots) — an
         // empty diff until that CRUD surface lands.

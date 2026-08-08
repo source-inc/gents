@@ -306,12 +306,17 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
     baseline_entry!(
         gents_protocol::schemas::TOOL_SELECTION_NAME,
         gents_protocol::schemas::TOOL_SELECTION,
-        "bafyreib2unocpob7tf55zrqzelcsop4ecvhm6jlyjlisi7osxsevlxaeuy"
+        "bafyreie4seb5qunpvokrmvdumozlefwovchlc3arpwr7afldydpfyeozfy"
     ),
     baseline_entry!(
         gents_protocol::schemas::SKILL_NAME,
         gents_protocol::schemas::SKILL,
         "bafyreib6grod5kwezldwy74gt5425ewoymiyyjvmygtfzhq25zwngwsrly"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::DATASTORE_TOOL_SURFACE_NAME,
+        gents_protocol::schemas::DATASTORE_TOOL_SURFACE,
+        "bafyreib5unizcyuuwsfcabepagjvuac23xpnqrt3wl7fkhfp5lwlfas6oi"
     ),
     baseline_entry!(
         gents_protocol::schemas::WORKSPACE_ROOT_NAME,

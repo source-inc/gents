@@ -1669,3 +1669,298 @@ async fn apply_control_update_admits_chatgpt_behavior_when_credential_added() {
         after.unavailable_behaviors
     );
 }
+
+// ---------------------------------------------------------------------------
+// DatastoreToolSurface expand: surface ≡ inline, fail-closed
+// ---------------------------------------------------------------------------
+
+fn finding_decl() -> crate::document_config::WriteToolDecl {
+    crate::document_config::WriteToolDecl {
+        tool_name: "write_experiment_finding".to_string(),
+        collection: "ExperimentFinding".to_string(),
+        description: "Record a finding document for the next pipeline stage.".to_string(),
+        fields: vec![
+            crate::document_config::WriteToolField {
+                name: "job_id".to_string(),
+                required: true,
+            },
+            crate::document_config::WriteToolField {
+                name: "finding_id".to_string(),
+                required: true,
+            },
+            crate::document_config::WriteToolField {
+                name: "content".to_string(),
+                required: true,
+            },
+            crate::document_config::WriteToolField {
+                name: "stage".to_string(),
+                required: true,
+            },
+        ],
+    }
+}
+
+fn empty_runtime_view(agent_did: &str) -> DocumentRuntimeView {
+    DocumentRuntimeView {
+        principal: DocumentRecord {
+            doc_id: "principal".to_string(),
+            value: crate::document_config::AgentPrincipal {
+                agent_did: agent_did.to_string(),
+                display_name: None,
+                default_behavior_id: None,
+                enabled: true,
+                created_at: None,
+                created_by: None,
+            },
+        },
+        behaviors: Default::default(),
+        skills: Default::default(),
+        datastore_tool_surfaces: Default::default(),
+        tool_selections: Default::default(),
+        inference_profiles: Default::default(),
+        backends: Default::default(),
+        oauth_credentials: Default::default(),
+        tasks: Default::default(),
+        schedules: Default::default(),
+        event_triggers: Default::default(),
+    }
+}
+
+#[test]
+fn merge_surface_entries_match_inline_write_tools() {
+    let agent_did = "did:key:zSurfaceTest";
+    let decl = finding_decl();
+
+    let inline_selection = ToolSelectionDocument {
+        selection_id: "sel-inline".to_string(),
+        agent_did: agent_did.to_string(),
+        write_tools: Some(vec![decl.clone()]),
+        datastore_tool_surface_ids: None,
+        ..Default::default()
+    };
+    let surface_selection = ToolSelectionDocument {
+        selection_id: "sel-surface".to_string(),
+        agent_did: agent_did.to_string(),
+        write_tools: None,
+        datastore_tool_surface_ids: Some(vec!["experiment-writes".to_string()]),
+        ..Default::default()
+    };
+
+    let mut view = empty_runtime_view(agent_did);
+    view.datastore_tool_surfaces.insert(
+        "experiment-writes".to_string(),
+        DocumentRecord {
+            doc_id: "surf-doc".to_string(),
+            value: crate::document_config::DatastoreToolSurfaceDocument {
+                surface_id: "experiment-writes".to_string(),
+                agent_did: agent_did.to_string(),
+                display_name: Some("experiment writes".to_string()),
+                enabled: true,
+                entries: Some(vec![decl.clone()]),
+                created_at: None,
+            },
+        },
+    );
+
+    let from_inline = merge_write_tools_with_surfaces(&inline_selection, &view).unwrap();
+    let from_surface = merge_write_tools_with_surfaces(&surface_selection, &view).unwrap();
+    assert_eq!(
+        from_inline, from_surface,
+        "surface expand must produce the same WriteToolDecl list as equivalent inline write_tools"
+    );
+    assert_eq!(from_surface.len(), 1);
+    assert_eq!(from_surface[0].tool_name, "write_experiment_finding");
+    assert_eq!(from_surface[0].collection, "ExperimentFinding");
+    assert_eq!(from_surface[0].fields.len(), 4);
+}
+
+#[test]
+fn merge_fails_closed_on_missing_surface() {
+    let agent_did = "did:key:zSurfaceMissing";
+    let selection = ToolSelectionDocument {
+        selection_id: "sel".to_string(),
+        agent_did: agent_did.to_string(),
+        datastore_tool_surface_ids: Some(vec!["does-not-exist".to_string()]),
+        ..Default::default()
+    };
+    let view = empty_runtime_view(agent_did);
+    let err = merge_write_tools_with_surfaces(&selection, &view).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("missing") && msg.contains("does-not-exist"),
+        "expected missing surface error, got: {msg}"
+    );
+}
+
+#[test]
+fn merge_fails_closed_on_disabled_surface() {
+    let agent_did = "did:key:zSurfaceDisabled";
+    let mut view = empty_runtime_view(agent_did);
+    view.datastore_tool_surfaces.insert(
+        "disabled-writes".to_string(),
+        DocumentRecord {
+            doc_id: "surf-doc".to_string(),
+            value: crate::document_config::DatastoreToolSurfaceDocument {
+                surface_id: "disabled-writes".to_string(),
+                agent_did: agent_did.to_string(),
+                display_name: None,
+                enabled: false,
+                entries: Some(vec![finding_decl()]),
+                created_at: None,
+            },
+        },
+    );
+    let selection = ToolSelectionDocument {
+        selection_id: "sel".to_string(),
+        agent_did: agent_did.to_string(),
+        datastore_tool_surface_ids: Some(vec!["disabled-writes".to_string()]),
+        ..Default::default()
+    };
+    let err = merge_write_tools_with_surfaces(&selection, &view).unwrap_err();
+    assert!(
+        err.to_string().contains("disabled"),
+        "expected disabled error, got: {err}"
+    );
+}
+
+#[test]
+fn merge_fails_closed_on_foreign_agent_surface() {
+    let agent_did = "did:key:zSurfaceOwner";
+    let mut view = empty_runtime_view(agent_did);
+    view.datastore_tool_surfaces.insert(
+        "foreign-writes".to_string(),
+        DocumentRecord {
+            doc_id: "surf-doc".to_string(),
+            value: crate::document_config::DatastoreToolSurfaceDocument {
+                surface_id: "foreign-writes".to_string(),
+                agent_did: "did:key:zOtherAgent".to_string(),
+                display_name: None,
+                enabled: true,
+                entries: Some(vec![finding_decl()]),
+                created_at: None,
+            },
+        },
+    );
+    let selection = ToolSelectionDocument {
+        selection_id: "sel".to_string(),
+        agent_did: agent_did.to_string(),
+        datastore_tool_surface_ids: Some(vec!["foreign-writes".to_string()]),
+        ..Default::default()
+    };
+    let err = merge_write_tools_with_surfaces(&selection, &view).unwrap_err();
+    assert!(
+        err.to_string().contains("different agent"),
+        "expected foreign agent error, got: {err}"
+    );
+}
+
+#[test]
+fn merge_fails_closed_on_name_collision() {
+    let agent_did = "did:key:zSurfaceCollide";
+    let decl = finding_decl();
+    let mut view = empty_runtime_view(agent_did);
+    view.datastore_tool_surfaces.insert(
+        "experiment-writes".to_string(),
+        DocumentRecord {
+            doc_id: "surf-doc".to_string(),
+            value: crate::document_config::DatastoreToolSurfaceDocument {
+                surface_id: "experiment-writes".to_string(),
+                agent_did: agent_did.to_string(),
+                display_name: None,
+                enabled: true,
+                entries: Some(vec![decl.clone()]),
+                created_at: None,
+            },
+        },
+    );
+    let selection = ToolSelectionDocument {
+        selection_id: "sel".to_string(),
+        agent_did: agent_did.to_string(),
+        write_tools: Some(vec![decl]),
+        datastore_tool_surface_ids: Some(vec!["experiment-writes".to_string()]),
+        ..Default::default()
+    };
+    let err = merge_write_tools_with_surfaces(&selection, &view).unwrap_err();
+    assert!(
+        err.to_string().contains("duplicate"),
+        "expected duplicate name error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn apply_control_update_evicts_surface_when_ownership_moves_away() {
+    let node = test_node().await;
+    ensure_runtime_schemas(node.as_ref()).await.unwrap();
+    let identity = Arc::new(test_identity("document-view-surface-revoke"));
+    bind_default_behavior_backend(
+        node.as_ref(),
+        identity.did(),
+        "backend-surface-revoke",
+        "http://127.0.0.1:8234/v1",
+    )
+    .await;
+
+    let mut view = load_document_runtime_view(node.as_ref(), identity.did())
+        .await
+        .expect("document view");
+
+    let create = format!(
+        r#"mutation {{ create_DatastoreToolSurface(input: {{
+            surface_id: "experiment-writes", agent_did: "{did}", enabled: true,
+            entries: ["{entry}"]
+        }}) {{ _docID }} }}"#,
+        did = escape_graphql_string(identity.did()),
+        entry = escape_graphql_string(&serde_json::to_string(&finding_decl()).unwrap()),
+    );
+    let resp = node.execute(&create).await;
+    assert!(
+        !resp.has_errors(),
+        "create_DatastoreToolSurface: {:?}",
+        resp.errors
+    );
+    let doc_id = created_skill_doc_id(resp.data.as_ref()).expect("created surface _docID");
+
+    let outcome = apply_control_update(
+        node.as_ref(),
+        identity.did(),
+        "datastore_tool_surface",
+        &doc_id,
+        &mut view,
+    )
+    .await
+    .expect("apply surface create");
+    assert_eq!(outcome, ControlUpdateOutcome::Applied);
+    assert!(view
+        .datastore_tool_surfaces
+        .contains_key("experiment-writes"));
+
+    // Reassigning the surface to another principal must revoke the grant now,
+    // not at the next process restart.
+    let reassign = format!(
+        r#"mutation {{ update_DatastoreToolSurface(
+            docID: "{doc_id}", input: {{ agent_did: "did:key:zOtherOwner" }}
+        ) {{ _docID }} }}"#,
+        doc_id = escape_graphql_string(&doc_id),
+    );
+    let resp = node.execute(&reassign).await;
+    assert!(
+        !resp.has_errors(),
+        "update_DatastoreToolSurface: {:?}",
+        resp.errors
+    );
+
+    let outcome = apply_control_update(
+        node.as_ref(),
+        identity.did(),
+        "datastore_tool_surface",
+        &doc_id,
+        &mut view,
+    )
+    .await
+    .expect("apply surface reassign");
+    assert_eq!(outcome, ControlUpdateOutcome::Applied);
+    assert!(
+        view.datastore_tool_surfaces.is_empty(),
+        "surface must be evicted once it is owned by another principal"
+    );
+}

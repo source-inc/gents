@@ -172,11 +172,18 @@ pub(crate) async fn resolve_document_runtime_snapshot_from_view(
             {
                 Some(selection_id) => match view.tool_selections.get(selection_id) {
                     Some(record) => {
-                        record.value.validate()?;
-                        validate_subagent_targets_resolve(&record.value, view)?;
+                        let mut selection = record.value.clone();
+                        selection.write_tools = Some(
+                            crate::agent::document_view::merge_write_tools_with_surfaces(
+                                &record.value,
+                                view,
+                            )?,
+                        );
+                        selection.validate()?;
+                        validate_subagent_targets_resolve(&selection, view)?;
                         (
-                            tool_selection_from_document(&record.value)?,
-                            subagent_tool_config_from_document(&record.value),
+                            tool_selection_from_document(&selection)?,
+                            subagent_tool_config_from_document(&selection),
                         )
                     }
                     None => anyhow::bail!(

@@ -1,0 +1,13 @@
+{
+  "backend_id": "exp-deepseek",
+  "name": "DeepSeek V4 Flash (workstation-1)",
+  "provider_kind": "OpenAiCompatible",
+  "openai_wire_api": "chat_completions",
+  "endpoint": "http://100.73.235.38:8000/v1",
+  "api_key": null,
+  "api_key_env_var": null,
+  "max_concurrent": 4,
+  "max_queue_depth": 100,
+  "enabled": true,
+  "models": ["d4f", "deepseek-ai/DeepSeek-V4-Flash-0731"]
+}

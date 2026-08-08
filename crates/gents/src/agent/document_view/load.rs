@@ -4,9 +4,9 @@ use defra_node::EmbeddedNode;
 use crate::backend_registry::list_backend_records;
 use crate::document_config::{
     ensure_agent_principal, list_agent_behavior_records, list_all_tool_selection_records,
-    list_event_trigger_records, list_inference_profile_records, list_schedule_records,
-    list_skill_records, list_task_records, list_tool_selection_records, load_tool_selection_record,
-    ToolSelectionDocument,
+    list_datastore_tool_surface_records, list_event_trigger_records,
+    list_inference_profile_records, list_schedule_records, list_skill_records, list_task_records,
+    list_tool_selection_records, load_tool_selection_record, ToolSelectionDocument,
 };
 
 use super::{DocumentRecord, DocumentRuntimeView};
@@ -30,6 +30,7 @@ pub(crate) async fn load_document_runtime_view(
         },
         behaviors: HashMap::new(),
         skills: HashMap::new(),
+        datastore_tool_surfaces: HashMap::new(),
         tool_selections: HashMap::new(),
         inference_profiles: HashMap::new(),
         backends: HashMap::new(),
@@ -126,6 +127,34 @@ pub(crate) async fn load_document_runtime_view(
                 agent_did = %agent_did,
                 error = %error,
                 "runtime document view could not load Skill documents; treating as empty"
+            );
+        }
+    }
+
+    match list_datastore_tool_surface_records(node, agent_did).await {
+        Ok(records) => {
+            for (doc_id, surface) in records {
+                if surface.surface_id.trim().is_empty() {
+                    tracing::warn!(
+                        doc_id = %doc_id,
+                        "runtime document view skipped DatastoreToolSurface with empty surface_id"
+                    );
+                    continue;
+                }
+                view.datastore_tool_surfaces.insert(
+                    surface.surface_id.clone(),
+                    DocumentRecord {
+                        doc_id,
+                        value: surface,
+                    },
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                agent_did = %agent_did,
+                error = %error,
+                "runtime document view could not load DatastoreToolSurface documents; treating as empty"
             );
         }
     }

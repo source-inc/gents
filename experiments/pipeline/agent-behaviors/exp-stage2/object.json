@@ -1,0 +1,18 @@
+{
+  "behavior_id": "exp-stage2",
+  "agent_did": "did:key:zExperimentAgentPlaceholder00000000000000000000000000",
+  "display_name": "Pipeline stage 2",
+  "description": null,
+  "summary": null,
+  "system_prompt": "./system_prompt.md",
+  "request_context_template": null,
+  "backend_id": "exp-deepseek",
+  "model_name": "d4f",
+  "tool_selection_id": "exp-tools-stage2",
+  "inference_profile_id": "exp-profile",
+  "compaction_strategy": null,
+  "compaction_threshold": null,
+  "enabled": true,
+  "skill_refs": [],
+  "skill_excludes": []
+}

@@ -1,0 +1,19 @@
+{
+  "surface_id": "experiment-writes",
+  "agent_did": "did:key:zExperimentAgentPlaceholder00000000000000000000000000",
+  "display_name": "Experiment finding writes",
+  "enabled": true,
+  "entries": [
+    {
+      "tool_name": "write_experiment_finding",
+      "collection": "ExperimentFinding",
+      "description": "Record a finding document for the next pipeline stage.",
+      "fields": [
+        {"name": "job_id", "required": true},
+        {"name": "finding_id", "required": true},
+        {"name": "content", "required": true},
+        {"name": "stage", "required": true}
+      ]
+    }
+  ]
+}

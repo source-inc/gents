@@ -171,6 +171,7 @@ impl SelfConfigTarget {
                 "enable_defra_query",
                 "defra_query_collections",
                 "write_tools",
+                "datastore_tool_surface_ids",
                 "enable_self_config",
                 "self_config_categories",
                 "self_config_no_lockout",

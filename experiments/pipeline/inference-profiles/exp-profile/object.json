@@ -1,0 +1,12 @@
+{
+  "profile_id": "exp-profile",
+  "display_name": "Experiment default",
+  "context_window": 131072,
+  "max_output_tokens": 8192,
+  "max_turns": null,
+  "temperature": 0.2,
+  "top_p": null,
+  "top_k": null,
+  "min_p": null,
+  "frequency_penalty": null
+}

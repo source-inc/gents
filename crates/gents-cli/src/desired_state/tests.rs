@@ -20,6 +20,7 @@ fn empty_manifest(agent_did: &str) -> DesiredStateManifest {
         },
         agent_behaviors: Vec::new(),
         skills: Vec::new(),
+        datastore_tool_surfaces: Vec::new(),
         tool_selections: Vec::new(),
         inference_backends: Vec::new(),
         inference_profiles: Vec::new(),
@@ -489,6 +490,7 @@ fn sample_tool_selection(selection_id: &str) -> DesiredToolSelection {
         subagent_allow_cross_deployment: false,
         cross_deployment_spawn_timeout_seconds: None,
         write_tools: Vec::new(),
+        datastore_tool_surface_ids: Vec::new(),
         enable_self_config: false,
         self_config_categories: Vec::new(),
         self_config_no_lockout: false,
@@ -2623,6 +2625,7 @@ pub(super) mod write_manifest_root {
                 skill_excludes: Vec::new(),
             }],
             skills: Vec::new(),
+            datastore_tool_surfaces: Vec::new(),
             tool_selections: Vec::new(),
             inference_backends: Vec::new(),
             inference_profiles: Vec::new(),
@@ -2867,4 +2870,135 @@ mod write_manifest_root_safe_id {
         let err = check_filesystem_safe_id(".hidden").unwrap_err();
         assert!(err.contains("dot-prefixed"), "got: {err}");
     }
+}
+
+fn sample_surface(surface_id: &str) -> DesiredDatastoreToolSurface {
+    use gents::WriteToolDecl;
+    DesiredDatastoreToolSurface {
+        surface_id: surface_id.to_string(),
+        agent_did: "did:test:test".to_string(),
+        display_name: Some("experiment writes".to_string()),
+        enabled: true,
+        entries: vec![write_tool_storage_entry(&WriteToolDecl {
+            tool_name: "write_experiment_finding".to_string(),
+            collection: "ExperimentFinding".to_string(),
+            description: "Record a finding".to_string(),
+            fields: Vec::new(),
+        })],
+    }
+}
+
+#[test]
+fn validate_accepts_surface_linked_tool_selection() {
+    let mut manifest = manifest_with_default_behavior();
+    manifest
+        .datastore_tool_surfaces
+        .push(sample_surface("experiment-writes"));
+    let mut sel = sample_tool_selection("stage-tools");
+    sel.agent_did = "did:test:test".to_string();
+    sel.datastore_tool_surface_ids = vec!["experiment-writes".to_string()];
+    manifest.tool_selections.push(sel);
+
+    let errors = validation_errors(&manifest);
+    assert!(
+        errors.is_empty(),
+        "surface-linked selection should validate cleanly, got {errors:?}"
+    );
+}
+
+#[test]
+fn validate_rejects_missing_surface_link() {
+    let mut manifest = manifest_with_default_behavior();
+    let mut sel = sample_tool_selection("stage-tools");
+    sel.agent_did = "did:test:test".to_string();
+    sel.datastore_tool_surface_ids = vec!["does-not-exist".to_string()];
+    manifest.tool_selections.push(sel);
+
+    let errors = validation_errors(&manifest);
+    assert!(
+        errors
+            .iter()
+            .any(|msg| msg.contains("missing DatastoreToolSurface")
+                && msg.contains("does-not-exist")),
+        "expected missing surface rejection, got {errors:?}"
+    );
+}
+
+#[test]
+fn validate_rejects_disabled_surface_link() {
+    let mut manifest = manifest_with_default_behavior();
+    let mut surface = sample_surface("experiment-writes");
+    surface.enabled = false;
+    manifest.datastore_tool_surfaces.push(surface);
+    let mut sel = sample_tool_selection("stage-tools");
+    sel.agent_did = "did:test:test".to_string();
+    sel.datastore_tool_surface_ids = vec!["experiment-writes".to_string()];
+    manifest.tool_selections.push(sel);
+
+    let errors = validation_errors(&manifest);
+    assert!(
+        errors.iter().any(|msg| msg.contains("disabled")),
+        "expected disabled surface rejection, got {errors:?}"
+    );
+}
+
+#[test]
+fn validate_rejects_foreign_agent_surface_link() {
+    let mut manifest = manifest_with_default_behavior();
+    let mut surface = sample_surface("experiment-writes");
+    surface.agent_did = "did:key:zOther".to_string();
+    manifest.datastore_tool_surfaces.push(surface);
+    let mut sel = sample_tool_selection("stage-tools");
+    sel.agent_did = "did:test:test".to_string();
+    sel.datastore_tool_surface_ids = vec!["experiment-writes".to_string()];
+    manifest.tool_selections.push(sel);
+
+    let errors = validation_errors(&manifest);
+    assert!(
+        errors
+            .iter()
+            .any(|msg| msg.contains("different agent") || msg.contains("does not match principal")),
+        "expected foreign surface rejection, got {errors:?}"
+    );
+}
+
+#[test]
+fn load_pipeline_two_stage_fixture_with_surface() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../experiments/pipeline");
+    assert!(
+        root.join("datastore-tool-surfaces/experiment-writes/object.json")
+            .is_file(),
+        "pipeline fixture must include experiment-writes surface"
+    );
+    assert!(
+        root.join("schemas/experiment_finding.graphql").is_file(),
+        "pipeline pack must be self-contained with pack-local schemas/"
+    );
+    let (manifest, report) = load_manifest_root(&root);
+    assert!(
+        report.errors.is_empty(),
+        "pipeline fixture must load without errors: {:?}",
+        report.errors
+    );
+    let manifest = manifest.expect("pipeline fixture must produce a manifest");
+    assert_eq!(report.counts.datastore_tool_surfaces, 1);
+    assert!(
+        manifest
+            .tool_selections
+            .iter()
+            .any(|s| s.selection_id == "exp-tools-stage1"
+                && s.datastore_tool_surface_ids == ["experiment-writes".to_string()]
+                && s.write_tools.is_empty()),
+        "stage-1 selection must reference surface and drop inline write_tools: {:?}",
+        manifest.tool_selections
+    );
+    let mut errors = Vec::new();
+    validate_manifest(&manifest, &mut errors);
+    // Backend/model offline endpoints may still pass static validate; surface links must not error.
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e.contains("DatastoreToolSurface") || e.contains("datastore_tool_surface")),
+        "pipeline fixture surface wiring must be valid: {errors:?}"
+    );
 }

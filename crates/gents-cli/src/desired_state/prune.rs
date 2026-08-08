@@ -72,6 +72,9 @@ fn live_state_from_manifest(m: &DesiredStateManifest) -> LiveState {
         for sid in &ts.allowed_mcp_service_ids {
             refs.push(doc(Collection::ToolServiceRegistry, sid));
         }
+        for sid in &ts.datastore_tool_surface_ids {
+            refs.push(doc(Collection::DatastoreToolSurface, sid));
+        }
         desired.insert(
             doc(Collection::ToolSelection, &ts.selection_id),
             DesiredFields::with_refs("", refs),
@@ -93,6 +96,12 @@ fn live_state_from_manifest(m: &DesiredStateManifest) -> LiveState {
     for s in &m.skills {
         desired.insert(
             doc(Collection::Skill, &s.skill_id),
+            DesiredFields::opaque(""),
+        );
+    }
+    for s in &m.datastore_tool_surfaces {
+        desired.insert(
+            doc(Collection::DatastoreToolSurface, &s.surface_id),
             DesiredFields::opaque(""),
         );
     }
@@ -136,6 +145,12 @@ fn manifest_from_desired(m: &DesiredStateManifest) -> Manifest {
     for s in &m.skills {
         docs.insert(
             doc(Collection::Skill, &s.skill_id),
+            DesiredFields::opaque(""),
+        );
+    }
+    for s in &m.datastore_tool_surfaces {
+        docs.insert(
+            doc(Collection::DatastoreToolSurface, &s.surface_id),
             DesiredFields::opaque(""),
         );
     }

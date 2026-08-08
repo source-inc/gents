@@ -124,6 +124,22 @@ pub(crate) fn manifest_from_export_bundle(
                 )
             })
             .collect::<Result<Vec<_>>>()?,
+        datastore_tool_surfaces: bundle
+            .datastore_tool_surfaces
+            .iter()
+            .map(|value| {
+                desired_from_value(
+                    value,
+                    &[
+                        "surface_id",
+                        "agent_did",
+                        "display_name",
+                        "enabled",
+                        "entries",
+                    ],
+                )
+            })
+            .collect::<Result<Vec<_>>>()?,
         tool_selections: bundle
             .tool_selections
             .iter()
@@ -164,6 +180,7 @@ pub(crate) fn manifest_from_export_bundle(
                         "subagent_allow_cross_deployment",
                         "cross_deployment_spawn_timeout_seconds",
                         "write_tools",
+                        "datastore_tool_surface_ids",
                         "enable_self_config",
                         "self_config_categories",
                         "self_config_no_lockout",
@@ -335,6 +352,11 @@ pub(crate) fn export_bundle_from_manifest(
             .collect::<serde_json::Result<Vec<_>>>()?,
         skills: manifest
             .skills
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<serde_json::Result<Vec<_>>>()?,
+        datastore_tool_surfaces: manifest
+            .datastore_tool_surfaces
             .iter()
             .map(serde_json::to_value)
             .collect::<serde_json::Result<Vec<_>>>()?,

@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use crate::backend_registry::InferenceBackend;
 use crate::chatgpt_codex::OAuthCredential;
 use crate::document_config::{
-    AgentBehavior, AgentPrincipal, EventTrigger, InferenceProfile, Schedule, SkillDocument, Task,
-    ToolSelectionDocument,
+    AgentBehavior, AgentPrincipal, DatastoreToolSurfaceDocument, EventTrigger, InferenceProfile,
+    Schedule, SkillDocument, Task, ToolSelectionDocument, WriteToolDecl,
 };
 
 #[derive(Debug, Clone)]
@@ -26,6 +26,8 @@ pub(crate) struct DocumentRuntimeView {
     pub(crate) principal: DocumentRecord<AgentPrincipal>,
     pub(crate) behaviors: HashMap<String, DocumentRecord<AgentBehavior>>,
     pub(crate) skills: HashMap<String, DocumentRecord<SkillDocument>>,
+    pub(crate) datastore_tool_surfaces:
+        HashMap<String, DocumentRecord<DatastoreToolSurfaceDocument>>,
     pub(crate) tool_selections: HashMap<String, DocumentRecord<ToolSelectionDocument>>,
     pub(crate) inference_profiles: HashMap<String, DocumentRecord<InferenceProfile>>,
     pub(crate) backends: HashMap<String, DocumentRecord<InferenceBackend>>,
@@ -57,6 +59,12 @@ impl DocumentRuntimeView {
 
     fn has_skill_doc_id(&self, doc_id: &str) -> bool {
         self.skills.values().any(|record| record.doc_id == doc_id)
+    }
+
+    fn has_datastore_tool_surface_doc_id(&self, doc_id: &str) -> bool {
+        self.datastore_tool_surfaces
+            .values()
+            .any(|record| record.doc_id == doc_id)
     }
 
     fn has_inference_profile_doc_id(&self, doc_id: &str) -> bool {
@@ -108,6 +116,16 @@ impl DocumentRuntimeView {
             .iter()
             .find_map(|(skill_id, record)| (record.doc_id == doc_id).then_some(skill_id.clone()));
         key.is_some_and(|skill_id| self.skills.remove(&skill_id).is_some())
+    }
+
+    fn remove_datastore_tool_surface_by_doc_id(&mut self, doc_id: &str) -> bool {
+        let key = self
+            .datastore_tool_surfaces
+            .iter()
+            .find_map(|(surface_id, record)| {
+                (record.doc_id == doc_id).then_some(surface_id.clone())
+            });
+        key.is_some_and(|surface_id| self.datastore_tool_surfaces.remove(&surface_id).is_some())
     }
 
     fn remove_inference_profile_by_doc_id(&mut self, doc_id: &str) -> bool {
@@ -252,3 +270,82 @@ fn validate_subagent_targets_resolve(
 
 #[cfg(test)]
 mod tests;
+
+/// Merge inline `write_tools` with entries from linked `DatastoreToolSurface`
+/// docs. Fail-closed on missing/disabled/foreign surfaces and name collisions.
+pub(crate) fn merge_write_tools_with_surfaces(
+    selection: &ToolSelectionDocument,
+    view: &DocumentRuntimeView,
+) -> anyhow::Result<Vec<WriteToolDecl>> {
+    use anyhow::{anyhow, bail};
+    use std::collections::HashSet;
+
+    let mut decls = selection.write_tools.clone().unwrap_or_default();
+    let mut seen: HashSet<String> = HashSet::new();
+    for decl in &decls {
+        if !seen.insert(decl.tool_name.clone()) {
+            bail!(
+                "ToolSelection {} has duplicate write_tools tool_name {:?}",
+                selection.selection_id,
+                decl.tool_name
+            );
+        }
+    }
+
+    let surface_ids = selection
+        .datastore_tool_surface_ids
+        .as_deref()
+        .unwrap_or(&[]);
+    for surface_id in surface_ids {
+        let surface_id = surface_id.trim();
+        if surface_id.is_empty() {
+            bail!(
+                "ToolSelection {} has an empty datastore_tool_surface_ids entry",
+                selection.selection_id
+            );
+        }
+        let record = view
+            .datastore_tool_surfaces
+            .get(surface_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "ToolSelection {} references missing DatastoreToolSurface {}",
+                    selection.selection_id,
+                    surface_id
+                )
+            })?;
+        let surface = &record.value;
+        if surface.agent_did.trim() != selection.agent_did.trim() {
+            bail!(
+                "ToolSelection {} references DatastoreToolSurface {} owned by a different agent",
+                selection.selection_id,
+                surface_id
+            );
+        }
+        if !surface.enabled {
+            bail!(
+                "ToolSelection {} references disabled DatastoreToolSurface {}",
+                selection.selection_id,
+                surface_id
+            );
+        }
+        for entry in surface.entries.as_deref().unwrap_or(&[]) {
+            if !entry.is_well_formed() {
+                bail!(
+                    "DatastoreToolSurface {} has a malformed entry (tool_name/collection required)",
+                    surface_id
+                );
+            }
+            if !seen.insert(entry.tool_name.clone()) {
+                bail!(
+                    "duplicate write tool_name {:?} after expanding DatastoreToolSurface {} for ToolSelection {}",
+                    entry.tool_name,
+                    surface_id,
+                    selection.selection_id
+                );
+            }
+            decls.push(entry.clone());
+        }
+    }
+    Ok(decls)
+}

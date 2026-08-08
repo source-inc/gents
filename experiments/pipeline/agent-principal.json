@@ -1,0 +1,6 @@
+{
+  "agent_did": "did:key:zExperimentAgentPlaceholder00000000000000000000000000",
+  "display_name": "Experiment Agent",
+  "default_behavior_id": "exp-stage1",
+  "enabled": true
+}

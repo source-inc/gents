@@ -14,6 +14,15 @@ use crate::{
 
 pub(super) async fn config_apply(args: ConfigApplyArgs) -> Result<()> {
     let (access, _) = resolve_config_access(args.home.as_deref(), args.graphql.as_deref()).await?;
+
+    // Pack-local schemas first (if `<root>/schemas/` exists) so EventTrigger
+    // sources and DatastoreToolSurface collections are on the node before
+    // live validate and config writes. Ordinary agent-config roots without
+    // schemas/ are unchanged.
+    let schemas = crate::commands::schema::apply_pack_schemas_if_present(&access, &args.root)
+        .await
+        .context("config apply: pack-local schemas/")?;
+
     let bound = super::binding::load_bound_manifest(super::binding::ManifestBindingOptions {
         root: &args.root,
         home: args.home.as_deref(),
@@ -24,7 +33,18 @@ pub(super) async fn config_apply(args: ConfigApplyArgs) -> Result<()> {
     })
     .await?
     .require_valid()?;
-    let report = apply_bound_desired_manifest(&args.root, &access, &bound, args.prune).await?;
+    let mut report = apply_bound_desired_manifest(&args.root, &access, &bound, args.prune).await?;
+    report.schemas = schemas;
+    if report
+        .schemas
+        .as_ref()
+        .is_some_and(crate::commands::schema::PackSchemaPhase::changed)
+        && report.status == "noop"
+    {
+        // Schema phase did work even though config docs were already live.
+        report.status = "applied";
+        report.changed = true;
+    }
     print_json(&serde_json::to_value(&report)?)?;
     if report.ok {
         Ok(())
@@ -118,6 +138,7 @@ pub(crate) async fn apply_bound_desired_manifest(
         root: root.display().to_string(),
         access_mode: access.mode().to_string(),
         agent_did: bound.context.target_agent_did.clone(),
+        schemas: None,
         planned: planned.counts.clone(),
         applied,
         pruned,

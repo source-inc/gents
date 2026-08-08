@@ -6,10 +6,11 @@ use serde::Deserialize;
 use super::normalize::normalize_manifest;
 use super::validate::validate_manifest;
 use super::{
-    DesiredAgentBehavior, DesiredAgentPrincipal, DesiredEventTrigger, DesiredInferenceBackend,
-    DesiredInferenceProfile, DesiredPeerPairing, DesiredProjectionAcpBinding, DesiredSchedule,
-    DesiredSkill, DesiredStateCounts, DesiredStateManifest, DesiredStateValidationReport,
-    DesiredTask, DesiredToolSelection, DesiredToolServiceRegistry, HasUniqueId,
+    DesiredAgentBehavior, DesiredAgentPrincipal, DesiredDatastoreToolSurface, DesiredEventTrigger,
+    DesiredInferenceBackend, DesiredInferenceProfile, DesiredPeerPairing,
+    DesiredProjectionAcpBinding, DesiredSchedule, DesiredSkill, DesiredStateCounts,
+    DesiredStateManifest, DesiredStateValidationReport, DesiredTask, DesiredToolSelection,
+    DesiredToolServiceRegistry, HasUniqueId,
 };
 use gents::Collection;
 
@@ -33,6 +34,8 @@ pub(crate) fn load_manifest_root(
     let mut agent_behaviors: Vec<DesiredAgentBehavior> =
         load_per_doc_collection(root, Collection::AgentBehavior, &mut errors);
     let skills: Vec<DesiredSkill> = load_per_doc_collection(root, Collection::Skill, &mut errors);
+    let datastore_tool_surfaces: Vec<DesiredDatastoreToolSurface> =
+        load_per_doc_collection(root, Collection::DatastoreToolSurface, &mut errors);
     let tool_selections: Vec<DesiredToolSelection> =
         load_per_doc_collection(root, Collection::ToolSelection, &mut errors);
     let inference_backends: Vec<DesiredInferenceBackend> =
@@ -72,6 +75,7 @@ pub(crate) fn load_manifest_root(
         agent_principal: usize::from(principal.is_some()),
         agent_behaviors: agent_behaviors.len(),
         skills: skills.len(),
+        datastore_tool_surfaces: datastore_tool_surfaces.len(),
         tool_selections: tool_selections.len(),
         inference_backends: inference_backends.len(),
         inference_profiles: inference_profiles.len(),
@@ -90,6 +94,7 @@ pub(crate) fn load_manifest_root(
             agent_principal: principal,
             agent_behaviors,
             skills,
+            datastore_tool_surfaces,
             tool_selections,
             inference_backends,
             inference_profiles,

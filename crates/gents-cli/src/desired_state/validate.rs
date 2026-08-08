@@ -12,7 +12,7 @@ use gents::{
     SubagentTarget, VariableRef, WriteToolDecl,
 };
 
-use super::DesiredStateManifest;
+use super::{DesiredDatastoreToolSurface, DesiredStateManifest, DesiredToolSelection};
 
 use crate::config_writes::ConfigAccess;
 
@@ -124,6 +124,31 @@ pub(crate) fn validate_manifest(manifest: &DesiredStateManifest, errors: &mut Ve
     let mut behavior_ids = BTreeSet::new();
     let mut backend_ids = BTreeSet::new();
     let mut tool_selection_ids = BTreeSet::new();
+
+    let mut surface_ids = BTreeSet::new();
+    for surface in &manifest.datastore_tool_surfaces {
+        let surface_id = surface.surface_id.trim();
+        if surface_id.is_empty() {
+            errors.push("DatastoreToolSurface has empty surface_id".to_string());
+        } else if !surface_ids.insert(surface_id.to_string()) {
+            errors.push(format!(
+                "duplicate DatastoreToolSurface surface_id {surface_id}"
+            ));
+        }
+        if !principal_agent_did.is_empty() && surface.agent_did.trim() != principal_agent_did {
+            errors.push(format!(
+                "DatastoreToolSurface {} agent_did does not match principal",
+                surface.surface_id
+            ));
+        }
+        validate_write_tools(
+            &format!("surface:{}", surface.surface_id),
+            &surface.entries,
+            &[],
+            errors,
+        );
+    }
+
     let mut profile_ids = BTreeSet::new();
     let mut service_ids = BTreeSet::new();
     let mut projection_binding_ids = BTreeSet::new();
@@ -277,12 +302,10 @@ pub(crate) fn validate_manifest(manifest: &DesiredStateManifest, errors: &mut Ve
             &selection.subagent_targets,
             errors,
         );
-        validate_write_tools(
-            &selection.selection_id,
-            &selection.write_tools,
-            &selection.cli_tool_names,
-            errors,
-        );
+        // Field-level write-tool checks run once, inside the link validation,
+        // over the merged inline ∪ surface list (which equals the inline list
+        // when no surfaces are linked).
+        validate_datastore_surface_links(manifest, selection, errors);
         if selection.subagent_spawn_enabled {
             if selection.subagent_targets.is_empty() {
                 errors.push(format!(
@@ -1245,6 +1268,99 @@ fn validate_subagent_targets(
     }
 }
 
+fn validate_datastore_surface_links(
+    manifest: &DesiredStateManifest,
+    selection: &DesiredToolSelection,
+    errors: &mut Vec<String>,
+) {
+    use gents::{is_reserved_builtin_tool_name, WriteToolDecl};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let surfaces: BTreeMap<&str, &DesiredDatastoreToolSurface> = manifest
+        .datastore_tool_surfaces
+        .iter()
+        .map(|s| (s.surface_id.as_str(), s))
+        .collect();
+
+    let mut merged: Vec<String> = selection.write_tools.clone();
+    let mut seen_names: BTreeSet<String> = BTreeSet::new();
+    for entry in &selection.write_tools {
+        if let Ok(decl) = serde_json::from_str::<WriteToolDecl>(entry) {
+            seen_names.insert(decl.tool_name);
+        }
+    }
+
+    for surface_id in &selection.datastore_tool_surface_ids {
+        let surface_id = surface_id.trim();
+        if surface_id.is_empty() {
+            errors.push(format!(
+                "tool selection {} has an empty datastore_tool_surface_ids entry",
+                selection.selection_id
+            ));
+            continue;
+        }
+        let Some(surface) = surfaces.get(surface_id) else {
+            errors.push(format!(
+                "tool selection {} references missing DatastoreToolSurface {}",
+                selection.selection_id, surface_id
+            ));
+            continue;
+        };
+        if surface.agent_did.trim() != selection.agent_did.trim() {
+            errors.push(format!(
+                "tool selection {} references DatastoreToolSurface {} owned by a different agent",
+                selection.selection_id, surface_id
+            ));
+            continue;
+        }
+        if !surface.enabled {
+            errors.push(format!(
+                "tool selection {} references disabled DatastoreToolSurface {}",
+                selection.selection_id, surface_id
+            ));
+            continue;
+        }
+        for entry in &surface.entries {
+            match serde_json::from_str::<WriteToolDecl>(entry) {
+                Ok(decl) => {
+                    if !decl.is_well_formed() {
+                        errors.push(format!(
+                            "DatastoreToolSurface {} has a malformed entry (tool_name/collection required)",
+                            surface_id
+                        ));
+                        continue;
+                    }
+                    if is_reserved_builtin_tool_name(&decl.tool_name) {
+                        errors.push(format!(
+                            "DatastoreToolSurface {} tool_name {:?} collides with a built-in tool",
+                            surface_id, decl.tool_name
+                        ));
+                    }
+                    if !seen_names.insert(decl.tool_name.clone()) {
+                        errors.push(format!(
+                            "duplicate write tool_name {:?} after expanding DatastoreToolSurface {} for tool selection {}",
+                            decl.tool_name, surface_id, selection.selection_id
+                        ));
+                    }
+                    merged.push(entry.clone());
+                }
+                Err(error) => errors.push(format!(
+                    "DatastoreToolSurface {} entry is not valid WriteToolDecl JSON: {error}",
+                    surface_id
+                )),
+            }
+        }
+    }
+
+    // Re-run field-level checks over the merged list.
+    validate_write_tools(
+        &selection.selection_id,
+        &merged,
+        &selection.cli_tool_names,
+        errors,
+    );
+}
+
 fn validate_write_tools(
     selection_id: &str,
     entries: &[String],
@@ -1388,6 +1504,7 @@ mod tests {
                 skill_excludes: Vec::new(),
             }],
             skills: Vec::new(),
+            datastore_tool_surfaces: Vec::new(),
             tool_selections: Vec::new(),
             inference_backends: Vec::new(),
             inference_profiles: Vec::new(),
@@ -1597,6 +1714,7 @@ mod live_tests {
             },
             agent_behaviors: Vec::new(),
             skills: Vec::new(),
+            datastore_tool_surfaces: Vec::new(),
             tool_selections: vec![DesiredToolSelection {
                 selection_id: "live-test-sel".to_string(),
                 agent_did: "did:key:test-live-validate".to_string(),
@@ -1631,6 +1749,7 @@ mod live_tests {
                 subagent_allow_cross_deployment: false,
                 cross_deployment_spawn_timeout_seconds: None,
                 write_tools: Vec::new(),
+                datastore_tool_surface_ids: Vec::new(),
                 enable_self_config: false,
                 self_config_categories: Vec::new(),
                 self_config_no_lockout: false,
@@ -2115,6 +2234,7 @@ mod live_tests {
                 },
                 agent_behaviors: Vec::new(),
                 skills: Vec::new(),
+                datastore_tool_surfaces: Vec::new(),
                 tool_selections: vec![DesiredToolSelection {
                     selection_id: "subagent-idempotency-sel".to_string(),
                     agent_did: "did:key:test-subagent-idempotency".to_string(),
@@ -2155,6 +2275,7 @@ mod live_tests {
                     subagent_allow_cross_deployment: true,
                     cross_deployment_spawn_timeout_seconds: Some(90),
                     write_tools: Vec::new(),
+                    datastore_tool_surface_ids: Vec::new(),
                     enable_self_config: false,
                     self_config_categories: Vec::new(),
                     self_config_no_lockout: false,
@@ -2328,6 +2449,7 @@ mod live_tests {
                     skill_excludes: Vec::new(),
                 }],
                 skills: Vec::new(),
+                datastore_tool_surfaces: Vec::new(),
                 tool_selections: Vec::new(),
                 inference_backends: Vec::new(),
                 inference_profiles: Vec::new(),

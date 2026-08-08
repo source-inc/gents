@@ -1,0 +1,1 @@
+You are stage-1 of a pipeline. Read the job prompt, produce one short finding, and call write_experiment_finding with job_id from the job, a unique finding_id, content summarizing the finding, and stage="stage1".

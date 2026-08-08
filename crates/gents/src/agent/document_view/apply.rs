@@ -3,7 +3,8 @@ use defra_node::EmbeddedNode;
 
 use crate::backend_registry::lookup_backend_by_doc_id;
 use crate::document_config::{
-    load_agent_behavior_by_doc_id, load_agent_principal_by_doc_id, load_event_trigger_by_doc_id,
+    load_agent_behavior_by_doc_id, load_agent_principal_by_doc_id,
+    load_datastore_tool_surface_by_doc_id, load_event_trigger_by_doc_id,
     load_inference_profile_by_doc_id, load_schedule_by_doc_id, load_skill_by_doc_id,
     load_task_by_doc_id, load_tool_selection_by_doc_id,
 };
@@ -100,6 +101,32 @@ pub(crate) async fn apply_control_update(
     }
     if view.has_skill_doc_id(doc_id) {
         view.remove_skill_by_doc_id(doc_id);
+        return Ok(ControlUpdateOutcome::Applied);
+    }
+
+    if let Some((loaded_doc_id, surface)) =
+        load_datastore_tool_surface_by_doc_id(node, doc_id).await?
+    {
+        if surface.agent_did != agent_did {
+            // Ownership moved away: drop the grant now rather than serving the
+            // stale copy until restart.
+            if view.remove_datastore_tool_surface_by_doc_id(doc_id) {
+                return Ok(ControlUpdateOutcome::Applied);
+            }
+            return Ok(ControlUpdateOutcome::Irrelevant);
+        }
+        view.remove_datastore_tool_surface_by_doc_id(doc_id);
+        view.datastore_tool_surfaces.insert(
+            surface.surface_id.clone(),
+            DocumentRecord {
+                doc_id: loaded_doc_id,
+                value: surface,
+            },
+        );
+        return Ok(ControlUpdateOutcome::Applied);
+    }
+    if view.has_datastore_tool_surface_doc_id(doc_id) {
+        view.remove_datastore_tool_surface_by_doc_id(doc_id);
         return Ok(ControlUpdateOutcome::Applied);
     }
 

@@ -27,11 +27,12 @@ mod lean_vocab_test;
 
 const CONFIG_IMPORT_BATCH_SIZE: usize = 50;
 
-const CONFIG_APPLY_ORDER: [Collection; 12] = [
+const CONFIG_APPLY_ORDER: [Collection; 13] = [
     Collection::PeerPairingDesired,
     Collection::InferenceBackend,
     Collection::InferenceProfile,
     Collection::ToolServiceRegistry,
+    Collection::DatastoreToolSurface,
     Collection::ToolSelection,
     Collection::Skill,
     Collection::AgentBehavior,
@@ -42,7 +43,7 @@ const CONFIG_APPLY_ORDER: [Collection; 12] = [
     Collection::AgentPrincipal,
 ];
 
-const CONFIG_PRUNE_ORDER: [Collection; 12] = [
+const CONFIG_PRUNE_ORDER: [Collection; 13] = [
     Collection::AgentPrincipal,
     Collection::EventTrigger,
     Collection::Schedule,
@@ -51,6 +52,7 @@ const CONFIG_PRUNE_ORDER: [Collection; 12] = [
     Collection::AgentBehavior,
     Collection::Skill,
     Collection::ToolSelection,
+    Collection::DatastoreToolSurface,
     Collection::ToolServiceRegistry,
     Collection::InferenceProfile,
     Collection::InferenceBackend,

@@ -165,7 +165,7 @@ pub fn is_reserved_builtin_tool_name(name: &str) -> bool {
 ///
 /// This mirrors how `subagent_targets` survives the GraphQL `[String]` round-trip
 /// while keeping the manifest-facing shape a structured list of objects.
-fn deserialize_optional_write_tools<'de, D>(
+pub(crate) fn deserialize_optional_write_tools<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<Vec<WriteToolDecl>>, D::Error>
 where
@@ -321,6 +321,13 @@ pub struct ToolSelectionDocument {
     pub defra_query_collections: Option<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_optional_write_tools")]
     pub write_tools: Option<Vec<WriteToolDecl>>,
+    /// Bare `surface_id` refs to same-agent `DatastoreToolSurface` docs.
+    /// Expanded into create tools at snapshot build (fail-closed).
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_optional_string_vec"
+    )]
+    pub datastore_tool_surface_ids: Option<Vec<String>>,
     /// Self-configuration gate (#654): opt-in, never backfilled true.
     pub enable_self_config: Option<bool>,
     /// Self-config category allowlist; unset means the core spine
@@ -619,6 +626,7 @@ pub(crate) async fn load_tool_selection_record(
                 enable_defra_query
                 defra_query_collections
                 write_tools
+                datastore_tool_surface_ids
                 enable_self_config
                 self_config_categories
                 self_config_no_lockout
@@ -683,6 +691,7 @@ pub(crate) async fn load_tool_selection_by_doc_id(
                 enable_defra_query
                 defra_query_collections
                 write_tools
+                datastore_tool_surface_ids
                 enable_self_config
                 self_config_categories
                 self_config_no_lockout
@@ -747,6 +756,7 @@ pub(crate) async fn list_tool_selection_records(
                 enable_defra_query
                 defra_query_collections
                 write_tools
+                datastore_tool_surface_ids
                 enable_self_config
                 self_config_categories
                 self_config_no_lockout
@@ -805,6 +815,7 @@ pub(crate) async fn list_all_tool_selection_records(
                 enable_defra_query
                 defra_query_collections
                 write_tools
+                datastore_tool_surface_ids
                 enable_self_config
                 self_config_categories
                 self_config_no_lockout
@@ -941,6 +952,10 @@ pub async fn upsert_tool_selection(
             selection.defra_query_collections.as_deref(),
         ),
         graphql_write_tools_field(selection.write_tools.as_deref()),
+        graphql_fields::graphql_string_list_field(
+            "datastore_tool_surface_ids",
+            selection.datastore_tool_surface_ids.as_deref(),
+        ),
         graphql_fields::graphql_optional_bool_field(
             "enable_self_config",
             selection.enable_self_config,
@@ -1077,6 +1092,10 @@ pub async fn upsert_tool_selection(
             selection.defra_query_collections.as_deref(),
         ),
         graphql_write_tools_field(selection.write_tools.as_deref()),
+        graphql_fields::graphql_string_list_field(
+            "datastore_tool_surface_ids",
+            selection.datastore_tool_surface_ids.as_deref(),
+        ),
         graphql_fields::graphql_optional_bool_field(
             "enable_self_config",
             selection.enable_self_config,

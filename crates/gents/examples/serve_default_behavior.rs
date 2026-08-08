@@ -153,6 +153,7 @@ async fn seed_demo_documents(
             enable_defra_query: None,
             defra_query_collections: None,
             write_tools: None,
+            datastore_tool_surface_ids: None,
             enable_self_config: None,
             self_config_categories: None,
             self_config_no_lockout: None,

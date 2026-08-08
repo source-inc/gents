@@ -752,6 +752,7 @@ pub(crate) fn tool_selection_for_package(
         enable_defra_query: Some(enable_defra_query),
         defra_query_collections: Some(defra_query_collections),
         write_tools: None,
+        datastore_tool_surface_ids: None,
         enable_self_config: None,
         self_config_categories: None,
         self_config_no_lockout: None,

@@ -173,6 +173,8 @@ pub(crate) struct DesiredToolSelection {
     #[serde(default, deserialize_with = "deserialize_write_tools_storage")]
     pub(crate) write_tools: Vec<String>,
     #[serde(default)]
+    pub(crate) datastore_tool_surface_ids: Vec<String>,
+    #[serde(default)]
     pub(crate) subagent_spawn_enabled: bool,
     #[serde(default)]
     pub(crate) orchestration_enabled: bool,
@@ -246,6 +248,19 @@ pub(crate) struct DesiredSkill {
     #[serde(default)]
     pub(crate) interface_json: Option<String>,
     pub(crate) enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DesiredDatastoreToolSurface {
+    pub(crate) surface_id: String,
+    pub(crate) agent_did: String,
+    #[serde(default)]
+    pub(crate) display_name: Option<String>,
+    pub(crate) enabled: bool,
+    /// WriteToolDecl entries (objects in manifest; same dual-shape as write_tools).
+    #[serde(default, deserialize_with = "deserialize_write_tools_storage")]
+    pub(crate) entries: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -474,6 +489,7 @@ pub(crate) struct DesiredStateManifest {
     pub(crate) agent_principal: DesiredAgentPrincipal,
     pub(crate) agent_behaviors: Vec<DesiredAgentBehavior>,
     pub(crate) skills: Vec<DesiredSkill>,
+    pub(crate) datastore_tool_surfaces: Vec<DesiredDatastoreToolSurface>,
     pub(crate) tool_selections: Vec<DesiredToolSelection>,
     pub(crate) inference_backends: Vec<DesiredInferenceBackend>,
     pub(crate) inference_profiles: Vec<DesiredInferenceProfile>,
@@ -520,6 +536,7 @@ pub(crate) struct DesiredStateDiffCollections {
     pub(crate) agent_principal: DesiredStateCollectionDiff,
     pub(crate) agent_behaviors: DesiredStateCollectionDiff,
     pub(crate) skills: DesiredStateCollectionDiff,
+    pub(crate) datastore_tool_surfaces: DesiredStateCollectionDiff,
     // WorkspaceRoot has no desired-state file/GraphQL wiring yet (not part
     // of Collection::ALL) — always empty until that CRUD surface lands.
     pub(crate) workspace_roots: DesiredStateCollectionDiff,
@@ -540,6 +557,7 @@ impl DesiredStateDiffCollections {
             Collection::AgentPrincipal => &self.agent_principal,
             Collection::AgentBehavior => &self.agent_behaviors,
             Collection::Skill => &self.skills,
+            Collection::DatastoreToolSurface => &self.datastore_tool_surfaces,
             Collection::WorkspaceRoot => &self.workspace_roots,
             Collection::ToolSelection => &self.tool_selections,
             Collection::InferenceBackend => &self.inference_backends,
@@ -558,6 +576,7 @@ impl DesiredStateDiffCollections {
             Collection::AgentPrincipal => &mut self.agent_principal,
             Collection::AgentBehavior => &mut self.agent_behaviors,
             Collection::Skill => &mut self.skills,
+            Collection::DatastoreToolSurface => &mut self.datastore_tool_surfaces,
             Collection::WorkspaceRoot => &mut self.workspace_roots,
             Collection::ToolSelection => &mut self.tool_selections,
             Collection::InferenceBackend => &mut self.inference_backends,
@@ -586,6 +605,7 @@ impl DesiredStateDiffCollections {
             agent_principal: self.agent_principal.counts(),
             agent_behaviors: self.agent_behaviors.counts(),
             skills: self.skills.counts(),
+            datastore_tool_surfaces: self.datastore_tool_surfaces.counts(),
             workspace_roots: self.workspace_roots.counts(),
             tool_selections: self.tool_selections.counts(),
             inference_backends: self.inference_backends.counts(),
@@ -605,6 +625,7 @@ pub(crate) struct DesiredStateDiffCollectionsCounts {
     pub(crate) agent_principal: DesiredStateDiffCounts,
     pub(crate) agent_behaviors: DesiredStateDiffCounts,
     pub(crate) skills: DesiredStateDiffCounts,
+    pub(crate) datastore_tool_surfaces: DesiredStateDiffCounts,
     pub(crate) workspace_roots: DesiredStateDiffCounts,
     pub(crate) tool_selections: DesiredStateDiffCounts,
     pub(crate) inference_backends: DesiredStateDiffCounts,
@@ -630,6 +651,7 @@ impl DesiredStateDiffCollectionsCounts {
             Collection::AgentPrincipal => &self.agent_principal,
             Collection::AgentBehavior => &self.agent_behaviors,
             Collection::Skill => &self.skills,
+            Collection::DatastoreToolSurface => &self.datastore_tool_surfaces,
             Collection::WorkspaceRoot => &self.workspace_roots,
             Collection::ToolSelection => &self.tool_selections,
             Collection::InferenceBackend => &self.inference_backends,
@@ -673,6 +695,7 @@ pub(crate) struct DesiredStateCounts {
     pub(crate) agent_principal: usize,
     pub(crate) agent_behaviors: usize,
     pub(crate) skills: usize,
+    pub(crate) datastore_tool_surfaces: usize,
     pub(crate) tool_selections: usize,
     pub(crate) inference_backends: usize,
     pub(crate) inference_profiles: usize,
@@ -690,6 +713,7 @@ impl DesiredStateCounts {
             agent_principal: 0,
             agent_behaviors: 0,
             skills: 0,
+            datastore_tool_surfaces: 0,
             tool_selections: 0,
             inference_backends: 0,
             inference_profiles: 0,
@@ -739,6 +763,11 @@ impl DesiredFields for DesiredToolSelection {
 impl DesiredFields for DesiredSkill {
     fn collection_tag(&self) -> &'static str {
         "skills"
+    }
+}
+impl DesiredFields for DesiredDatastoreToolSurface {
+    fn collection_tag(&self) -> &'static str {
+        "datastore_tool_surfaces"
     }
 }
 impl DesiredFields for DesiredInferenceBackend {
@@ -800,6 +829,11 @@ impl HasUniqueId for DesiredToolSelection {
 impl HasUniqueId for DesiredSkill {
     fn unique_id(&self) -> &str {
         &self.skill_id
+    }
+}
+impl HasUniqueId for DesiredDatastoreToolSurface {
+    fn unique_id(&self) -> &str {
+        &self.surface_id
     }
 }
 impl HasUniqueId for DesiredInferenceBackend {

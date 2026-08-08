@@ -1,0 +1,6 @@
+type ExperimentFinding {
+  job_id: String
+  finding_id: String
+  content: String
+  stage: String
+}

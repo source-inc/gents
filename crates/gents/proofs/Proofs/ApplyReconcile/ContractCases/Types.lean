@@ -86,6 +86,7 @@ def collectionName : Collection → String
   | .agentPrincipal => "AgentPrincipal"
   | .agentBehavior => "AgentBehavior"
   | .skill => "Skill"
+  | .datastoreToolSurface => "DatastoreToolSurface"
   | .toolSelection => "ToolSelection"
   | .inferenceBackend => "InferenceBackend"
   | .inferenceProfile => "InferenceProfile"
@@ -100,6 +101,7 @@ def collectionUniqueField : Collection → String
   | .agentPrincipal => "agent_did"
   | .agentBehavior => "behavior_id"
   | .skill => "skill_id"
+  | .datastoreToolSurface => "surface_id"
   | .toolSelection => "selection_id"
   | .inferenceBackend => "backend_id"
   | .inferenceProfile => "profile_id"
@@ -110,11 +112,13 @@ def collectionUniqueField : Collection → String
   | .schedule => "schedule_id"
   | .eventTrigger => "trigger_id"
 
+-- Mirrors crates/gents-cli CONFIG_APPLY_ORDER: surfaces before tool selections.
 def productionWriteOrder : List Collection :=
   [ .peerPairingDesired
   , .inferenceBackend
   , .inferenceProfile
   , .toolServiceRegistry
+  , .datastoreToolSurface
   , .toolSelection
   , .skill
   , .agentBehavior

@@ -270,6 +270,7 @@ mod tests {
             agent_principal: None,
             agent_behaviors,
             skills: Vec::new(),
+            datastore_tool_surfaces: Vec::new(),
             workspace_roots: Vec::new(),
             tool_selections,
             inference_backends,

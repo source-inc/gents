@@ -98,6 +98,80 @@ fn set_codex_shim_health(handle: &CodexShimHealthHandle, health: CodexShimHealth
     }
 }
 
+/// Apply a self-contained pack (optional `schemas/` then desired-state) to the
+/// server's live node after readiness. Rebinds placeholder DIDs to the home
+/// principal so checked-in experiment packs work without hand-editing.
+async fn apply_pack_after_ready(
+    node: Arc<EmbeddedNode>,
+    home_dir: &Path,
+    root: &Path,
+    prune: bool,
+) -> Result<Value> {
+    use crate::cli::ManifestAgentDidBindingArg;
+    use crate::commands::config::apply::apply_bound_desired_manifest;
+    use crate::commands::config::binding::{load_bound_manifest, ManifestBindingOptions};
+    use crate::commands::schema::apply_pack_schemas_if_present;
+    use crate::config_writes::ConfigAccess;
+
+    if !root.is_dir() {
+        anyhow::bail!("--apply-root is not a directory: {}", root.display());
+    }
+
+    eprintln!(
+        "Applying pack {} to in-process node (schemas/ if present, then config)…",
+        root.display()
+    );
+
+    let access = ConfigAccess::Local(node);
+    let schemas = apply_pack_schemas_if_present(&access, root)
+        .await
+        .with_context(|| format!("pack schemas under {}", root.display()))?;
+    if let Some(phase) = schemas.as_ref() {
+        eprintln!(
+            "  schemas: {} ({} SDL file(s))",
+            phase.status,
+            phase.schema_files.len()
+        );
+    }
+
+    let bound = load_bound_manifest(ManifestBindingOptions {
+        root,
+        home: Some(home_dir),
+        graphql: None,
+        bind_agent_did: Some(ManifestAgentDidBindingArg::Home),
+        force_rebind_concrete_did: true,
+        access: Some(&access),
+    })
+    .await?
+    .require_valid()?;
+
+    let mut report = apply_bound_desired_manifest(root, &access, &bound, prune).await?;
+    report.schemas = schemas;
+    if report
+        .schemas
+        .as_ref()
+        .is_some_and(crate::commands::schema::PackSchemaPhase::changed)
+        && report.status == "noop"
+    {
+        report.status = "applied";
+        report.changed = true;
+    }
+
+    eprintln!(
+        "  config apply: status={} ok={} agent_did={}",
+        report.status, report.ok, report.agent_did
+    );
+    if !report.ok {
+        anyhow::bail!(
+            "pack apply did not converge for {} (status={})",
+            root.display(),
+            report.status
+        );
+    }
+
+    serde_json::to_value(&report).context("serializing pack apply report")
+}
+
 fn spawn_codex_shim_supervisor(
     bind_args: CodexShimBindArgs,
     bound_behavior_id: String,
@@ -585,6 +659,27 @@ pub(crate) async fn serve_with_control(
         }
     };
 
+    // Optional pack apply against the same in-process node (schemas/ first,
+    // then desired-state). Uses Local access so collection registration works
+    // without a separate home open / remote schema API.
+    let pack_apply = if let Some(root) = args.apply_root.as_ref() {
+        Some(
+            apply_pack_after_ready(node.clone(), &home_dir, root, args.apply_prune)
+                .await
+                .with_context(|| {
+                    format!(
+                        "server --apply-root {} failed; the server is shutting down rather than \
+                     serving without the requested pack. Schema registration is not \
+                     transactional, so schemas/ may be partially applied — fix the pack and \
+                     restart.",
+                        root.display()
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
+
     let output = json!({
         "status": "serving",
         "behavior_readiness": behavior_readiness,
@@ -602,6 +697,7 @@ pub(crate) async fn serve_with_control(
         "p2p_listen_addresses": p2p_status.get("p2p_listen_addresses").cloned().unwrap_or_else(|| json!([])),
         "p2p_admission": p2p_status.get("p2p_admission").cloned().unwrap_or(Value::Null),
         "codex_shim": codex_shim_output,
+        "apply_root": pack_apply,
     });
     if let Some(ready) = ready {
         let _ = ready.send(output.clone());

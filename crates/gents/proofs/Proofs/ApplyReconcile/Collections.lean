@@ -10,6 +10,7 @@ inductive Collection where
   | agentPrincipal
   | agentBehavior
   | skill
+  | datastoreToolSurface
   | toolSelection
   | inferenceBackend
   | inferenceProfile
@@ -27,6 +28,7 @@ def Collection.applyOrder : Collection → Nat
   | .inferenceProfile      => 0
   | .toolServiceRegistry   => 0
   | .skill                 => 0
+  | .datastoreToolSurface  => 0
   | .peerPairingDesired    => 0
   | .agentBehavior         => 1
   | .projectionAcpBinding  => 2
@@ -73,6 +75,7 @@ example (c : Collection) : Nat :=
   | .agentPrincipal       => 3
   | .agentBehavior        => 1
   | .skill                => 0
+  | .datastoreToolSurface => 0
   | .toolSelection        => 0
   | .inferenceBackend     => 0
   | .inferenceProfile     => 0
@@ -89,6 +92,7 @@ theorem applyOrder_matches_parity_contract : ∀ c : Collection,
        | .agentPrincipal       => 3
        | .agentBehavior        => 1
        | .skill                => 0
+       | .datastoreToolSurface => 0
        | .toolSelection        => 0
        | .inferenceBackend     => 0
        | .inferenceProfile     => 0

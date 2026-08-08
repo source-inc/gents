@@ -1,0 +1,6 @@
+type ExperimentJob {
+  job_id: String
+  prompt: String
+  suite: String
+  arm: String
+}

@@ -259,6 +259,7 @@ fn empty_bundle(access_mode: &str, agent_did: &str) -> ConfigExportBundle {
         agent_principal: None,
         agent_behaviors: Vec::new(),
         skills: Vec::new(),
+        datastore_tool_surfaces: Vec::new(),
         workspace_roots: Vec::new(),
         tool_selections: Vec::new(),
         inference_backends: Vec::new(),
@@ -285,6 +286,7 @@ fn push_doc(bundle: &mut ConfigExportBundle, collection: Collection, doc: Value)
     match collection {
         Collection::AgentBehavior => bundle.agent_behaviors.push(doc),
         Collection::Skill => bundle.skills.push(doc),
+        Collection::DatastoreToolSurface => bundle.datastore_tool_surfaces.push(doc),
         Collection::WorkspaceRoot => bundle.workspace_roots.push(doc),
         Collection::ToolSelection => bundle.tool_selections.push(doc),
         Collection::InferenceBackend => bundle.inference_backends.push(doc),
@@ -340,6 +342,9 @@ fn remove_target(
             .inference_profiles
             .retain(|row| row.profile_id != id),
         Collection::Skill => manifest.skills.retain(|row| row.skill_id != id),
+        Collection::DatastoreToolSurface => manifest
+            .datastore_tool_surfaces
+            .retain(|row| row.surface_id != id),
         Collection::ToolServiceRegistry => manifest
             .tool_service_registries
             .retain(|row| row.service_id != id),

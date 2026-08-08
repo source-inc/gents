@@ -274,6 +274,8 @@ pub(crate) struct ConfigExportBundle {
     pub(crate) agent_behaviors: Vec<Value>,
     #[serde(default)]
     pub(crate) skills: Vec<Value>,
+    #[serde(default)]
+    pub(crate) datastore_tool_surfaces: Vec<Value>,
     // WorkspaceRoot is registered (schema layer, #714-adjacent persona
     // catalog work) but not yet part of the desired-state CRUD surface
     // (CONFIG_APPLY_ORDER/DesiredStateManifest); this stays empty until a
@@ -306,6 +308,7 @@ impl ConfigExportBundle {
             Collection::AgentPrincipal => None,
             Collection::AgentBehavior => Some(&self.agent_behaviors),
             Collection::Skill => Some(&self.skills),
+            Collection::DatastoreToolSurface => Some(&self.datastore_tool_surfaces),
             Collection::WorkspaceRoot => Some(&self.workspace_roots),
             Collection::ToolSelection => Some(&self.tool_selections),
             Collection::InferenceBackend => Some(&self.inference_backends),
@@ -325,6 +328,7 @@ pub(crate) struct ConfigApplyCounts {
     pub(crate) agent_principal: usize,
     pub(crate) agent_behaviors: usize,
     pub(crate) skills: usize,
+    pub(crate) datastore_tool_surfaces: usize,
     pub(crate) workspace_roots: usize,
     pub(crate) tool_selections: usize,
     pub(crate) inference_backends: usize,
@@ -343,6 +347,7 @@ impl ConfigApplyCounts {
             Collection::AgentPrincipal => self.agent_principal,
             Collection::AgentBehavior => self.agent_behaviors,
             Collection::Skill => self.skills,
+            Collection::DatastoreToolSurface => self.datastore_tool_surfaces,
             Collection::WorkspaceRoot => self.workspace_roots,
             Collection::ToolSelection => self.tool_selections,
             Collection::InferenceBackend => self.inference_backends,
@@ -361,6 +366,7 @@ impl ConfigApplyCounts {
             Collection::AgentPrincipal => self.agent_principal = count,
             Collection::AgentBehavior => self.agent_behaviors = count,
             Collection::Skill => self.skills = count,
+            Collection::DatastoreToolSurface => self.datastore_tool_surfaces = count,
             Collection::WorkspaceRoot => self.workspace_roots = count,
             Collection::ToolSelection => self.tool_selections = count,
             Collection::InferenceBackend => self.inference_backends = count,
@@ -379,6 +385,7 @@ impl ConfigApplyCounts {
             Collection::AgentPrincipal => self.agent_principal += count,
             Collection::AgentBehavior => self.agent_behaviors += count,
             Collection::Skill => self.skills += count,
+            Collection::DatastoreToolSurface => self.datastore_tool_surfaces += count,
             Collection::WorkspaceRoot => self.workspace_roots += count,
             Collection::ToolSelection => self.tool_selections += count,
             Collection::InferenceBackend => self.inference_backends += count,
@@ -420,6 +427,9 @@ pub(crate) struct ConfigApplyReport {
     pub(crate) root: String,
     pub(crate) access_mode: String,
     pub(crate) agent_did: String,
+    /// Present when `<root>/schemas/` existed and was applied before config.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) schemas: Option<crate::commands::schema::PackSchemaPhase>,
     pub(crate) planned: desired_state::DesiredStateDiffCollectionsCounts,
     pub(crate) applied: ConfigApplyCounts,
     pub(crate) pruned: ConfigApplyCounts,

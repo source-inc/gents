@@ -197,6 +197,7 @@ fn counts_for_manifest(manifest: &DesiredStateManifest) -> DesiredStateCounts {
         agent_principal: 1,
         agent_behaviors: manifest.agent_behaviors.len(),
         skills: manifest.skills.len(),
+        datastore_tool_surfaces: manifest.datastore_tool_surfaces.len(),
         tool_selections: manifest.tool_selections.len(),
         inference_backends: manifest.inference_backends.len(),
         inference_profiles: manifest.inference_profiles.len(),
@@ -353,8 +354,19 @@ fn manifest_agent_dids(manifest: &DesiredStateManifest) -> BTreeSet<String> {
     for behavior in &manifest.agent_behaviors {
         insert_nonempty(&mut dids, &behavior.agent_did);
     }
+    for skill in &manifest.skills {
+        insert_nonempty(&mut dids, &skill.agent_did);
+    }
+    for surface in &manifest.datastore_tool_surfaces {
+        insert_nonempty(&mut dids, &surface.agent_did);
+    }
     for selection in &manifest.tool_selections {
         insert_nonempty(&mut dids, &selection.agent_did);
+    }
+    for binding in &manifest.projection_acp_bindings {
+        if let Some(agent_did) = binding.agent_did.as_deref() {
+            insert_nonempty(&mut dids, agent_did);
+        }
     }
     dids
 }
@@ -373,6 +385,12 @@ fn rebind_manifest_agent_did(manifest: &mut DesiredStateManifest, target_did: &s
     for behavior in &mut manifest.agent_behaviors {
         behavior.agent_did = target_did.to_string();
     }
+    for skill in &mut manifest.skills {
+        skill.agent_did = target_did.to_string();
+    }
+    for surface in &mut manifest.datastore_tool_surfaces {
+        surface.agent_did = target_did.to_string();
+    }
     for selection in &mut manifest.tool_selections {
         selection.agent_did = target_did.to_string();
         rebind_subagent_target_dids(
@@ -380,6 +398,15 @@ fn rebind_manifest_agent_did(manifest: &mut DesiredStateManifest, target_did: &s
             &source_local_dids,
             target_did,
         );
+    }
+    for binding in &mut manifest.projection_acp_bindings {
+        if binding
+            .agent_did
+            .as_deref()
+            .is_some_and(|did| !did.trim().is_empty())
+        {
+            binding.agent_did = Some(target_did.to_string());
+        }
     }
 }
 
@@ -412,10 +439,29 @@ fn rebind_subagent_target_dids(
     }
 }
 
+/// Errors that a DID rebind would resolve. Must cover every collection
+/// [`rebind_manifest_agent_did`] rewrites, or a stale-DID pack is rejected
+/// before the rebind that would have fixed it ever runs.
 fn is_rebindable_agent_did_error(error: &str) -> bool {
-    (error.starts_with("behavior ") || error.starts_with("tool selection "))
+    const OWNERSHIP_PREFIXES: &[&str] = &[
+        "behavior ",
+        "tool selection ",
+        "skill ",
+        "projection ACP binding ",
+    ];
+
+    if OWNERSHIP_PREFIXES
+        .iter()
+        .any(|prefix| error.starts_with(prefix))
         && error.contains(" belongs to ")
         && error.contains(" not ")
+    {
+        return true;
+    }
+
+    error.starts_with("DatastoreToolSurface ")
+        && error.contains("agent_did does not match principal")
+        || error.starts_with("tool selection ") && error.contains("owned by a different agent")
 }
 
 #[cfg(test)]
@@ -440,6 +486,7 @@ mod tests {
             },
             agent_behaviors: Vec::new(),
             skills: Vec::new(),
+            datastore_tool_surfaces: Vec::new(),
             tool_selections: Vec::new(),
             inference_backends: Vec::new(),
             inference_profiles: Vec::new(),
@@ -508,6 +555,7 @@ mod tests {
             subagent_allow_cross_deployment: false,
             cross_deployment_spawn_timeout_seconds: None,
             write_tools: Vec::new(),
+            datastore_tool_surface_ids: Vec::new(),
             enable_self_config: false,
             self_config_categories: Vec::new(),
             self_config_no_lockout: false,
@@ -520,6 +568,57 @@ mod tests {
             .iter()
             .map(|entry| SubagentTarget::parse(entry).expect("entry must parse"))
             .collect()
+    }
+
+    #[test]
+    fn rebind_rewrites_datastore_tool_surface_agent_did() {
+        use crate::desired_state::DesiredDatastoreToolSurface;
+        let mut manifest = empty_manifest(SOURCE_DID);
+        manifest
+            .datastore_tool_surfaces
+            .push(DesiredDatastoreToolSurface {
+                surface_id: "experiment-writes".to_string(),
+                agent_did: SOURCE_DID.to_string(),
+                display_name: None,
+                enabled: true,
+                entries: Vec::new(),
+            });
+        rebind_manifest_agent_did(&mut manifest, TARGET_DID);
+        assert_eq!(
+            manifest.datastore_tool_surfaces[0].agent_did, TARGET_DID,
+            "surfaces must rebind with the principal"
+        );
+    }
+
+    /// Every collection `rebind_manifest_agent_did` rewrites must have its
+    /// ownership error classified rebindable, or the rebind is skipped before
+    /// it can fix the manifest.
+    #[test]
+    fn ownership_errors_for_every_rebound_collection_are_rebindable() {
+        for error in [
+            "behavior b1 belongs to did:key:zA not did:key:zB",
+            "tool selection s1 belongs to did:key:zA not did:key:zB",
+            "skill sk1 belongs to did:key:zA not did:key:zB",
+            "projection ACP binding p1 belongs to did:key:zA not did:key:zB",
+            "DatastoreToolSurface experiment-writes agent_did does not match principal",
+            "tool selection s1 references DatastoreToolSurface experiment-writes owned by a different agent",
+        ] {
+            assert!(
+                is_rebindable_agent_did_error(error),
+                "must be rebindable: {error}"
+            );
+        }
+
+        for error in [
+            "behavior b1 references missing backend bk1",
+            "tool selection s1 references missing DatastoreToolSurface experiment-writes",
+            "DatastoreToolSurface has empty surface_id",
+        ] {
+            assert!(
+                !is_rebindable_agent_did_error(error),
+                "must not be rebindable: {error}"
+            );
+        }
     }
 
     #[test]

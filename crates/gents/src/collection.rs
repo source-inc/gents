@@ -14,6 +14,7 @@ pub enum Collection {
     AgentPrincipal,
     AgentBehavior,
     Skill,
+    DatastoreToolSurface,
     WorkspaceRoot,
     ToolSelection,
     InferenceBackend,
@@ -34,10 +35,11 @@ impl Collection {
     // variant still exists on the enum (with real graphql_type/unique_field/
     // apply_order/dir_name) so exhaustive matches over `Collection` account
     // for it; it's just excluded from the CRUD-driving `ALL` set for now.
-    pub const ALL: [Collection; 12] = [
+    pub const ALL: [Collection; 13] = [
         Collection::AgentPrincipal,
         Collection::AgentBehavior,
         Collection::Skill,
+        Collection::DatastoreToolSurface,
         Collection::ToolSelection,
         Collection::InferenceBackend,
         Collection::InferenceProfile,
@@ -61,6 +63,7 @@ impl Collection {
             Collection::AgentPrincipal => None,
             Collection::AgentBehavior => Some("agent-behaviors"),
             Collection::Skill => Some("skills"),
+            Collection::DatastoreToolSurface => Some("datastore-tool-surfaces"),
             Collection::WorkspaceRoot => Some("workspace-roots"),
             Collection::ToolSelection => Some("tool-selections"),
             Collection::InferenceBackend => Some("inference-backends"),
@@ -79,6 +82,7 @@ impl Collection {
             Collection::AgentPrincipal => "AgentPrincipal",
             Collection::AgentBehavior => "AgentBehavior",
             Collection::Skill => "Skill",
+            Collection::DatastoreToolSurface => "DatastoreToolSurface",
             Collection::WorkspaceRoot => "WorkspaceRoot",
             Collection::ToolSelection => "ToolSelection",
             Collection::InferenceBackend => "InferenceBackend",
@@ -97,6 +101,7 @@ impl Collection {
             Collection::AgentPrincipal => "agent_did",
             Collection::AgentBehavior => "behavior_id",
             Collection::Skill => "skill_id",
+            Collection::DatastoreToolSurface => "surface_id",
             Collection::WorkspaceRoot => "root_path",
             Collection::ToolSelection => "selection_id",
             Collection::InferenceBackend => "backend_id",
@@ -120,6 +125,7 @@ impl Collection {
             | Collection::InferenceProfile
             | Collection::ToolServiceRegistry
             | Collection::Skill
+            | Collection::DatastoreToolSurface
             | Collection::WorkspaceRoot
             | Collection::PeerPairingDesired => 0,
             Collection::AgentBehavior => 1,
@@ -142,6 +148,7 @@ impl fmt::Display for Collection {
             Collection::AgentPrincipal => "agent_principal",
             Collection::AgentBehavior => "agent_behaviors",
             Collection::Skill => "skills",
+            Collection::DatastoreToolSurface => "datastore_tool_surfaces",
             Collection::WorkspaceRoot => "workspace_roots",
             Collection::ToolSelection => "tool_selections",
             Collection::InferenceBackend => "inference_backends",

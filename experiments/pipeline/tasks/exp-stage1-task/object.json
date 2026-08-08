@@ -1,0 +1,9 @@
+{
+  "task_id": "exp-stage1-task",
+  "name": "exp-stage1-task",
+  "description": null,
+  "behavior_id": "exp-stage1",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}
