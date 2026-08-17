@@ -6,8 +6,8 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use defra_node::{EmbeddedNode, QueryResponse};
 use defra_p2p_adapter::{P2POperations as P2POps, ReplicationFilter, ReplicationFilters};
 use gents::agent::p2p_reconcile::{
-    conversation_like, peer_endpoint_upsert_mutation, resolve_template, scope_filter, DidSource,
-    Scope, AGENT_DIRECTORY_COLLECTION,
+    conversation_like, peer_endpoint_upsert_mutation, resolve_template, scope_filter,
+    template_schema_digest, DidSource, Scope, AGENT_DIRECTORY_COLLECTION,
 };
 use gents::graphql::escape_graphql_string;
 use gents::identity::AgentIdentity;
@@ -605,6 +605,27 @@ async fn verify_bearer_invite(
         );
     }
 
+    // Schema-digest preflight (issue #1122), before any pairing row is
+    // written (this runs ahead of every write in `pair_with_bearer_invite`):
+    // a paired client whose bundled SDLs differ from the server's reads
+    // fine but every document it authors is merge-rejected forever with no
+    // signal anywhere the user looks. The issuer stamps a digest of its
+    // template's SDLs into the (signed) invite token; recompute the same
+    // digest from this build's local schema bundle and compare. `None`
+    // means an older server minted no digest — skip silently, back-compat.
+    if let Some(remote_digest) = token.schema_digest.as_deref() {
+        let local_digest = template_schema_digest(template)
+            .context("computing local schema digest for bearer invite verification")?;
+        if local_digest != remote_digest {
+            bail!(
+                "schema mismatch: this build's bundled schemas for template '{}' (digest {local_digest}) \
+                 differ from the server's (digest {remote_digest}); documents you author would be \
+                 silently rejected. Update this app to match the server before pairing.",
+                token.template
+            );
+        }
+    }
+
     Ok(VerifiedBearerInvite {
         raw: raw.to_string(),
         token,
@@ -950,7 +971,9 @@ fn ensure_no_errors(response: &QueryResponse, label: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::client::{DesktopPaths, PrincipalIdentity};
-    use gents_protocol::bearer_token::{encode_bearer, BearerInviteToken, BEARER_TOKEN_VERSION};
+    use gents_protocol::bearer_token::{
+        decode_bearer, encode_bearer, BearerInviteToken, BEARER_TOKEN_VERSION,
+    };
 
     async fn signed_token(now: DateTime<Utc>) -> (tempfile::TempDir, PrincipalIdentity, String) {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -978,6 +1001,7 @@ mod tests {
             issued_at: now.to_rfc3339_opts(SecondsFormat::Secs, true),
             template: "conversation".into(),
             default_behavior_id: Some("default".into()),
+            schema_digest: None,
             network,
             sig: Vec::new(),
         };
@@ -986,6 +1010,46 @@ mod tests {
             .expect("sign invite");
         let encoded = encode_bearer(&token).expect("encode");
         (temp, identity, encoded)
+    }
+
+    fn resign(identity: &PrincipalIdentity, mut token: BearerInviteToken) -> String {
+        token.sig = Vec::new();
+        token.sig = identity
+            .sign(&bearer_signing_payload(&token))
+            .expect("resign");
+        encode_bearer(&token).expect("encode")
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_schema_digest_mismatch_before_any_write() {
+        let now = Utc::now();
+        let (_temp, identity, encoded) = signed_token(now).await;
+        let mut token = decode_bearer(&encoded).expect("decode");
+        token.schema_digest = Some("mismatched-digest".into());
+        let encoded = resign(&identity, token);
+
+        let error = verify_bearer_invite(&identity, &encoded, now)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("schema mismatch"), "unexpected: {error}");
+        assert!(error.contains("mismatched-digest"), "unexpected: {error}");
+    }
+
+    #[tokio::test]
+    async fn verify_accepts_matching_schema_digest() {
+        let now = Utc::now();
+        let (_temp, identity, encoded) = signed_token(now).await;
+        let mut token = decode_bearer(&encoded).expect("decode");
+        let template = resolve_template(&token.template).expect("template registered");
+        let digest = template_schema_digest(template).expect("digest computes");
+        token.schema_digest = Some(digest.clone());
+        let encoded = resign(&identity, token);
+
+        let verified = verify_bearer_invite(&identity, &encoded, now)
+            .await
+            .expect("matching digest verifies");
+        assert_eq!(verified.token.schema_digest, Some(digest));
     }
 
     #[tokio::test]

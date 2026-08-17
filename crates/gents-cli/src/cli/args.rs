@@ -2734,6 +2734,12 @@ pub(crate) struct P2pClaimArgs {
     /// The `dabear1-` bearer invite token to claim.
     #[arg(value_name = "TOKEN")]
     pub(crate) token: String,
+    /// Pair even if this build's bundled schemas don't match the digest the
+    /// issuer stamped into the invite (issue #1122). Without this, a schema
+    /// mismatch bails before any pairing row is written, since paired
+    /// writes would otherwise be silently merge-rejected by the server.
+    #[arg(long, default_value_t = false)]
+    pub(crate) allow_schema_mismatch: bool,
 }
 
 #[derive(clap::Args)]

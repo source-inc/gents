@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use chrono::{SecondsFormat, Utc};
 use flate2::{write::GzEncoder, Compression};
+use gents::agent::p2p_reconcile::templates::{resolve_template, template_schema_digest};
 use gents::{graphql::escape_graphql_string, AgentIdentity, KeyIdentity};
 use gents_protocol::bearer_token::{
     bearer_signing_payload, encode_bearer, BearerInviteToken, BEARER_TOKEN_VERSION,
@@ -113,6 +114,24 @@ async fn p2p_invite_bearer(args: P2pInviteArgs) -> Result<()> {
     } else {
         None
     };
+    // Schema-digest preflight (issue #1122): fingerprint the SDLs this
+    // build has compiled in for the exact collections this template pushes,
+    // so a claimant whose bundled schemas have drifted can refuse to pair
+    // loudly instead of silently black-holing every document it authors.
+    // Can't live as a new field on `PairingBearerClaim`/`BearerPairingReady`
+    // — both are in `gents_migration::CLIENT_AUTHORED_COLLECTIONS`
+    // (crates/gents-migration/src/registry.rs:568-610), so an SDL change
+    // there would force a baseline re-pin (fresh_apply_parity.rs) that
+    // breaks exactly the stale clients this feature warns about. The signed,
+    // pre-pairing invite token is the only channel that reaches the
+    // claimant before it authors anything.
+    let scope_template = resolve_template(&template)
+        .with_context(|| format!("resolving scope template {template} for schema digest"))?;
+    let schema_digest = Some(
+        template_schema_digest(scope_template)
+            .context("computing schema digest for bearer invite")?,
+    );
+
     let (peer_id, ticket) = resolve_invite_transport(args.home.as_deref(), &graphql).await?;
     let mut token = BearerInviteToken {
         v: BEARER_TOKEN_VERSION,
@@ -124,6 +143,7 @@ async fn p2p_invite_bearer(args: P2pInviteArgs) -> Result<()> {
         issued_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         template: template.clone(),
         default_behavior_id,
+        schema_digest,
         network,
         sig: Vec::new(),
     };

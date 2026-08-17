@@ -238,6 +238,24 @@ async fn p2p_bearer_claim_grants_membership_and_intent_end_to_end() -> Result<()
         .to_string();
     assert!(token.starts_with("dabear1-"), "unexpected token: {token}");
 
+    // Issue #1122: the invite carries a schema-digest fingerprint of the
+    // template's SDLs, computed the same way the claimant will recompute it
+    // locally. Both processes here share one binary/schema bundle, so the
+    // claim below exercises the ordinary (matching-digest) path end to end.
+    let decoded_token = gents_protocol::bearer_token::decode_bearer(&token)
+        .context("decoding minted bearer invite token")?;
+    let conversation_template =
+        gents::agent::p2p_reconcile::templates::resolve_template("conversation")
+            .context("resolving conversation scope template")?;
+    let expected_digest =
+        gents::agent::p2p_reconcile::templates::template_schema_digest(conversation_template)
+            .context("computing expected schema digest")?;
+    assert_eq!(
+        decoded_token.schema_digest,
+        Some(expected_digest),
+        "bearer invite should carry the conversation template's schema digest"
+    );
+
     let claim = run_cli_json(&home_b, &["p2p", "pairings", "claim", &token])?;
     assert_eq!(
         claim.get("status").and_then(Value::as_str),

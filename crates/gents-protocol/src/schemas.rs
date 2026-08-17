@@ -152,6 +152,27 @@ pub const ALL_COLLECTION_NAMES: &[&str] = &[
 
 pub const BRANCHABLE_COLLECTION_NAMES: &[&str] = BRANCHABLE_AGENT_COLLECTION_NAMES;
 
+/// Look up a registered collection's SDL by name (index-aligned lookup over
+/// [`ALL_COLLECTION_NAMES`]/[`ALL`], falling back to
+/// [`RUNTIME_COLLECTION_NAMES`]/[`RUNTIME_ALL`] — `InferenceBackend` is
+/// registered before reconciliation starts and lives only in the runtime
+/// set, not `ALL`, but templates like `conversation`/`machine` still push
+/// it). Used by the bearer-invite schema-digest preflight (issue #1122) to
+/// map a template's collection set to the exact SDL text this build has
+/// compiled in.
+pub fn sdl_for(name: &str) -> Option<&'static str> {
+    ALL_COLLECTION_NAMES
+        .iter()
+        .position(|candidate| *candidate == name)
+        .map(|index| ALL[index])
+        .or_else(|| {
+            RUNTIME_COLLECTION_NAMES
+                .iter()
+                .position(|candidate| *candidate == name)
+                .map(|index| RUNTIME_ALL[index])
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -187,6 +208,17 @@ mod tests {
     fn collection_names_align_with_sdl_arrays() {
         assert_eq!(ALL.len(), ALL_COLLECTION_NAMES.len());
         assert_eq!(RUNTIME_ALL.len(), RUNTIME_COLLECTION_NAMES.len());
+    }
+
+    #[test]
+    fn sdl_for_resolves_every_registered_collection_and_rejects_unknown() {
+        for (index, name) in ALL_COLLECTION_NAMES.iter().enumerate() {
+            assert_eq!(sdl_for(name), Some(ALL[index]));
+        }
+        for (index, name) in RUNTIME_COLLECTION_NAMES.iter().enumerate() {
+            assert_eq!(sdl_for(name), Some(RUNTIME_ALL[index]));
+        }
+        assert_eq!(sdl_for("NotARealCollection"), None);
     }
 
     #[test]

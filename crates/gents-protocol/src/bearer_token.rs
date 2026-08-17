@@ -46,6 +46,15 @@ pub struct BearerInviteToken {
     pub template: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_behavior_id: Option<String>,
+    /// Fingerprint of the SDLs the invite's template pushes, from
+    /// [`crate::schema_digest::schema_bundle_digest`]. `None` on invites
+    /// from a server too old to mint one (or preserved deliberately for
+    /// legacy signing-payload byte-identity, mirroring `default_behavior_id`
+    /// above) — the claimant skips the schema-mismatch preflight silently in
+    /// that case. See `crate::schema_digest` for why this rides the token
+    /// instead of a new field on a client-authored collection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_digest: Option<String>,
     pub network: NetworkRecord,
     /// Issuer DID's signature over [`bearer_signing_payload`].
     pub sig: Vec<u8>,
@@ -170,6 +179,23 @@ impl BearerPairingReadyRecord {
 mod tests {
     use super::*;
 
+    /// Shape after `default_behavior_id` shipped but before `schema_digest`
+    /// (issue #1122) — mirrors [`LegacyBearerInviteToken`] one field newer.
+    #[derive(Serialize)]
+    struct BearerInviteTokenWithBehaviorHintOnly {
+        v: u8,
+        issuer_did: String,
+        peer_id: String,
+        ticket: String,
+        nonce: String,
+        network_id: String,
+        issued_at: String,
+        template: String,
+        default_behavior_id: Option<String>,
+        network: NetworkRecord,
+        sig: Vec<u8>,
+    }
+
     #[derive(Serialize)]
     struct LegacyBearerInviteToken {
         v: u8,
@@ -206,6 +232,7 @@ mod tests {
             issued_at: "2026-07-08T00:00:00Z".into(),
             template: "conversation".into(),
             default_behavior_id: Some("default".into()),
+            schema_digest: Some("7fH3kq9mZp".into()),
             network: sample_network(),
             sig: vec![1, 2, 3],
         }
@@ -237,6 +264,10 @@ mod tests {
 
         let mut b = a.clone();
         b.default_behavior_id = Some("review".into());
+        assert_ne!(bearer_signing_payload(&a), bearer_signing_payload(&b));
+
+        let mut b = a.clone();
+        b.schema_digest = Some("differentDigest".into());
         assert_ne!(bearer_signing_payload(&a), bearer_signing_payload(&b));
 
         let mut b = a.clone();
@@ -318,6 +349,74 @@ mod tests {
 
         assert_eq!(decoded.default_behavior_id, None);
         assert_eq!(bearer_signing_payload(&decoded), legacy_bytes);
+    }
+
+    #[test]
+    fn missing_schema_digest_preserves_legacy_signing_payload() {
+        let legacy = BearerInviteTokenWithBehaviorHintOnly {
+            v: BEARER_TOKEN_VERSION,
+            issuer_did: "did:key:issuer".into(),
+            peer_id: "peer-issuer".into(),
+            ticket: "/ticket/issuer".into(),
+            nonce: "nonce-a".into(),
+            network_id: "default".into(),
+            issued_at: "2026-07-08T00:00:00Z".into(),
+            template: "conversation".into(),
+            default_behavior_id: Some("default".into()),
+            network: sample_network(),
+            sig: Vec::new(),
+        };
+        let mut legacy_bytes = Vec::new();
+        ciborium::ser::into_writer(&legacy, &mut legacy_bytes).unwrap();
+        let encoded = format!(
+            "{BEARER_TOKEN_PREFIX}{}",
+            bs58::encode(&legacy_bytes).into_string()
+        );
+
+        let decoded = decode_bearer(&encoded).unwrap();
+
+        assert_eq!(decoded.schema_digest, None);
+        assert_eq!(decoded.default_behavior_id, Some("default".into()));
+        assert_eq!(bearer_signing_payload(&decoded), legacy_bytes);
+    }
+
+    #[test]
+    fn schema_digest_round_trips_through_encode_decode() {
+        let mut t = sample_bearer(BEARER_TOKEN_VERSION);
+        t.schema_digest = Some("7fH3kq9mZp".into());
+        let enc = encode_bearer(&t).unwrap();
+        let decoded = decode_bearer(&enc).unwrap();
+        assert_eq!(decoded.schema_digest, Some("7fH3kq9mZp".into()));
+        assert_eq!(decoded, t);
+    }
+
+    #[test]
+    fn token_minted_with_schema_digest_still_verifies_its_signature() {
+        // A stand-in for `AgentIdentity::sign`/`verify` (those live in the
+        // `gents` crate, not here): a signature is just some function of the
+        // signing payload. What this crate must guarantee is that the exact
+        // bytes the issuer signed at mint time are what the claimant
+        // recomputes after decoding the wire token — including when
+        // `schema_digest` is set. If that held, any real signature scheme
+        // verifies; if it didn't, every real scheme would reject.
+        fn fake_sign(payload: &[u8]) -> Vec<u8> {
+            let mut hasher = Sha256::new();
+            hasher.update(b"fake-signing-key\x1f");
+            hasher.update(payload);
+            hasher.finalize().to_vec()
+        }
+        fn fake_verify(payload: &[u8], sig: &[u8]) -> bool {
+            fake_sign(payload) == sig
+        }
+
+        let mut t = sample_bearer(BEARER_TOKEN_VERSION);
+        t.schema_digest = Some("7fH3kq9mZp".into());
+        t.sig = Vec::new();
+        t.sig = fake_sign(&bearer_signing_payload(&t));
+
+        // Re-decode from the wire form, exactly as a claimant would.
+        let decoded = decode_bearer(&encode_bearer(&t).unwrap()).unwrap();
+        assert!(fake_verify(&bearer_signing_payload(&decoded), &decoded.sig));
     }
 
     #[test]

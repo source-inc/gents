@@ -6,6 +6,7 @@ pub mod network_token;
 pub mod pairing_token;
 pub mod rendered_request;
 pub mod row;
+pub mod schema_digest;
 pub mod schemas;
 pub mod timeline;
 pub mod transcript;

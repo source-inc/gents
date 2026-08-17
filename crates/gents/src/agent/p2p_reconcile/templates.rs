@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -440,6 +441,36 @@ pub fn resolve_template(id: &str) -> Option<&'static ScopeTemplate> {
     BUILTIN_TEMPLATES.iter().find(|t| t.id == id)
 }
 
+/// Fingerprint this build's bundled SDLs for a template's collection set
+/// (issue #1122's bearer-invite schema-digest preflight). Shared by the
+/// mint side (CLI `p2p invite --bearer`) and every claim side (CLI `p2p
+/// claim`, the desktop `verify_bearer_invite` path) so both compute the
+/// digest identically — over the exact collections the template pushes,
+/// mapped to SDL via [`gents_protocol::schemas::sdl_for`].
+///
+/// Errors if the template names a collection this build has no registered
+/// SDL for; that would mean the template catalog and the schema registry
+/// have drifted apart, which is a bug in this build, not a mismatch to
+/// report to the operator.
+pub fn template_schema_digest(template: &ScopeTemplate) -> Result<String> {
+    let pairs: Vec<(&str, &str)> = template
+        .collections
+        .iter()
+        .map(|&name| {
+            gents_protocol::schemas::sdl_for(name)
+                .map(|sdl| (name, sdl))
+                .with_context(|| {
+                    format!(
+                        "template '{}' references collection '{name}' with no registered SDL \
+                         in this build",
+                        template.id
+                    )
+                })
+        })
+        .collect::<Result<_>>()?;
+    Ok(gents_protocol::schema_digest::schema_bundle_digest(&pairs))
+}
+
 /// Build per-collection `PairingFilters` for a template scope against a
 /// concrete peer/local DID pair.
 ///
@@ -722,6 +753,37 @@ mod tests {
                 value: "did:key:phone".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn template_schema_digest_resolves_every_builtin_templates_collections() {
+        for template in builtin_templates() {
+            if template.collections.is_empty() {
+                // app-collections brings its own collection set at pairing
+                // time; there is nothing static to fingerprint.
+                continue;
+            }
+            let digest = template_schema_digest(template)
+                .unwrap_or_else(|err| panic!("template '{}': {err}", template.id));
+            assert!(!digest.is_empty());
+        }
+    }
+
+    #[test]
+    fn template_schema_digest_is_stable_and_rejects_unregistered_collections() {
+        let machine = resolve_template("machine").expect("machine template registered");
+        let a = template_schema_digest(machine).unwrap();
+        let b = template_schema_digest(machine).unwrap();
+        assert_eq!(a, b);
+
+        let bogus = ScopeTemplate {
+            id: "bogus",
+            collections: &["NotARealCollection"],
+            scope: Scope::Unscoped,
+            delivery: Delivery::Push,
+        };
+        let err = template_schema_digest(&bogus).unwrap_err().to_string();
+        assert!(err.contains("NotARealCollection"), "unexpected: {err}");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{SecondsFormat, Utc};
+use gents::agent::p2p_reconcile::templates::{resolve_template, template_schema_digest};
 use gents::graphql::escape_graphql_string;
 use gents_protocol::bearer_token::{
     bearer_signing_payload, check_bearer_freshness, decode_bearer, BearerClaimRecord,
@@ -73,6 +74,24 @@ pub(super) async fn p2p_claim(args: P2pClaimArgs) -> Result<()> {
         .await
         .context("loading local AgentNetwork before claim")?;
     check_local_network_match(local_network.as_ref(), &token)?;
+
+    // Schema-digest preflight (issue #1122), before any pairing row is
+    // written: a paired client whose bundled SDLs differ from the server's
+    // reads fine but every document it authors is merge-rejected forever
+    // with no signal anywhere the user looks. The issuer stamps a digest of
+    // its template's SDLs into the (signed) invite token — recompute the
+    // same digest from this build's local schema bundle and compare before
+    // committing to the pairing.
+    let scope_template = resolve_template(&template)
+        .with_context(|| format!("resolving scope template {template} for schema digest"))?;
+    let local_schema_digest = template_schema_digest(scope_template)
+        .context("computing local schema digest for bearer claim")?;
+    check_schema_digest(
+        &template,
+        &local_schema_digest,
+        token.schema_digest.as_deref(),
+        args.allow_schema_mismatch,
+    )?;
 
     write_agent_network(&access, &token.network).await?;
 
@@ -207,6 +226,42 @@ fn check_local_network_match(
     Ok(())
 }
 
+/// Compares the local schema-bundle digest against the digest the issuer
+/// stamped into the invite token. `remote_digest` is `None` for invites
+/// minted by a server too old to compute one — back-compat, skip silently.
+/// On a mismatch: bail naming both digests unless `allow_mismatch`, in which
+/// case downgrade to a loud warning and proceed.
+fn check_schema_digest(
+    template_id: &str,
+    local_digest: &str,
+    remote_digest: Option<&str>,
+    allow_mismatch: bool,
+) -> Result<()> {
+    let Some(remote_digest) = remote_digest else {
+        return Ok(());
+    };
+    if remote_digest == local_digest {
+        return Ok(());
+    }
+    if allow_mismatch {
+        let message = format!(
+            "schema mismatch: this build's bundled schemas for template '{template_id}' \
+             (digest {local_digest}) differ from the server's (digest {remote_digest}); \
+             documents you author may be silently rejected. Pairing anyway because \
+             --allow-schema-mismatch was set."
+        );
+        tracing::warn!("{message}");
+        eprintln!("{message}");
+        return Ok(());
+    }
+    anyhow::bail!(
+        "schema mismatch: this build's bundled schemas for template '{template_id}' (digest \
+         {local_digest}) differ from the server's (digest {remote_digest}); documents you \
+         author would be silently rejected. Update this build to match the server, or re-run \
+         with --allow-schema-mismatch to pair anyway."
+    );
+}
+
 fn bearer_claim_create_mutation(record: &BearerClaimRecord) -> String {
     let token = escape_graphql_string(&record.token);
     let claimant_did = escape_graphql_string(&record.claimant_did);
@@ -255,6 +310,7 @@ mod tests {
             issued_at: "2026-07-08T00:00:00Z".into(),
             template: "conversation".into(),
             default_behavior_id: Some("default".into()),
+            schema_digest: None,
             network: network_rec,
             sig: vec![2],
         }
@@ -316,5 +372,38 @@ mod tests {
         assert!(mutation.contains("claimant_did: \"did:key:phone\""));
         assert!(mutation.contains("binding_sig: "));
         assert!(!mutation.contains("[]"));
+    }
+
+    #[test]
+    fn schema_digest_mismatch_bails_naming_both_digests() {
+        let err = check_schema_digest("machine", "localDigest1", Some("remoteDigest2"), false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("schema mismatch"), "unexpected: {err}");
+        assert!(err.contains("machine"), "unexpected: {err}");
+        assert!(err.contains("localDigest1"), "unexpected: {err}");
+        assert!(err.contains("remoteDigest2"), "unexpected: {err}");
+        assert!(
+            err.contains("--allow-schema-mismatch"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn schema_digest_mismatch_with_allow_flag_proceeds() {
+        let result = check_schema_digest("machine", "localDigest1", Some("remoteDigest2"), true);
+        assert!(result.is_ok(), "expected override to proceed: {result:?}");
+    }
+
+    #[test]
+    fn schema_digest_match_proceeds() {
+        let result = check_schema_digest("machine", "sameDigest", Some("sameDigest"), false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn missing_remote_schema_digest_proceeds_silently_for_back_compat() {
+        let result = check_schema_digest("machine", "localDigest1", None, false);
+        assert!(result.is_ok());
     }
 }

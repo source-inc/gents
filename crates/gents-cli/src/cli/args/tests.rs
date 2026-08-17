@@ -505,6 +505,21 @@ fn parse_p2p_join(extra: &[&str]) -> P2pJoinArgs {
     }
 }
 
+fn parse_p2p_claim(extra: &[&str]) -> P2pClaimArgs {
+    let mut argv = vec!["gents", "p2p", "pairings", "claim", "dabear1-token"];
+    argv.extend_from_slice(extra);
+    let cli = Cli::try_parse_from(argv).expect("p2p pairings claim should parse");
+    match cli.command {
+        Command::P2p {
+            command:
+                P2pCommand::Pairings {
+                    command: P2pPairingsCommand::Claim(args),
+                },
+        } => args,
+        _ => panic!("expected `p2p pairings claim`"),
+    }
+}
+
 fn parse_p2p_replicator_add(extra: &[&str]) -> P2pReplicatorAddArgs {
     let mut argv = vec![
         "gents",
@@ -538,6 +553,16 @@ fn p2p_invite_template_defaults_to_conversation() {
     let args = parse_p2p_invite(&[]);
     assert_eq!(args.template, "conversation");
     assert_eq!(args.member_did, None);
+}
+
+#[test]
+fn p2p_claim_allow_schema_mismatch_defaults_false_and_parses() {
+    let args = parse_p2p_claim(&[]);
+    assert_eq!(args.token, "dabear1-token");
+    assert!(!args.allow_schema_mismatch);
+
+    let args = parse_p2p_claim(&["--allow-schema-mismatch"]);
+    assert!(args.allow_schema_mismatch);
 }
 
 #[test]
