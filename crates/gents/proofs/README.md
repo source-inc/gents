@@ -17,6 +17,7 @@ The proofs are strongest where the runtime is a state machine:
 - inference-call lifecycle, cancellation transitions, and slot reconstruction
 - scheduler and fleet slot accounting from persisted call rows
 - session retry/reissue
+- tenant-safe, on-demand session hydration admission and document selection
 - runtime reconcile generation publication
 - desired-state apply ordering and field ownership
 - task, schedule, and event-trigger dispatch
@@ -184,6 +185,7 @@ and either tested at the Rust boundary or treated as an external assumption.
 | `Proofs/Scheduling.lean` | Scheduler/backend slot state |
 | `Proofs/Fleet.lean` | Barrel for fleet state, transitions, executable semantics, and slot accounting |
 | `Proofs/SessionRecovery.lean` | Retry/reissue model for session-linked requests |
+| `Proofs/SessionHydration/` | Paired-member admission, exact requester/agent/session document selection, terminality, idempotent crash re-drive, and pairing non-interference (#1142). Fence: `tests/conformance/session_hydration.rs`. Network delivery remains an explicit DefraDB boundary until its existing targeted doc-pusher is exposed through the node API. |
 | `Proofs/CompletionRetry.lean` | Barrel for per-completion retry state, transitions, executable semantics, and budget/deadline/effects properties |
 | `Proofs/RuntimeReconcile.lean` | Barrel for runtime reconcile state, relational transitions, and executable semantics |
 | `Proofs/ApplyReconcile.lean` | Barrel for desired-state apply, prefix safety, runtime bridge, and convergence |

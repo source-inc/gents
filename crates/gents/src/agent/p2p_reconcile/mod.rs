@@ -14,6 +14,7 @@ pub mod persona_requests;
 pub mod profiles;
 pub mod reciprocal;
 pub mod registry;
+pub mod session_hydration;
 pub mod templates;
 pub mod trait_def;
 

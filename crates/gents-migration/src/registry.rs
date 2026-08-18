@@ -519,6 +519,11 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
         gents_protocol::schemas::PERSONA_CONFIG_REQUEST,
         "bafyreihvhau2vf2wxh6jfbyfbwdndyfsrfamfvpceghflx4m7vdaangb5q"
     ),
+    baseline_entry!(
+        gents_protocol::schemas::SESSION_HYDRATION_REQUEST_NAME,
+        gents_protocol::schemas::SESSION_HYDRATION_REQUEST,
+        "bafyreifuhe35hisrqxfuejsqf2y66rhgl26enmtwgjjmy4tapwcwmrerku"
+    ),
 ];
 
 /// Ordered post-baseline schema evolution chain.
@@ -575,7 +580,8 @@ pub fn fixture_lens_wasm() -> &'static [u8] {
 /// `AgentToolResult`, `AgentSession`, `AgentConversation`,
 /// `CompactionEntry`), pairing readiness/claim rows (`BearerPairingReady`,
 /// `PairingBearerClaim`), the signed `PeerEndpoint` heartbeat,
-/// `PersonaConfigRequest`, and the fleet-discovery `AgentDirectoryEntry`.
+/// `PersonaConfigRequest`, `SessionHydrationRequest`, and the fleet-discovery
+/// `AgentDirectoryEntry`.
 ///
 /// A client mints its store from the collection's *current* SDL with no
 /// server-side history: a single `add_schema` call produces a genesis
@@ -621,5 +627,6 @@ pub const CLIENT_AUTHORED_COLLECTIONS: &[&str] = &[
     gents_protocol::schemas::PAIRING_BEARER_CLAIM_NAME,
     gents_protocol::schemas::PEER_ENDPOINT_NAME,
     gents_protocol::schemas::PERSONA_CONFIG_REQUEST_NAME,
+    gents_protocol::schemas::SESSION_HYDRATION_REQUEST_NAME,
     gents_protocol::schemas::AGENT_DIRECTORY_ENTRY_NAME,
 ];

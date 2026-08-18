@@ -8,6 +8,7 @@ import Proofs.InferenceCall
 import Proofs.CrossMachineComposed
 import Proofs.Fleet
 import Proofs.SessionRecovery
+import Proofs.SessionHydration
 import Proofs.Session.Properties
 import Proofs.Transcript
 import Proofs.Compaction

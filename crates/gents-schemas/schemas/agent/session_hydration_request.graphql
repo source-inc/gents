@@ -1,0 +1,19 @@
+# A client-authored request for the server to replay one owned session's
+# transcript documents to the requesting peer. This row is a request, not a
+# grant: server admission checks pairing, active membership, session ownership,
+# and every selected document's requester lineage before delivery.
+#
+# `@branchable` is required because the row crosses the machine pairing.
+type SessionHydrationRequest @branchable {
+    request_key: String @index(unique: true) @immutable
+    # The machine-template pushback filter uses this immutable field.
+    requester_did: String @index @immutable
+    agent_did: String @immutable
+    session_id: String @immutable
+    created_at: DateTime
+    # Server-written outcome. pending | served | rejected.
+    status: String @index
+    status_detail: String
+    served_doc_count: Int
+    processed_at: DateTime
+}
