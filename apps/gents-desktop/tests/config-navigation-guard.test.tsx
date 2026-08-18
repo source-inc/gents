@@ -2,13 +2,24 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ConfigWorkspace } from "../src/components/ConfigWorkspace";
+import { ConfigNavigationGuardBoundary } from "../src/components/config/ConfigNavigationGuard";
+import { useConfigNavigationGuard } from "../src/components/config/ConfigNavigationGuard";
 import {
   bootstrap,
   deployment,
   workspaceHandlers,
 } from "./config-panel-wiring/fixtures";
 
-function renderWorkspace() {
+function ExternalNavigationProbe({ onNavigate }: { onNavigate: () => void }) {
+  const { requestNavigation } = useConfigNavigationGuard();
+  return (
+    <button onClick={() => requestNavigation(onNavigate)} type="button">
+      Fleet destination
+    </button>
+  );
+}
+
+function renderWorkspace(onExternalNavigate?: () => void) {
   const handlers = {
     ...workspaceHandlers(),
     onDeleteSkillConfig: vi.fn(),
@@ -23,14 +34,19 @@ function renderWorkspace() {
   };
 
   render(
-    <ConfigWorkspace
-      bootstrap={bootstrap}
-      selectedBehaviorId="default"
-      selectedDeployment={deployment}
-      saving={false}
-      runningTask={false}
-      {...handlers}
-    />,
+    <ConfigNavigationGuardBoundary>
+      <ConfigWorkspace
+        bootstrap={bootstrap}
+        selectedBehaviorId="default"
+        selectedDeployment={deployment}
+        saving={false}
+        runningTask={false}
+        {...handlers}
+      />
+      {onExternalNavigate ? (
+        <ExternalNavigationProbe onNavigate={onExternalNavigate} />
+      ) : null}
+    </ConfigNavigationGuardBoundary>,
   );
   return handlers;
 }
@@ -109,5 +125,21 @@ describe("config navigation guard", () => {
 
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
     expect(handlers.onBack).toHaveBeenCalledOnce();
+  });
+
+  it("guards destinations outside the configuration workspace", () => {
+    const onNavigate = vi.fn();
+    renderWorkspace(onNavigate);
+    editBehaviorPrompt("keep this edit during global navigation");
+
+    fireEvent.click(screen.getByRole("button", { name: "Fleet destination" }));
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("confirm-dialog-cancel"));
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Fleet destination" }));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+    expect(onNavigate).toHaveBeenCalledOnce();
   });
 });

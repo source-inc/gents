@@ -4,12 +4,13 @@ import {
   gotoHarness,
   openChat,
   openChatNavigation,
+  openAppNavigation,
   openConfigTab,
   test,
 } from "./desktopTest";
 
 test.describe("desktop sidebar workflows", () => {
-  test("connected peer actions, behavior switching, and new chats stay wired", async ({
+  test("connected peer context, behavior switching, and new chats stay wired", async ({
     page,
   }) => {
     await gotoHarness(page);
@@ -20,12 +21,14 @@ test.describe("desktop sidebar workflows", () => {
     await expect(connectedPeer).toContainText("Bombadil UI Agent");
     await expect(connectedPeer).toContainText("connected");
 
-    await connectedPeer.getByRole("button", { name: "Back to Fleet" }).click();
+    await openAppNavigation(page);
+    await page.getByTestId("app-nav-fleet").click();
     await expect(page.getByTestId("fleet-dashboard")).toBeVisible();
 
     await openChat(page);
     await openChatNavigation(page);
-    await connectedPeer.getByRole("button", { name: "Configure" }).click();
+    await openAppNavigation(page);
+    await page.getByTestId("app-nav-config").click();
     await expect(page.locator(".config-workspace")).toBeVisible();
     await page.getByTestId("config-back-tab").click();
     await openChatNavigation(page);
@@ -58,12 +61,8 @@ test.describe("desktop sidebar workflows", () => {
     await expect(taskFilter).toHaveCount(0);
     await expect(page.getByTestId("conversation-session-intro")).toBeVisible();
 
-    await page
-      .locator(".connected-peer-card")
-      .getByRole("button", {
-        name: "Configure",
-      })
-      .click();
+    await openAppNavigation(page);
+    await page.getByTestId("app-nav-config").click();
     await openConfigTab(page, "tasks");
     await page.getByTestId("task-run").click();
     await expect(page.getByTestId("task-run-status")).toContainText("request-");

@@ -23,8 +23,6 @@ describe("sidebar agent switcher", () => {
       <ConnectedPeerSection
         deployments={[dep("did:a", "Alpha"), dep("did:b", "Beta")]}
         selectedAgentDid="did:a"
-        onOpenFleet={vi.fn()}
-        onConfigureDeployment={vi.fn()}
         onSelectAgent={onSelectAgent}
       />,
     );
@@ -40,8 +38,6 @@ describe("sidebar agent switcher", () => {
       <ConnectedPeerSection
         deployments={[dep("did:a", "Alpha")]}
         selectedAgentDid="did:a"
-        onOpenFleet={vi.fn()}
-        onConfigureDeployment={vi.fn()}
         onSelectAgent={vi.fn()}
       />,
     );
@@ -49,8 +45,7 @@ describe("sidebar agent switcher", () => {
     expect(screen.getByRole("heading", { name: "Alpha" })).toBeInTheDocument();
   });
 
-  it("keeps back navigation and document counts at the top of agent details", () => {
-    const onOpenFleet = vi.fn();
+  it("keeps document counts at the top of agent details", () => {
     const deployment = {
       ...dep("did:a", "Alpha"),
       behaviors: [{ behaviorId: "default" }, { behaviorId: "review" }],
@@ -59,18 +54,11 @@ describe("sidebar agent switcher", () => {
     } as unknown as DeploymentView;
 
     render(
-      <ConnectedPeerSection
-        deployments={[deployment]}
-        selectedAgentDid="did:a"
-        onOpenFleet={onOpenFleet}
-        onConfigureDeployment={vi.fn()}
-      />,
+      <ConnectedPeerSection deployments={[deployment]} selectedAgentDid="did:a" />,
     );
 
     expect(
       screen.getByLabelText("2 behaviors, 1 conversations, 1 tasks"),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("sidebar-back-to-fleet"));
-    expect(onOpenFleet).toHaveBeenCalledOnce();
   });
 });

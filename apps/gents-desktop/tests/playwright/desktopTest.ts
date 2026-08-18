@@ -102,11 +102,18 @@ export async function openChatNavigation(page: Page) {
   await expect(sidebar).toBeVisible();
 }
 
+export async function openAppNavigation(page: Page) {
+  if ((page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) <= 760) {
+    await page.getByTestId("app-menu-trigger").click();
+    await expect(page.getByTestId("app-navigation")).toHaveClass(/drawer-open/);
+  }
+}
+
 export async function openConfig(page: Page) {
   await expect(page.getByTestId("fleet-dashboard")).toBeVisible();
   await page.getByTestId(`fleet-row-${PEER_ID}`).click();
-  await openChatNavigation(page);
-  await page.getByRole("button", { name: "Configure" }).click();
+  await openAppNavigation(page);
+  await page.getByTestId("app-nav-config").click();
   await expect(page.locator(".config-workspace")).toBeVisible();
 }
 

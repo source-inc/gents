@@ -1,4 +1,4 @@
-import { expect, gotoHarness, PEER_ID, test } from "./desktopTest";
+import { expect, gotoHarness, openAppNavigation, PEER_ID, test } from "./desktopTest";
 
 test.describe("fleet deployment navigation", () => {
   test("signed bearer invite is the primary remote pairing flow", async ({ page }) => {
@@ -30,7 +30,8 @@ test.describe("fleet deployment navigation", () => {
     await expect(page.getByTestId("fleet-dashboard")).toBeVisible();
 
     await page.getByTestId(`fleet-row-${PEER_ID}`).click();
-    await page.getByRole("button", { name: "Configure" }).click();
+    await openAppNavigation(page);
+    await page.getByTestId("app-nav-config").click();
 
     await expect(page.locator(".config-workspace")).toBeVisible();
   });

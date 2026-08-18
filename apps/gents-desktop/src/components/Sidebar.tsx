@@ -16,9 +16,6 @@ export type SidebarProps = {
   selectedAgentDid: string | null;
   selectedBehaviorId: string | null;
   selectedSessionId: string | null;
-  onOpenFleet: () => void;
-  onConfigureDeployment: (agentDid: string) => void;
-  onOpenCode?: (agentDid: string) => void;
   onSelectBehavior: (behaviorId: string) => void;
   onSelectSession: (sessionId: string) => void;
   onOpenSession?: (sessionId: string) => void;
@@ -39,9 +36,6 @@ export function Sidebar({
   selectedAgentDid,
   selectedBehaviorId,
   selectedSessionId,
-  onOpenFleet,
-  onConfigureDeployment,
-  onOpenCode,
   onSelectBehavior,
   onSelectSession,
   onOpenSession,
@@ -57,9 +51,6 @@ export function Sidebar({
         deployments={deployments}
         onSelectAgent={onSelectAgent}
         selectedAgentDid={selectedAgentDid}
-        onConfigureDeployment={onConfigureDeployment}
-        onOpenCode={onOpenCode}
-        onOpenFleet={onOpenFleet}
       />
 
       <BehaviorSelectorSection

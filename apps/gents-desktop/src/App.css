@@ -10,6 +10,7 @@
 @import "./styles/primitives/forms.css";
 @import "./styles/primitives/data.css";
 @import "./styles/shell.css";
+@import "./styles/navigation.css";
 @import "./styles/sidebar/base.css";
 @import "./styles/sidebar/connected-peer.css";
 @import "./styles/sidebar/lists.css";

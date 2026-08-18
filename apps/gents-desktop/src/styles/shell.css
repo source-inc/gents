@@ -19,6 +19,26 @@
 
   .shortcuts-help {
     min-width: 320px;
+    padding: var(--space-7) var(--space-9);
+  }
+
+  .shortcuts-help-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .shortcuts-help-close {
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    display: grid;
+    place-items: center;
+    flex: none;
+    padding: 0;
+    font-size: var(--text-xl);
+    line-height: 1;
   }
 
   .shortcuts-list {

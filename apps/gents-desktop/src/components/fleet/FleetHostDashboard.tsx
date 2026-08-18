@@ -17,9 +17,6 @@ import type {
   InferenceProbeResult,
 } from "@source-inc/gents-desktop-client";
 
-import { ThemeToggle } from "../ThemeToggle";
-import { BrandLockup } from "./BrandLockup";
-
 export type FleetHostDashboardProps = Omit<
   FleetDashboardProps,
   "brand" | "headerLeadingActions" | "localRuntimeSetup" | "renderInferenceSetup"
@@ -52,7 +49,7 @@ export function FleetHostDashboard({
   return (
     <FleetDashboard
       {...fleetProps}
-      brand={<BrandLockup />}
+      brand={null}
       copy={{
         ...fleetProps.copy,
         pairingQrHint: fleetProps.copy?.pairingQrHint ?? (
@@ -62,7 +59,7 @@ export function FleetHostDashboard({
           </>
         ),
       }}
-      headerLeadingActions={<ThemeToggle />}
+      headerLeadingActions={null}
       localRuntimeSetup={
         <LocalRuntimeConnect
           bootstrap={fleetProps.bootstrap}

@@ -3,6 +3,7 @@ import {
   captureStableScreenshot,
   expect,
   gotoHarness,
+  openAppNavigation,
   openChat,
   openChatNavigation,
   openConfig,
@@ -33,7 +34,8 @@ test.describe("desktop UI harness", () => {
     await captureStableScreenshot(page, testInfo, "chat-with-transcript");
 
     await openChatNavigation(page);
-    await page.getByRole("button", { name: "Configure" }).click();
+    await openAppNavigation(page);
+    await page.getByTestId("app-nav-config").click();
     await expect(page.locator(".config-workspace")).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Bombadil UI Agent" }),

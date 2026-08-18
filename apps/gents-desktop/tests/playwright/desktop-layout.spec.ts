@@ -2,6 +2,7 @@ import {
   expect,
   expectNoPageHorizontalOverflow,
   gotoHarness,
+  openAppNavigation,
   openChat,
   openChatNavigation,
   openConfig,
@@ -19,6 +20,40 @@ const scenarios = [
 ] as const;
 
 test.describe("desktop responsive layout guardrails", () => {
+  test("global navigation adapts between a collapsible rail and mobile drawer", async ({
+    page,
+  }) => {
+    await gotoHarness(page);
+    const navigation = page.getByTestId("app-navigation");
+    const narrow = (page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) <= 760;
+
+    if (narrow) {
+      await expect(navigation).toBeHidden();
+      await openAppNavigation(page);
+      await expect(navigation).toBeVisible();
+      await expect(navigation.getByText("Chat", { exact: true })).toBeVisible();
+      await page
+        .getByRole("button", { name: "Close navigation" })
+        .click({ position: { x: 380, y: 400 } });
+      await expect(navigation).toBeHidden();
+      return;
+    }
+
+    await expect(navigation).toBeVisible();
+    await expect(navigation.getByText("Chat", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("theme-toggle")).toBeVisible();
+    const expandedWidth = (await navigation.boundingBox())?.width ?? 0;
+
+    await page.getByTestId("app-navigation-collapse").click();
+    await expect(navigation).toHaveClass(/collapsed/);
+    await expect
+      .poll(async () => (await navigation.boundingBox())?.width ?? expandedWidth)
+      .toBeLessThan(expandedWidth);
+
+    await page.getByTestId("app-navigation-collapse").click();
+    await expect(navigation).toHaveClass(/expanded/);
+  });
+
   for (const scenario of scenarios) {
     test(`${scenario} has no page-level horizontal overflow`, async ({ page }) => {
       await gotoHarness(page, scenario);
@@ -90,7 +125,8 @@ test.describe("desktop responsive layout guardrails", () => {
     const deploymentRow = page.getByTestId(`fleet-row-${PEER_ID}`);
     await expect(deploymentRow).toBeVisible();
     await deploymentRow.click();
-    const configureButton = page.getByRole("button", { name: "Configure" });
+    await openAppNavigation(page);
+    const configureButton = page.getByTestId("app-nav-config");
     await expect(configureButton).toBeVisible();
 
     await expectNoPageHorizontalOverflow(page);

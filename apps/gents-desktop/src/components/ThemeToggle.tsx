@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { applyTheme, loadTheme } from "../lib/theme";
 
-export function ThemeToggle() {
+export function ThemeToggle({ showLabel = false }: { showLabel?: boolean } = {}) {
   const [theme, setTheme] = useState(loadTheme);
   const next = theme === "dark" ? "light" : "dark";
 
@@ -35,6 +35,7 @@ export function ThemeToggle() {
           <path d="M20 13.2A7.8 7.8 0 1 1 10.8 4 6.2 6.2 0 0 0 20 13.2Z" />
         </svg>
       )}
+      {showLabel ? <span className="app-navigation-label">Theme</span> : null}
     </button>
   );
 }

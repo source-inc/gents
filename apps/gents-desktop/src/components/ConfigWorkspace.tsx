@@ -1,4 +1,3 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentConfigSaveRequest,
   BackendSaveRequest,
@@ -41,9 +40,7 @@ import {
   ToolSelectionConfigPanel,
   ToolServiceConfigPanel,
 } from "./config";
-import { ConfirmDialog } from "@source-inc/gents-desktop-ui";
-import { ConfigNavigationGuardProvider } from "./config/ConfigNavigationGuard";
-import sourceMarkUrl from "../assets/source-mark-light.png";
+import { useConfigNavigationGuard } from "./config/ConfigNavigationGuard";
 
 type ConfigWorkspaceProps = {
   api?: DesktopApiAdapter;
@@ -116,9 +113,7 @@ export function ConfigWorkspace({
   onSaveEventTriggerConfig,
   onRunTask,
 }: ConfigWorkspaceProps) {
-  const [configDirty, setConfigDirty] = useState(false);
-  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
-  const pendingNavigation = useRef<(() => void) | null>(null);
+  const { requestNavigation } = useConfigNavigationGuard();
   const {
     activeTab,
     savedStatus,
@@ -146,55 +141,13 @@ export function ConfigWorkspace({
     setSelectedToolServiceId,
   } = useConfigWorkspaceSelection(selectedDeployment, selectedBehaviorId);
 
-  const requestNavigation = useCallback(
-    (navigate: () => void) => {
-      if (!configDirty) {
-        navigate();
-        return;
-      }
-      pendingNavigation.current = navigate;
-      setConfirmingDiscard(true);
-    },
-    [configDirty],
-  );
-
-  const navigationGuard = useMemo(
-    () => ({ reportDirty: setConfigDirty, requestNavigation }),
-    [requestNavigation],
-  );
-
-  useEffect(() => {
-    if (!configDirty) {
-      return;
-    }
-    const preventAccidentalClose = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    window.addEventListener("beforeunload", preventAccidentalClose);
-    return () => window.removeEventListener("beforeunload", preventAccidentalClose);
-  }, [configDirty]);
-
-  const cancelDiscard = useCallback(() => {
-    pendingNavigation.current = null;
-    setConfirmingDiscard(false);
-  }, []);
-
-  const confirmDiscard = useCallback(() => {
-    const navigate = pendingNavigation.current;
-    pendingNavigation.current = null;
-    setConfirmingDiscard(false);
-    setConfigDirty(false);
-    navigate?.();
-  }, []);
-
   if (!selectedDeployment) {
     return (
       <article className="panel centered-panel">
         <p className="eyebrow">Config</p>
         <h2>Select a deployment</h2>
         <button className="ghost-button" onClick={onBack} type="button">
-          Back to Chat
+          Back
         </button>
       </article>
     );
@@ -205,13 +158,12 @@ export function ConfigWorkspace({
   const activeTabControlId = `config-tab-control-${activeTabConfig.id}`;
 
   return (
-    <ConfigNavigationGuardProvider value={navigationGuard}>
+    <>
       <section className="config-workspace config-workspace-full">
         <header className="config-header">
           <div className="config-brand">
-            <img alt="Source" className="config-brand-logo" src={sourceMarkUrl} />
             <div className="config-title-block">
-              <p className="eyebrow">Source Network Config</p>
+              <p className="eyebrow">Configuration</p>
               <h1>{selectedDeployment.label}</h1>
               <p className="muted mono" title={selectedDeployment.agentDid}>
                 {selectedDeployment.agentDid}
@@ -241,7 +193,7 @@ export function ConfigWorkspace({
               onClick={() => requestNavigation(onBack)}
               type="button"
             >
-              Back to Chat
+              Back
             </button>
           </div>
         </header>
@@ -496,16 +448,6 @@ export function ConfigWorkspace({
           ) : null}
         </section>
       </section>
-      <ConfirmDialog
-        cancelLabel="Keep editing"
-        confirmLabel="Discard changes"
-        danger
-        message="This configuration has unsaved changes. Discard them and continue?"
-        onCancel={cancelDiscard}
-        onConfirm={confirmDiscard}
-        open={confirmingDiscard}
-        title="Discard unsaved changes?"
-      />
-    </ConfigNavigationGuardProvider>
+    </>
   );
 }
