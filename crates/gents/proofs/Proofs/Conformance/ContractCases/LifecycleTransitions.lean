@@ -50,6 +50,7 @@ def requestTransitionStates : List RequestState :=
 def requestTransitionActions : List (String × RequestContext.Action) :=
   [ ("claim", .claim)
   , ("dedupLose", .dedupLose)
+  , ("admissionReject", .admissionReject)
   , ("beginInference", .beginInference)
   , ("advance", .advance)
   , ("finish", .finish)

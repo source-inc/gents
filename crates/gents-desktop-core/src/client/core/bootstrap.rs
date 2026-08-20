@@ -21,7 +21,6 @@ use super::bearer_pairing::{
     current_local_endpoint, install_bearer_replicator_for_record, is_bearer_peer,
     publish_local_endpoint,
 };
-use super::materialization::spawn_materialization_supervisor_task;
 use super::p2p_ops::{
     p2p_add_replicator, p2p_connect_peer, p2p_connected_peers, p2p_listen_addresses,
     p2p_local_peer_id, p2p_sync_branchable_collection,
@@ -115,14 +114,6 @@ impl ClientCore {
             Arc::new(principal.clone()),
             options.install_replicators_on_bootstrap,
         );
-        let materialization_supervisor = spawn_materialization_supervisor_task(
-            Arc::clone(&node),
-            Arc::clone(&p2p),
-            Arc::clone(&store),
-            Arc::clone(&peer_directory),
-            principal.did().to_string(),
-        );
-
         Ok(Self {
             paths,
             options,
@@ -134,7 +125,6 @@ impl ClientCore {
             observer: tokio::sync::Mutex::new(Some(observer)),
             peer_statuses,
             p2p_supervisor: tokio::sync::Mutex::new(Some(p2p_supervisor)),
-            materialization_supervisor: tokio::sync::Mutex::new(Some(materialization_supervisor)),
             p2p_health,
             selected_agent_did,
             last_loaded_for: tokio::sync::Mutex::new(std::collections::HashMap::new()),

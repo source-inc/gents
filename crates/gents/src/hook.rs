@@ -219,13 +219,11 @@ struct SessionState {
     current_requester_did: Option<String>,
     request_deadline_at: Option<DateTime<Utc>>,
     approval_required_tools: Vec<String>,
-    agent_name: String,
     sequence: u32,
     transcript_turn: TranscriptTurnState,
     persisted_tool_result_keys: HashSet<String>,
     persisted_tool_result_message_sequences: HashMap<String, u32>,
     tool_result_identities: HashMap<String, ToolResultIdentity>,
-    initialized: bool,
 }
 
 impl SessionState {
@@ -415,9 +413,10 @@ enum PolicyDecision {
 }
 
 impl DefraSessionHook {
+    #[cfg(test)]
     pub fn with_identity(
         node: Arc<EmbeddedNode>,
-        agent_name: &str,
+        _agent_name: &str,
         agent_did: &str,
         failure_policy: FailurePolicy,
     ) -> Self {
@@ -433,19 +432,17 @@ impl DefraSessionHook {
                 successes: AtomicU64::new(0),
             }),
             state: Arc::new(Mutex::new(SessionState {
-                session_id: None,
+                session_id: Some(uuid::Uuid::new_v4().to_string()),
                 current_request_id: None,
                 current_request_doc_id: None,
                 current_requester_did: None,
                 request_deadline_at: None,
                 approval_required_tools: Vec::new(),
-                agent_name: agent_name.to_string(),
                 sequence: 0,
                 transcript_turn: TranscriptTurnState::Idle,
                 persisted_tool_result_keys: HashSet::new(),
                 persisted_tool_result_message_sequences: HashMap::new(),
                 tool_result_identities: HashMap::new(),
-                initialized: false,
             })),
             in_flight_lifecycles: Arc::new(Mutex::new(HashMap::new())),
             background_tool_registry: BackgroundToolRegistry::default(),
@@ -457,11 +454,11 @@ impl DefraSessionHook {
     pub async fn resume_with_identity_policy(
         node: Arc<EmbeddedNode>,
         session_id: &str,
-        agent_name: &str,
+        _agent_name: &str,
         agent_did: &str,
         failure_policy: FailurePolicy,
     ) -> anyhow::Result<Self> {
-        session::ensure_session(&node, session_id, agent_name, agent_did).await?;
+        session::require_session(&node, session_id).await?;
         let max_seq = session::max_sequence(&node, session_id).await?;
         let background_executions = BackgroundExecutionRegistry::default();
         let background_live_outputs = background_executions.live_outputs.clone();
@@ -482,13 +479,11 @@ impl DefraSessionHook {
                 current_requester_did: None,
                 request_deadline_at: None,
                 approval_required_tools: Vec::new(),
-                agent_name: agent_name.to_string(),
                 sequence: max_seq,
                 transcript_turn: TranscriptTurnState::Idle,
                 persisted_tool_result_keys: HashSet::new(),
                 persisted_tool_result_message_sequences: HashMap::new(),
                 tool_result_identities: HashMap::new(),
-                initialized: true,
             })),
             in_flight_lifecycles: Arc::new(Mutex::new(HashMap::new())),
             background_tool_registry: BackgroundToolRegistry::default(),
@@ -542,17 +537,6 @@ impl DefraSessionHook {
             PolicyDecision::Continue => ToolCallHookAction::Continue,
             PolicyDecision::Terminate(reason) => ToolCallHookAction::Terminate { reason },
         }
-    }
-
-    pub async fn resume_or_create_with_identity_policy(
-        node: Arc<EmbeddedNode>,
-        session_id: &str,
-        agent_name: &str,
-        agent_did: &str,
-        failure_policy: FailurePolicy,
-    ) -> anyhow::Result<Self> {
-        Self::resume_with_identity_policy(node, session_id, agent_name, agent_did, failure_policy)
-            .await
     }
 
     pub async fn session_id(&self) -> Option<String> {

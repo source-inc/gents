@@ -1,17 +1,10 @@
-use super::query::{load_session_document, load_session_document_optional};
+use super::query::load_session_document;
+#[cfg(test)]
+use super::query::load_session_document_optional;
 use super::retry::{execute_mutation_with_retry, execute_query_timed, retry_operation};
 use super::*;
 
-pub async fn create_session(
-    node: &EmbeddedNode,
-    agent_name: &str,
-    agent_did: &str,
-) -> Result<String> {
-    let session_id = uuid::Uuid::new_v4().to_string();
-    create_session_with_id(node, &session_id, agent_name, agent_did).await?;
-    Ok(session_id)
-}
-
+#[cfg(test)]
 pub(crate) async fn create_session_with_id(
     node: &EmbeddedNode,
     session_id: &str,
@@ -21,6 +14,7 @@ pub(crate) async fn create_session_with_id(
     create_session_with_behavior_id(node, session_id, agent_name, agent_did, agent_name).await
 }
 
+#[cfg(test)]
 pub(crate) async fn create_session_with_behavior_id(
     node: &EmbeddedNode,
     session_id: &str,
@@ -40,6 +34,7 @@ pub(crate) async fn create_session_with_behavior_id(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 async fn create_session_with_behavior_id_and_requester_did(
     node: &EmbeddedNode,
     session_id: &str,
@@ -109,25 +104,7 @@ async fn create_session_with_behavior_id_and_requester_did(
     Ok(())
 }
 
-pub(crate) async fn ensure_session(
-    node: &EmbeddedNode,
-    session_id: &str,
-    agent_name: &str,
-    agent_did: &str,
-) -> Result<()> {
-    ensure_session_with_behavior_id(node, session_id, agent_name, agent_did, agent_name).await
-}
-
-pub(crate) async fn ensure_session_with_behavior_id(
-    node: &EmbeddedNode,
-    session_id: &str,
-    agent_name: &str,
-    agent_did: &str,
-    behavior_id: &str,
-) -> Result<()> {
-    create_session_with_behavior_id(node, session_id, agent_name, agent_did, behavior_id).await
-}
-
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn ensure_session_with_behavior_id_and_requester_did(
     node: &EmbeddedNode,
@@ -146,6 +123,44 @@ pub(crate) async fn ensure_session_with_behavior_id_and_requester_did(
         requester_did,
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn request_session_projection_field(
+    session_id: &str,
+    agent_name: &str,
+    agent_did: &str,
+    behavior_id: &str,
+    requester_did: Option<&str>,
+    started: &str,
+) -> String {
+    let session_id = escape_graphql_string(session_id);
+    let agent_name = escape_graphql_string(agent_name);
+    let agent_did = escape_graphql_string(agent_did);
+    let behavior_id = escape_graphql_string(behavior_id);
+    let started = escape_graphql_string(started);
+    let requester_did_field = super::requester_did_create_field(requester_did);
+
+    format!(
+        r#"project_session: upsert_AgentSession(
+            filter: {{
+                session_id: {{ _eq: "{session_id}" }}
+            }},
+            add: {{
+                session_id: "{session_id}",
+                agent_name: "{agent_name}",
+                agent_did: "{agent_did}",
+                {requester_did_field}
+                behavior_id: "{behavior_id}",
+                started: "{started}",
+                status: "active"
+            }},
+            update: {{
+                agent_name: "{agent_name}",
+                status: "active"
+            }}
+        ) {{ _docID }}"#
+    )
 }
 
 pub(crate) async fn max_sequence(node: &EmbeddedNode, session_id: &str) -> Result<u32> {
@@ -209,6 +224,7 @@ pub async fn close_session(node: &EmbeddedNode, session_id: &str) -> Result<()> 
     Ok(())
 }
 
+#[cfg(test)]
 fn resolve_behavior_id(
     existing: Option<&super::rows::SessionDocument>,
     requested_behavior_id: &str,
@@ -228,6 +244,7 @@ fn resolve_behavior_id(
     }
 }
 
+#[cfg(test)]
 fn normalize_optional_string(value: Option<&str>) -> Option<&str> {
     value.and_then(|value| {
         let trimmed = value.trim();

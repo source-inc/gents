@@ -494,29 +494,6 @@ export function createDesktopUiHarness(
         truncated: false,
       };
     },
-    async forkSession(request) {
-      const source = sessions.get(request.sessionId);
-      if (!source) {
-        throw new Error(`fork source not found: session_id=${request.sessionId}`);
-      }
-      const forkedId = `${request.sessionId}-fork-${request.atUserTurn}`;
-      sessions.set(forkedId, {
-        ...source,
-        sessionId: forkedId,
-        title: `${source.title} (fork)`,
-        turnState: "completed",
-        latestRequestId: null,
-      });
-      syncConversations();
-      notify("chat");
-      return {
-        sessionId: forkedId,
-        copiedMessages: source.timelineItems.filter(
-          (item) => item.kind === "userMessage" || item.kind === "assistantMessage",
-        ).length,
-        copiedToolCalls: 0,
-      };
-    },
     async resendRequest(requestId) {
       return { requestId: `${requestId}-resend`, sessionId: "session-intro" };
     },

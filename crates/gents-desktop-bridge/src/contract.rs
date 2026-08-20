@@ -8,6 +8,7 @@ use ts_rs::TS;
 use crate::error::BridgeErrorCode;
 
 /// `MAJOR.MINOR` contract version. MINOR = additive; MAJOR = breaking.
+// 1.0: breaking — clients submit requests; desktop session-fork projection removed.
 // 0.8: additive — managed-server tray event inventory.
 // 0.7: additive — retry eligibility projection and agent-scoped conversation rename.
 // 0.6: additive — predecessor-aware desktop_request_retry command.
@@ -17,7 +18,7 @@ use crate::error::BridgeErrorCode;
 // grantable [[set]] entries + default (core/client-lifecycle).
 // 0.3: BridgeError on command Err paths; SnapshotGrants projection; native-e2e.
 // 0.2: desktop_bridge_contract, desktop_peer_probe_address; peer_status by id.
-pub const CONTRACT_VERSION: &str = "0.9";
+pub const CONTRACT_VERSION: &str = "1.0";
 
 /// Package version string shared with workspace release train.
 pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -90,7 +91,6 @@ pub fn command_inventory() -> Vec<CommandContract> {
         // chat-write
         ("desktop_chat_send", "chat-write"),
         ("desktop_conversation_rename", "chat-write"),
-        ("desktop_session_fork", "chat-write"),
         // resend-control
         ("desktop_request_resend", "resend-control"),
         ("desktop_request_retry", "resend-control"),
@@ -514,7 +514,6 @@ mod tests {
             ("desktop_tool_surface_explain", "read"),
             ("desktop_chat_send", "mutate"),
             ("desktop_conversation_rename", "mutate"),
-            ("desktop_session_fork", "mutate"),
             ("desktop_request_resend", "mutate"),
             ("desktop_request_retry", "mutate"),
             ("desktop_peer_status_fetch", "read"),

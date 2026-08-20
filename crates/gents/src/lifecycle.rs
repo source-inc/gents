@@ -96,6 +96,24 @@ pub enum ClaimOutcome {
     Expired,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ClaimAdmissionError {
+    #[error(
+        "session {session_id} is pinned to behavior {existing_behavior_id} and cannot switch to {requested_behavior_id}"
+    )]
+    SessionBehaviorMismatch {
+        session_id: String,
+        existing_behavior_id: String,
+        requested_behavior_id: String,
+    },
+    #[error("session {session_id} has multiple AgentSession projections")]
+    DuplicateSessionProjection { session_id: String },
+}
+
+pub(crate) fn is_claim_admission_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ClaimAdmissionError>().is_some()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionOrigin {
     Interactive,
@@ -354,9 +372,6 @@ pub struct RecoveryReport {
     pub requests_recovered: usize,
     pub background_wakes_redriven: usize,
     pub responses_recovered: usize,
-    pub conversations_recovered: usize,
-    pub conversations_failed: usize,
-    pub duplicate_conversation_sessions: usize,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]

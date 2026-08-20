@@ -2,6 +2,15 @@ use super::*;
 
 #[test]
 fn generated_client_shell_cases_cover_shell_projection_contracts() {
+    let ephemeral = lean_client_shell_case("new_conversation_is_ephemeral");
+    assert_eq!(ephemeral.post_selection_session, None);
+    assert_eq!(ephemeral.post_workflow_kind.as_str(), "idle");
+
+    let submitted = lean_client_shell_case("submitted_request_selects_session");
+    assert_eq!(submitted.input.as_str(), "mutation.submitted");
+    assert_eq!(submitted.post_selection_session, Some(1));
+    assert_eq!(submitted.post_workflow_kind.as_str(), "awaiting");
+
     let snapshot = lean_client_shell_case("snapshot_preserves_selection");
     assert_eq!(snapshot.input.as_str(), "snapshot");
     assert!(snapshot.selection_preserved);
@@ -126,6 +135,10 @@ fn generated_runtime_reconcile_cases_pin_generation_and_admission_contract() {
         accept.tracked_session_behavior
     );
 
+    let replay = lean_runtime_reconcile_case("replayed_request_is_not_accepted_twice");
+    assert!(!replay.legal);
+    assert_eq!(replay.action.as_str(), "acceptRequest");
+
     let retire = lean_runtime_reconcile_case("retire_unobserved_generation");
     assert!(retire.legal);
     assert_eq!(
@@ -158,6 +171,7 @@ fn generated_runtime_reconcile_cases_pin_generation_and_admission_contract() {
         "publish_changed_snapshot",
         "router_observe_published_generation",
         "accept_request_after_router_observe",
+        "replayed_request_is_not_accepted_twice",
         "retire_unobserved_generation",
         "finish_request_releases_generation",
         "apply_failed_clears_pending",

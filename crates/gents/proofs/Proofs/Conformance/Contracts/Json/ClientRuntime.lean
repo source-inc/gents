@@ -131,22 +131,6 @@ def recoverySweepCaseJson (witness : RecoverySweepCase) : String :=
     ++ jsonString witness.deadlineAuditRef
     ++ "}"
 
-def recoveryOutcomeCaseJson (witness : RecoveryOutcomeCase) : String :=
-  "{"
-    ++ "\"name\":" ++ jsonString witness.name ++ ","
-    ++ "\"sweep_id\":" ++ jsonString witness.sweepId ++ ","
-    ++ "\"collection\":" ++ jsonString witness.collection ++ ","
-    ++ "\"rust_function\":" ++ jsonString witness.rustFunction ++ ","
-    ++ "\"doc_count\":" ++ toString witness.docCount ++ ","
-    ++ "\"duplicated\":" ++ boolString witness.duplicated ++ ","
-    ++ "\"write_succeeds\":" ++ boolString witness.writeSucceeds ++ ","
-    ++ "\"expected_recovered\":" ++ toString witness.expectedRecovered ++ ","
-    ++ "\"expected_failed\":" ++ toString witness.expectedFailed ++ ","
-    ++ "\"measure_after\":" ++ toString witness.measureAfter ++ ","
-    ++ "\"target_selector\":" ++ jsonString witness.targetSelector ++ ","
-    ++ "\"theorem\":" ++ jsonString witness.theoremName
-    ++ "}"
-
 def restartDispositionCaseJson (witness : RestartDispositionCase) : String :=
   "{"
     ++ "\"name\":" ++ jsonString witness.name ++ ","

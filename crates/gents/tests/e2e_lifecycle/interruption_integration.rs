@@ -30,6 +30,16 @@ const TARGET_PARTIAL: &str = "partial response content ";
 const SURVIVOR_MARKER: &str = "survivor-target";
 const SURVIVOR_PARTIAL: &str = "survivor partial content ";
 
+fn run_on_production_runtime(future: impl std::future::Future<Output = ()>) {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("build e2e lifecycle runtime")
+        .block_on(future);
+}
+
 #[tokio::test]
 async fn offline_replay_of_stale_requests_does_not_call_backend() {
     let db = test_db("offline-replay-stale").await;
@@ -188,184 +198,193 @@ async fn inference_call_wait_observes_latest_attempt() {
     assert_eq!(call.call_state, "running");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn interrupt_mid_stream_preserves_partial_and_cancels_inference_call() {
-    let db = test_db("daemon-interrupt-mid-stream").await;
-    let backend = MockStreamingBackend::start(
-        STREAM_MODEL,
-        vec![StreamScript::paused(TARGET_MARKER, [TARGET_PARTIAL])],
-    )
-    .unwrap();
-    let agent = boot_streaming_agent(
-        &db,
-        "daemon-interrupt-mid-stream",
-        backend.endpoint(),
-        &[PRIMARY_BEHAVIOR],
-        2,
-    )
-    .await;
+#[test]
+fn interrupt_mid_stream_preserves_partial_and_cancels_inference_call() {
+    run_on_production_runtime(async {
+        let db = test_db("daemon-interrupt-mid-stream").await;
+        let backend = MockStreamingBackend::start(
+            STREAM_MODEL,
+            vec![StreamScript::paused(TARGET_MARKER, [TARGET_PARTIAL])],
+        )
+        .unwrap();
+        let agent = boot_streaming_agent(
+            &db,
+            "daemon-interrupt-mid-stream",
+            backend.endpoint(),
+            &[PRIMARY_BEHAVIOR],
+            2,
+        )
+        .await;
 
-    let request_id = "req-daemon-interrupt-mid-stream";
-    let session_id = "session-daemon-interrupt-mid-stream";
-    let request_doc_id = create_runtime_request(
-        db.node.as_ref(),
-        agent.agent_did.as_str(),
-        PRIMARY_BEHAVIOR,
-        request_id,
-        session_id,
-        TARGET_MARKER,
-    )
-    .await;
+        let request_id = "req-daemon-interrupt-mid-stream";
+        let session_id = "session-daemon-interrupt-mid-stream";
+        let request_doc_id = create_runtime_request(
+            db.node.as_ref(),
+            agent.agent_did.as_str(),
+            PRIMARY_BEHAVIOR,
+            request_id,
+            session_id,
+            TARGET_MARKER,
+        )
+        .await;
 
-    backend.wait_for_chunks(TARGET_MARKER, 1).await;
-    let response_doc_id = wait_for_response_doc_id(db.node.as_ref(), request_id).await;
-    wait_for_response_content_contains(db.node.as_ref(), &response_doc_id, TARGET_PARTIAL).await;
+        backend.wait_for_chunks(TARGET_MARKER, 1).await;
+        let response_doc_id = wait_for_response_doc_id(db.node.as_ref(), request_id).await;
+        wait_for_response_content_contains(db.node.as_ref(), &response_doc_id, TARGET_PARTIAL)
+            .await;
 
-    interrupt_request(db.node.as_ref(), request_id)
-        .await
-        .expect("interrupt_request should latch interrupt_requested_at");
-
-    wait_for_request_lifecycle_state(db.node.as_ref(), &request_doc_id, "interrupted").await;
-    let call = wait_for_inference_call_state(db.node.as_ref(), request_id, "cancelled").await;
-    assert_eq!(call.failure_reason.as_deref(), Some("Cancelled"));
-
-    let content = fetch_response_content(&db.node, &response_doc_id).await;
-    assert_eq!(
-        content, "",
-        "daemon interrupt must clear the live tail after persisting partial content"
-    );
-    let response = fetch_response_snapshot(&db.node, &response_doc_id).await;
-    assert_eq!(response.status, "error");
-    assert!(
-        response.completed_at_present,
-        "interrupted response must be terminalized"
-    );
-    let messages = fetch_message_snapshots_for_session(&db.node, session_id).await;
-    assert!(
-        messages.iter().any(|message| {
-            message.role == "assistant"
-                && present_persisted_message(&message.role, &message.content).body_markdown
-                    == TARGET_PARTIAL.trim()
-        }),
-        "daemon interrupt must preserve already streamed response content in AgentMessage"
-    );
-    assert!(
-        fetch_response_interrupted_at(&db.node, &response_doc_id)
+        interrupt_request(db.node.as_ref(), request_id)
             .await
-            .is_some(),
-        "daemon interrupt must stamp AgentResponse.interrupted_at"
-    );
+            .expect("interrupt_request should latch interrupt_requested_at");
 
-    agent.shutdown().await;
+        wait_for_request_lifecycle_state(db.node.as_ref(), &request_doc_id, "interrupted").await;
+        let call = wait_for_inference_call_state(db.node.as_ref(), request_id, "cancelled").await;
+        assert_eq!(call.failure_reason.as_deref(), Some("Cancelled"));
+
+        let content = fetch_response_content(&db.node, &response_doc_id).await;
+        assert_eq!(
+            content, "",
+            "daemon interrupt must clear the live tail after persisting partial content"
+        );
+        let response = fetch_response_snapshot(&db.node, &response_doc_id).await;
+        assert_eq!(response.status, "error");
+        assert!(
+            response.completed_at_present,
+            "interrupted response must be terminalized"
+        );
+        let messages = fetch_message_snapshots_for_session(&db.node, session_id).await;
+        assert!(
+            messages.iter().any(|message| {
+                message.role == "assistant"
+                    && present_persisted_message(&message.role, &message.content).body_markdown
+                        == TARGET_PARTIAL.trim()
+            }),
+            "daemon interrupt must preserve already streamed response content in AgentMessage"
+        );
+        assert!(
+            fetch_response_interrupted_at(&db.node, &response_doc_id)
+                .await
+                .is_some(),
+            "daemon interrupt must stamp AgentResponse.interrupted_at"
+        );
+
+        agent.shutdown().await;
+    });
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn interrupting_one_request_does_not_affect_another() {
-    let db = test_db("daemon-interrupt-isolation").await;
-    let backend = MockStreamingBackend::start(
-        STREAM_MODEL,
-        vec![
-            StreamScript::paused(TARGET_MARKER, [TARGET_PARTIAL]),
-            StreamScript::paused(SURVIVOR_MARKER, [SURVIVOR_PARTIAL]),
-        ],
-    )
-    .unwrap();
-    let agent = boot_streaming_agent(
-        &db,
-        "daemon-interrupt-isolation",
-        backend.endpoint(),
-        &[PRIMARY_BEHAVIOR, SECONDARY_BEHAVIOR],
-        4,
-    )
-    .await;
-
-    let target_request_id = "req-daemon-interrupt-target";
-    let target_session_id = "session-daemon-interrupt-target";
-    let target_doc_id = create_runtime_request(
-        db.node.as_ref(),
-        agent.agent_did.as_str(),
-        PRIMARY_BEHAVIOR,
-        target_request_id,
-        target_session_id,
-        TARGET_MARKER,
-    )
-    .await;
-
-    let survivor_request_id = "req-daemon-survivor";
-    let survivor_session_id = "session-daemon-survivor";
-    let survivor_doc_id = create_runtime_request(
-        db.node.as_ref(),
-        agent.agent_did.as_str(),
-        SECONDARY_BEHAVIOR,
-        survivor_request_id,
-        survivor_session_id,
-        SURVIVOR_MARKER,
-    )
-    .await;
-
-    backend.wait_for_chunks(TARGET_MARKER, 1).await;
-    backend.wait_for_chunks(SURVIVOR_MARKER, 1).await;
-
-    let target_response_doc_id =
-        wait_for_response_doc_id(db.node.as_ref(), target_request_id).await;
-    let survivor_response_doc_id =
-        wait_for_response_doc_id(db.node.as_ref(), survivor_request_id).await;
-    wait_for_response_content_contains(db.node.as_ref(), &target_response_doc_id, TARGET_PARTIAL)
+#[test]
+fn interrupting_one_request_does_not_affect_another() {
+    run_on_production_runtime(async {
+        let db = test_db("daemon-interrupt-isolation").await;
+        let backend = MockStreamingBackend::start(
+            STREAM_MODEL,
+            vec![
+                StreamScript::paused(TARGET_MARKER, [TARGET_PARTIAL]),
+                StreamScript::paused(SURVIVOR_MARKER, [SURVIVOR_PARTIAL]),
+            ],
+        )
+        .unwrap();
+        let agent = boot_streaming_agent(
+            &db,
+            "daemon-interrupt-isolation",
+            backend.endpoint(),
+            &[PRIMARY_BEHAVIOR, SECONDARY_BEHAVIOR],
+            4,
+        )
         .await;
-    wait_for_response_content_contains(
-        db.node.as_ref(),
-        &survivor_response_doc_id,
-        SURVIVOR_PARTIAL,
-    )
-    .await;
 
-    interrupt_request(db.node.as_ref(), target_request_id)
-        .await
-        .expect("interrupt_request should latch interrupt_requested_at");
+        let target_request_id = "req-daemon-interrupt-target";
+        let target_session_id = "session-daemon-interrupt-target";
+        let target_doc_id = create_runtime_request(
+            db.node.as_ref(),
+            agent.agent_did.as_str(),
+            PRIMARY_BEHAVIOR,
+            target_request_id,
+            target_session_id,
+            TARGET_MARKER,
+        )
+        .await;
 
-    wait_for_request_lifecycle_state(db.node.as_ref(), &target_doc_id, "interrupted").await;
-    let target_call =
-        wait_for_inference_call_state(db.node.as_ref(), target_request_id, "cancelled").await;
-    assert_eq!(target_call.failure_reason.as_deref(), Some("Cancelled"));
+        let survivor_request_id = "req-daemon-survivor";
+        let survivor_session_id = "session-daemon-survivor";
+        let survivor_doc_id = create_runtime_request(
+            db.node.as_ref(),
+            agent.agent_did.as_str(),
+            SECONDARY_BEHAVIOR,
+            survivor_request_id,
+            survivor_session_id,
+            SURVIVOR_MARKER,
+        )
+        .await;
 
-    let survivor_running =
-        wait_for_inference_call_state(db.node.as_ref(), survivor_request_id, "running").await;
-    assert_eq!(
-        survivor_running.call_state, "running",
-        "unrelated concurrent inference call must remain live after target interrupt"
-    );
+        backend.wait_for_chunks(TARGET_MARKER, 1).await;
+        backend.wait_for_chunks(SURVIVOR_MARKER, 1).await;
 
-    backend.release(SURVIVOR_MARKER);
-    wait_for_request_lifecycle_state(db.node.as_ref(), &survivor_doc_id, "completed").await;
-    let survivor_call =
-        wait_for_inference_call_state(db.node.as_ref(), survivor_request_id, "completed").await;
-    assert_eq!(survivor_call.failure_reason.as_deref(), None);
+        let target_response_doc_id =
+            wait_for_response_doc_id(db.node.as_ref(), target_request_id).await;
+        let survivor_response_doc_id =
+            wait_for_response_doc_id(db.node.as_ref(), survivor_request_id).await;
+        wait_for_response_content_contains(
+            db.node.as_ref(),
+            &target_response_doc_id,
+            TARGET_PARTIAL,
+        )
+        .await;
+        wait_for_response_content_contains(
+            db.node.as_ref(),
+            &survivor_response_doc_id,
+            SURVIVOR_PARTIAL,
+        )
+        .await;
 
-    let survivor_response = fetch_response_snapshot(&db.node, &survivor_response_doc_id).await;
-    assert_eq!(survivor_response.status, "complete");
-    let survivor_content = fetch_response_content(&db.node, &survivor_response_doc_id).await;
-    assert_eq!(
-        survivor_content, "",
-        "completed response must leave AgentResponse.content as an empty live tail"
-    );
-    let survivor_messages =
-        fetch_message_snapshots_for_session(&db.node, survivor_session_id).await;
-    assert!(
-        survivor_messages.iter().any(|message| {
-            message.role == "assistant"
-                && present_persisted_message(&message.role, &message.content).body_markdown
-                    == SURVIVOR_PARTIAL.trim()
-        }),
-        "completed survivor response must be preserved in AgentMessage"
-    );
-    assert!(
-        fetch_response_interrupted_at(&db.node, &survivor_response_doc_id)
+        interrupt_request(db.node.as_ref(), target_request_id)
             .await
-            .is_none(),
-        "unrelated response must not be stamped as interrupted"
-    );
+            .expect("interrupt_request should latch interrupt_requested_at");
 
-    agent.shutdown().await;
+        wait_for_request_lifecycle_state(db.node.as_ref(), &target_doc_id, "interrupted").await;
+        let target_call =
+            wait_for_inference_call_state(db.node.as_ref(), target_request_id, "cancelled").await;
+        assert_eq!(target_call.failure_reason.as_deref(), Some("Cancelled"));
+
+        let survivor_running =
+            wait_for_inference_call_state(db.node.as_ref(), survivor_request_id, "running").await;
+        assert_eq!(
+            survivor_running.call_state, "running",
+            "unrelated concurrent inference call must remain live after target interrupt"
+        );
+
+        backend.release(SURVIVOR_MARKER);
+        wait_for_request_lifecycle_state(db.node.as_ref(), &survivor_doc_id, "completed").await;
+        let survivor_call =
+            wait_for_inference_call_state(db.node.as_ref(), survivor_request_id, "completed").await;
+        assert_eq!(survivor_call.failure_reason.as_deref(), None);
+
+        let survivor_response = fetch_response_snapshot(&db.node, &survivor_response_doc_id).await;
+        assert_eq!(survivor_response.status, "complete");
+        let survivor_content = fetch_response_content(&db.node, &survivor_response_doc_id).await;
+        assert_eq!(
+            survivor_content, "",
+            "completed response must leave AgentResponse.content as an empty live tail"
+        );
+        let survivor_messages =
+            fetch_message_snapshots_for_session(&db.node, survivor_session_id).await;
+        assert!(
+            survivor_messages.iter().any(|message| {
+                message.role == "assistant"
+                    && present_persisted_message(&message.role, &message.content).body_markdown
+                        == SURVIVOR_PARTIAL.trim()
+            }),
+            "completed survivor response must be preserved in AgentMessage"
+        );
+        assert!(
+            fetch_response_interrupted_at(&db.node, &survivor_response_doc_id)
+                .await
+                .is_none(),
+            "unrelated response must not be stamped as interrupted"
+        );
+
+        agent.shutdown().await;
+    });
 }
 
 async fn boot_streaming_agent(

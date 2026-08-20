@@ -394,6 +394,7 @@ async fn trigger_engine_enqueues_agent_request_for_due_schedule_e2e() {
                 execution_origin
                 session_id
                 content
+                metadata
             }
         }"#;
         let resp = node.execute(query).await;
@@ -448,45 +449,17 @@ async fn trigger_engine_enqueues_agent_request_for_due_schedule_e2e() {
         "rendered prompt template should land in AgentRequest.content: {row}"
     );
 
-    let session_id = row
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .expect("materialized request should have session_id");
-    let conversation_query = format!(
-        r#"{{
-            AgentConversation(
-                filter: {{ session_id: {{ _eq: "{}" }} }},
-                limit: 1
-            ) {{
-                title
-                title_source
-            }}
-        }}"#,
-        escape_graphql_string(session_id)
-    );
-    let conversation_resp = node.execute(&conversation_query).await;
+    let metadata = row
+        .get("metadata")
+        .and_then(|value| value.as_str())
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .expect("task request should carry projection metadata");
     assert!(
-        !conversation_resp.has_errors(),
-        "AgentConversation query errored: {:?}",
-        conversation_resp.errors
-    );
-    let conversation = conversation_resp
-        .data
-        .as_ref()
-        .and_then(|d| d.get("AgentConversation"))
-        .and_then(|v| v.as_array())
-        .and_then(|rows| rows.first())
-        .expect("task materialization should seed AgentConversation title");
-    assert_eq!(
-        conversation.get("title_source").and_then(|v| v.as_str()),
-        Some("task")
-    );
-    assert!(
-        conversation
-            .get("title")
+        metadata
+            .get("conversation_title")
             .and_then(|v| v.as_str())
             .is_some_and(|title| title.starts_with("mini-host-health-20")),
-        "task conversation title should use task name plus timestamp: {conversation}"
+        "task request title should use task name plus timestamp: {metadata}"
     );
 }
 

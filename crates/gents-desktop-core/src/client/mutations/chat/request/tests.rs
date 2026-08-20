@@ -63,11 +63,6 @@ struct RecoveryRequestRow {
     max_retries: i64,
 }
 
-#[derive(Debug, Deserialize)]
-struct RecoveryConversationRow {
-    latest_request_id: String,
-}
-
 #[test]
 fn prepare_prompt_submission_strips_skill_selector_and_records_metadata() -> Result<()> {
     let (content, options) = prepare_prompt_submission(
@@ -210,13 +205,13 @@ async fn drive_session_recovery_case_with_core(
         "pre request count must match Lean witness for {}",
         case.name
     );
-    assert_eq!(
-        latest_request_id_for_session_for_test(core.node(), &pre.session_id).await?,
-        pre.pre_latest_request_id,
-        "pre latest request role must match Lean witness for {}",
-        case.name
-    );
     if case.pre_latest_exists {
+        assert_eq!(
+            latest_request_id_for_session_for_test(core.node(), &pre.session_id).await?,
+            pre.pre_latest_request_id,
+            "pre latest request role must match Lean witness for {}",
+            case.name
+        );
         assert_eq!(
             fetch_request_row_for_test(core.node(), &pre.pre_latest_request_id)
                 .await?
@@ -295,9 +290,7 @@ async fn seed_session_recovery_pre_state(
     core: &ClientCore,
     case: &LeanSessionRecoveryCase,
 ) -> Result<RecoveryPreState> {
-    let created = core
-        .create_conversation(RECOVERY_AGENT_DID, Some(RECOVERY_BEHAVIOR_ID))
-        .await?;
+    let session_id = Uuid::new_v4().to_string();
     let failed_is_latest = case.pre_latest_id == case.failed_id;
     let should_seed_failed =
         case.pre_request_ids.contains(&case.failed_id) || !case.pre_failed_exists;
@@ -310,25 +303,18 @@ async fn seed_session_recovery_pre_state(
     let mut existing = None;
     if failed_is_latest {
         if should_seed_existing {
-            existing = Some(
-                submit_recovery_seed_request(core, &created.session_id, case, "existing").await?,
-            );
+            existing =
+                Some(submit_recovery_seed_request(core, &session_id, case, "existing").await?);
         }
         if should_seed_failed {
-            failed = Some(
-                submit_recovery_seed_request(core, &created.session_id, case, "failed").await?,
-            );
+            failed = Some(submit_recovery_seed_request(core, &session_id, case, "failed").await?);
         }
     } else {
         if should_seed_failed {
-            failed = Some(
-                submit_recovery_seed_request(core, &created.session_id, case, "failed").await?,
-            );
+            failed = Some(submit_recovery_seed_request(core, &session_id, case, "failed").await?);
         }
         if should_seed_existing {
-            existing = Some(
-                submit_recovery_seed_request(core, &created.session_id, case, "latest").await?,
-            );
+            existing = Some(submit_recovery_seed_request(core, &session_id, case, "latest").await?);
         }
     }
 
@@ -404,11 +390,11 @@ async fn seed_session_recovery_pre_state(
         );
         parent
     } else {
-        synthetic_missing_retry_parent(case, &created.session_id, &failed_request_id)
+        synthetic_missing_retry_parent(case, &session_id, &failed_request_id)
     };
 
     Ok(RecoveryPreState {
-        session_id: created.session_id,
+        session_id,
         failed_request_id,
         existing_request_id,
         pre_latest_request_id,
@@ -426,7 +412,7 @@ async fn submit_recovery_seed_request(
         session_id,
         RECOVERY_AGENT_DID,
         &format!("{role} request for {}", case.name),
-        None,
+        Some(RECOVERY_BEHAVIOR_ID),
     )
     .await
 }
@@ -595,12 +581,14 @@ async fn assert_illegal_session_recovery_post_state(
         "illegal case {} must not insert a retry request",
         case.name
     );
-    assert_eq!(
-        latest_request_id_for_session_for_test(core.node(), &pre.session_id).await?,
-        pre.pre_latest_request_id,
-        "illegal case {} must not change latest request",
-        case.name
-    );
+    if case.pre_latest_exists {
+        assert_eq!(
+            latest_request_id_for_session_for_test(core.node(), &pre.session_id).await?,
+            pre.pre_latest_request_id,
+            "illegal case {} must not change latest request",
+            case.name
+        );
+    }
     if let Some(request_id) = injected_new_request_id {
         assert_eq!(
             request_count_by_id_for_test(core.node(), request_id).await?,
@@ -788,19 +776,26 @@ async fn latest_request_id_for_session_for_test(
     session_id: &str,
 ) -> Result<String> {
     let escaped_session_id = escape_graphql_string(session_id);
-    let conversation: RecoveryConversationRow = query_single_for_test(
-            node,
-            &format!(
-                r#"{{
-                    AgentConversation(filter: {{ session_id: {{ _eq: "{escaped_session_id}" }} }}, limit: 1) {{
-                        latest_request_id
+    let request: RecoveryRequestRow = query_single_for_test(
+        node,
+        &format!(
+            r#"{{
+                    AgentRequest(
+                        filter: {{ session_id: {{ _eq: "{escaped_session_id}" }} }},
+                        order: [{{ created_at: DESC }}, {{ request_id: DESC }}],
+                        limit: 1
+                    ) {{
+                        _docID request_id agent_did behavior_id session_id content
+                        temperature top_p top_k seed max_tokens max_total_tokens metadata
+                        status lifecycle_state backend_id execution_origin retry_root_request
+                        retry_parent_request retry_parent_request_doc_id retry_count max_retries
                     }}
                 }}"#
-            ),
-            "AgentConversation",
-        )
-        .await?;
-    Ok(conversation.latest_request_id)
+        ),
+        "AgentRequest",
+    )
+    .await?;
+    Ok(request.request_id)
 }
 
 async fn request_count_for_session_for_test(
@@ -918,19 +913,12 @@ async fn desktop_chat_seed_rows_are_scoped_to_the_requester_principal() -> Resul
     .await?;
     let requester_did = core.principal().did().to_string();
     let agent_did = "did:test:amy";
-    let created = core
-        .create_conversation(agent_did, Some("amy-code"))
-        .await?;
+    let session_id = Uuid::new_v4().to_string();
     let submitted = core
-        .submit_request(
-            &created.session_id,
-            agent_did,
-            "requester route regression",
-            None,
-        )
+        .submit_request(&session_id, agent_did, "requester route regression", None)
         .await?;
 
-    let session_id = escape_graphql_string(&created.session_id);
+    let session_id = escape_graphql_string(&session_id);
     let request_id = escape_graphql_string(&submitted.request_id);
     let response = core
             .node()
@@ -958,24 +946,29 @@ async fn desktop_chat_seed_rows_are_scoped_to_the_requester_principal() -> Resul
         );
     }
     let data = response.data.context("requester route query data")?;
-    for collection in ["AgentRequest", "AgentSession", "AgentConversation"] {
-        let row = data
-            .get(collection)
-            .and_then(serde_json::Value::as_array)
-            .and_then(|rows| rows.first())
-            .with_context(|| format!("missing {collection} row"))?;
-        assert_eq!(
-            row.get("agent_did").and_then(serde_json::Value::as_str),
-            Some(agent_did),
-            "{collection} must retain the remote agent owner"
-        );
-        assert_eq!(
-            row.get("requester_did").and_then(serde_json::Value::as_str),
-            Some(requester_did.as_str()),
-            "{collection} must carry the immutable desktop requester route"
+    for collection in ["AgentSession", "AgentConversation"] {
+        assert!(
+            data.get(collection)
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(Vec::is_empty),
+            "desktop submission must not create {collection}"
         );
     }
-
+    for (field, expected) in [
+        ("agent_did", agent_did),
+        ("requester_did", requester_did.as_str()),
+    ] {
+        let row = data
+            .get("AgentRequest")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|rows| rows.first())
+            .context("missing AgentRequest row")?;
+        assert_eq!(
+            row.get(field).and_then(serde_json::Value::as_str),
+            Some(expected),
+            "AgentRequest must carry {field}"
+        );
+    }
     core.shutdown().await?;
     Ok(())
 }
@@ -1021,11 +1014,9 @@ async fn retry_request_with_injected_id_rejects_duplicate_new_request_id() -> Re
     )
     .await?;
 
-    let created = core
-        .create_conversation("did:test:amy", Some("amy-code"))
-        .await?;
+    let session_id = Uuid::new_v4().to_string();
     let original = core
-        .submit_request(&created.session_id, "did:test:amy", "first attempt", None)
+        .submit_request(&session_id, "did:test:amy", "first attempt", None)
         .await?;
     let mut parent = core
         .store()
@@ -1055,7 +1046,7 @@ async fn retry_request_with_injected_id_rejects_duplicate_new_request_id() -> Re
     seed_duplicate_request_id_for_test(
         core.node(),
         duplicate_request_id,
-        &created.session_id,
+        &session_id,
         "did:test:amy",
         "amy-code",
     )
@@ -1099,13 +1090,11 @@ async fn retry_request_preserves_parent_overrides_and_metadata() -> Result<()> {
     )
     .await?;
 
-    let created = core
-        .create_conversation("did:test:amy", Some("amy-code"))
-        .await?;
+    let session_id = Uuid::new_v4().to_string();
     let metadata = r#"{"eval":"amygdala","case":"retry"}"#.to_string();
     let original = core
         .submit_request_with_options(
-            &created.session_id,
+            &session_id,
             "did:test:amy",
             "retry should preserve overrides",
             None,
@@ -1171,16 +1160,9 @@ async fn concurrent_retry_claims_return_one_durable_successor() -> Result<()> {
     )
     .await?;
 
-    let created = core
-        .create_conversation("did:test:amy", Some("amy-code"))
-        .await?;
+    let session_id = Uuid::new_v4().to_string();
     let original = core
-        .submit_request(
-            &created.session_id,
-            "did:test:amy",
-            "retry exactly once",
-            None,
-        )
+        .submit_request(&session_id, "did:test:amy", "retry exactly once", None)
         .await?;
     let deadline = Utc::now() + chrono::Duration::minutes(5);
     force_retry_parent_eligible_for_test(
@@ -1208,7 +1190,7 @@ async fn concurrent_retry_claims_return_one_durable_successor() -> Result<()> {
         "only one executable child may be created for a retry parent"
     );
     assert_eq!(
-        latest_request_id_for_session_for_test(core.node(), &created.session_id).await?,
+        latest_request_id_for_session_for_test(core.node(), &session_id).await?,
         left.request_id
     );
 
@@ -1217,7 +1199,7 @@ async fn concurrent_retry_claims_return_one_durable_successor() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retry_uses_effective_latest_when_conversation_points_at_legacy_wake() -> Result<()> {
+async fn retry_ignores_legacy_background_wake_when_selecting_latest_request() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let core = ClientCore::start_with_paths_and_options(
         DesktopPaths::from_root(tempdir.path()),
@@ -1225,16 +1207,9 @@ async fn retry_uses_effective_latest_when_conversation_points_at_legacy_wake() -
     )
     .await?;
 
-    let created = core
-        .create_conversation("did:test:amy", Some("amy-code"))
-        .await?;
+    let session_id = Uuid::new_v4().to_string();
     let original = core
-        .submit_request(
-            &created.session_id,
-            "did:test:amy",
-            "retry after legacy wake",
-            None,
-        )
+        .submit_request(&session_id, "did:test:amy", "retry after legacy wake", None)
         .await?;
     let deadline = Utc::now() + chrono::Duration::minutes(5);
     force_retry_parent_eligible_for_test(
@@ -1246,7 +1221,7 @@ async fn retry_uses_effective_latest_when_conversation_points_at_legacy_wake() -
     )
     .await?;
 
-    let session_id = escape_graphql_string(&created.session_id);
+    let session_id = escape_graphql_string(&session_id);
     let now = Utc::now().to_rfc3339();
     let metadata = escape_graphql_string(
         r#"{"queue":{"source":"background_completion","policy":"coalesce","key":"child-1","queued_after_request_id":null}}"#,
@@ -1267,13 +1242,6 @@ async fn retry_uses_effective_latest_when_conversation_points_at_legacy_wake() -
                     retry_count: 0,
                     max_retries: 3
                 }}) {{ _docID }}
-                conversation: update_AgentConversation(
-                    filter: {{ session_id: {{ _eq: "{session_id}" }} }},
-                    input: {{
-                        latest_request_id: "legacy-wake",
-                        updated_at: "{now}"
-                    }}
-                ) {{ _docID }}
             }}"#
     );
     execute_mutation(core.node(), &mutation, "seed_legacy_wake_for_retry").await?;

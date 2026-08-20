@@ -15,7 +15,6 @@ import type {
   NetworkStatusView,
   RequestResendResult,
   RequestTimelineView,
-  SessionForkResult,
   SubagentTreeView,
   TaskRunResult,
   ToolServiceTestResult,
@@ -153,13 +152,6 @@ export function createDesktopApiAdapter(
       invokeDesktop<ChatSendResult>("desktop_chat_send", { request }),
     renameConversation: (request) =>
       invokeDesktop<void>("desktop_conversation_rename", { request }),
-    forkSession: (request) =>
-      invokeDesktop<SessionForkResult>("desktop_session_fork", {
-        agentDid: request.agentDid,
-        sessionId: request.sessionId,
-        atUserTurn: request.atUserTurn,
-        behaviorId: request.behaviorId ?? null,
-      }),
     resendRequest: (requestId) =>
       invokeDesktop<RequestResendResult>("desktop_request_resend", {
         requestId,

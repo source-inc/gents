@@ -34,7 +34,6 @@ import type {
   ScheduleDeleteRequest,
   ScheduleRunRequest,
   ScheduleSaveRequest,
-  SessionForkResult,
   SkillDeleteRequest,
   SkillSaveRequest,
   SubagentTreeView,
@@ -110,12 +109,6 @@ export type DesktopApiAdapter = {
     sessionId: string;
     title: string;
   }) => Promise<void>;
-  forkSession: (request: {
-    agentDid: string;
-    sessionId: string;
-    atUserTurn: number;
-    behaviorId?: string | null;
-  }) => Promise<SessionForkResult>;
   resendRequest: (requestId: string) => Promise<RequestResendResult>;
   retryRequest: (requestId: string) => Promise<ChatSendResult>;
   saveAgentConfig: (

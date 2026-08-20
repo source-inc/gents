@@ -5,7 +5,6 @@ use crate::client::store::ClientStore;
 use super::super::graphql::normalize_optional_string;
 
 pub(super) struct ResolvedAgentBinding {
-    pub(super) agent_name: String,
     pub(super) behavior_id: Option<String>,
 }
 
@@ -44,25 +43,7 @@ pub(super) fn resolve_agent_binding(
         existing_conversation.and_then(|row| row.behavior_id.as_deref()),
         existing_session.and_then(|row| row.behavior_id.as_deref()),
     )?;
-    let agent_name = existing_conversation
-        .and_then(|row| normalize_optional_string(row.agent_name.as_deref()))
-        .or_else(|| {
-            existing_session.and_then(|row| normalize_optional_string(row.agent_name.as_deref()))
-        })
-        .or_else(|| {
-            store
-                .agent_principals
-                .iter()
-                .find(|row| row.agent_did == agent_did)
-                .and_then(|row| normalize_optional_string(row.display_name.as_deref()))
-        })
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| default_display_name_for_did(agent_did));
-
-    Ok(ResolvedAgentBinding {
-        agent_name,
-        behavior_id,
-    })
+    Ok(ResolvedAgentBinding { behavior_id })
 }
 
 fn resolve_behavior_id(
@@ -120,13 +101,4 @@ fn resolve_behavior_id(
 
 pub(super) fn default_behavior_id_for_agent(agent_did: &str) -> String {
     gents::default_behavior_id_for_agent(agent_did)
-}
-
-fn default_display_name_for_did(agent_did: &str) -> String {
-    agent_did
-        .rsplit(':')
-        .next()
-        .filter(|segment| !segment.trim().is_empty())
-        .unwrap_or(agent_did)
-        .to_string()
 }

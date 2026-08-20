@@ -3,7 +3,6 @@ import Proofs.Recovery.Sweeps.ToolCalls
 import Proofs.Recovery.Sweeps.DetachedBridge
 import Proofs.Recovery.Sweeps.Inference
 import Proofs.Recovery.Sweeps.SubagentLiveness
-import Proofs.Recovery.Sweeps.Conversation
 
 namespace Recovery
 
@@ -18,7 +17,6 @@ def registeredRecoverySweeps : List RecoverySweep :=
   , inferenceCallRecoverySweep
   , expiredSubagentChildSweep
   , queuedDescendantSweep
-  , conversationRecoverySweep
   ]
 
 def registeredRecoverySweepIds : List String :=
@@ -44,7 +42,5 @@ theorem registered_sweeps_cover_persisted_collections :
       exact ⟨toolCallRecoverySweep, by simp [registeredRecoverySweeps], rfl⟩
   | inferenceCall =>
       exact ⟨inferenceCallRecoverySweep, by simp [registeredRecoverySweeps], rfl⟩
-  | agentConversation =>
-      exact ⟨conversationRecoverySweep, by simp [registeredRecoverySweeps], rfl⟩
 
 end Recovery

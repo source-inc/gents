@@ -5,6 +5,7 @@ namespace RequestContext
 inductive Action where
   | claim
   | dedupLose
+  | admissionReject
   | beginInference
   | advance
   | finish
@@ -25,6 +26,11 @@ def step? (pre : RequestContext) : Action → Option RequestContext
   | .dedupLose =>
       if pre.state = .pending ∧ pre.admission = .released then
         some { pre with state := .superseded }
+      else
+        none
+  | .admissionReject =>
+      if pre.state = .pending ∧ pre.admission = .released then
+        some { pre with state := .failed, admission := .released }
       else
         none
   | .beginInference =>
@@ -106,6 +112,11 @@ theorem step_sound
       rcases h_step with ⟨h_claim, h_post⟩
       rcases h_claim with ⟨h_state, h_admission⟩
       exact Transition.dedup_lose h_state h_admission h_post.symm
+  | admissionReject =>
+      simp [step?] at h_step
+      rcases h_step with ⟨h_reject, h_post⟩
+      rcases h_reject with ⟨h_state, h_admission⟩
+      exact Transition.admission_reject h_state h_admission h_post.symm
   | beginInference =>
       simp [step?] at h_step
       rcases h_step with ⟨h_begin, h_post⟩
@@ -165,6 +176,8 @@ theorem transition_complete
       exact ⟨.claim, by simp [step?, h_state, h_admission, h_ttl, h_post]⟩
   | dedup_lose h_state h_admission h_post =>
       exact ⟨.dedupLose, by simp [step?, h_state, h_admission, h_post]⟩
+  | admission_reject h_state h_admission h_post =>
+      exact ⟨.admissionReject, by simp [step?, h_state, h_admission, h_post]⟩
   | begin_inference h_state h_admission h_post =>
       exact ⟨.beginInference, by simp [step?, h_state, h_admission, h_post]⟩
   | advance h_state h_admission h_post =>

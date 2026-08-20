@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writes_manual_request_with_seeded_conversation_title() {
+    async fn writes_manual_request_with_deferred_conversation_title() {
         let node = test_node().await;
 
         let doc_id = write_manual_agent_request_with_conversation_title(
@@ -266,6 +266,7 @@ mod tests {
             r#"{{
                 AgentRequest(filter: {{ _docID: {{ _eq: "{doc_id}" }} }}, limit: 1) {{
                     session_id
+                    metadata
                 }}
             }}"#
         );
@@ -275,15 +276,26 @@ mod tests {
             "request query failed: {:?}",
             response.errors
         );
-        let session_id = response
+        let request = response
             .data
             .as_ref()
             .and_then(|d| d.get("AgentRequest"))
             .and_then(Value::as_array)
             .and_then(|rows| rows.first())
-            .and_then(|row| row.get("session_id"))
+            .expect("request row");
+        let session_id = request
+            .get("session_id")
             .and_then(Value::as_str)
             .expect("request should have session_id");
+        let metadata = request
+            .get("metadata")
+            .and_then(Value::as_str)
+            .and_then(|value| serde_json::from_str::<Value>(value).ok())
+            .expect("request should carry projection metadata");
+        assert_eq!(
+            metadata.get("conversation_title").and_then(Value::as_str),
+            Some("mini-host-health-20260430t180405z")
+        );
 
         let conversation_query = format!(
             r#"{{
@@ -303,25 +315,15 @@ mod tests {
             "conversation query failed: {:?}",
             conversation_response.errors
         );
-        let conversation = conversation_response
+        let conversations = conversation_response
             .data
             .as_ref()
             .and_then(|d| d.get("AgentConversation"))
             .and_then(Value::as_array)
-            .and_then(|rows| rows.first())
-            .expect("manual task run should seed AgentConversation");
-
-        assert_eq!(
-            conversation.get("title").and_then(Value::as_str),
-            Some("mini-host-health-20260430t180405z")
-        );
-        assert_eq!(
-            conversation.get("title_source").and_then(Value::as_str),
-            Some("task")
-        );
-        assert_eq!(
-            conversation.get("status").and_then(Value::as_str),
-            Some("pending")
+            .expect("conversation rows");
+        assert!(
+            conversations.is_empty(),
+            "enqueue must persist only AgentRequest; the runtime projects AgentConversation"
         );
     }
 

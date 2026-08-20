@@ -317,7 +317,6 @@ function AppShell({ bridge: explicitBridge }: { bridge?: DesktopShellBridge }) {
               session={shell.session}
               turnState={shell.turnState ?? shell.session?.turnState ?? null}
               onOpenMobileNavigation={() => setMobileChatPane("navigation")}
-              onForkedConversation={shell.onSelectSession}
               onInterruptAccepted={async () => {
                 await shell.refreshSession(shell.selectedSessionId);
               }}

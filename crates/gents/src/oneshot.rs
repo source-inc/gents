@@ -11,6 +11,7 @@ use crate::backend_provider::BackendProviderKind;
 use crate::completion_factory::loop_config;
 use crate::config::AgentBehavior;
 use crate::hook::{BackgroundToolRegistry, DefraSessionHook, FailurePolicy};
+use crate::lifecycle::{ExecutionOrigin, RequestLifecycle, TriggerLineage};
 use crate::prompt::{LayeredPromptBuilder, PromptBuilder};
 use crate::tool_surface::{self, ToolRuntimeContext};
 
@@ -265,43 +266,65 @@ async fn run_oneshot_owned<M: CompletionModel + 'static>(
     model: M,
     prompt: &str,
     tools: Arc<Vec<Box<dyn ToolDyn>>>,
-    config: crate::agent::loop_stream::LoopConfig,
+    mut config: crate::agent::loop_stream::LoopConfig,
     background_tool_registry: BackgroundToolRegistry,
     lsp_pool: crate::toolset::lsp::LspPool,
 ) -> Result<OneshotRunResult>
 where
     M::StreamingResponse: 'static,
 {
-    // A one-shot run has no `AgentRequest` document, so `request_doc_id` stays
-    // empty rather than impersonating a durable document. Its random session id
-    // still gives the capture key a unique durable scope. The session and
-    // logical request id are minted before the first provider call, and the
-    // session is created eagerly rather than on the hook's first write.
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let request_id = format!("oneshot-{}", uuid::Uuid::new_v4());
+    let mut lifecycle = RequestLifecycle::materialize_claimed_with_execution_binding(
+        node.clone(),
+        &behavior.behavior_id,
+        behavior.agent_did(),
+        prompt,
+        behavior.deadline_duration.as_secs(),
+        ExecutionOrigin::Interactive,
+        behavior.backend_id.as_deref().unwrap_or_default(),
+        TriggerLineage::default(),
+    )
+    .await?;
+    lifecycle.begin_execution().await?;
+    let request = lifecycle.request().clone();
+    let request_commit_cid = lifecycle
+        .request_commit_cid()
+        .context("one-shot request has no commit CID")?
+        .to_string();
+    config.deadline = request
+        .deadline
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&chrono::Utc));
     let capture_scope = crate::rendered_request::scope::scope_from_factory(
         crate::rendered_request::RenderedRequestContext {
-            request_doc_id: String::new(),
-            request_commit_cid: String::new(),
-            request_id,
+            request_doc_id: request.doc_id.clone(),
+            request_commit_cid,
+            request_id: request.request_id.clone(),
             agent_did: behavior.agent_did().to_string(),
             requester_did: String::new(),
             behavior_id: behavior.behavior_id.clone(),
-            session_id: session_id.clone(),
+            session_id: request.session_id.clone(),
             model_name: behavior.model_name.clone(),
         },
         Some(&crate::rendered_request::defra_rendered_request_capture_factory(node.clone())),
     );
 
-    let hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    let hook = DefraSessionHook::resume_with_identity_policy(
         node,
-        &session_id,
+        &request.session_id,
         &behavior.behavior_id,
         behavior.agent_did(),
         FailurePolicy::default(),
     )
     .await?
     .with_background_tool_registry(background_tool_registry);
+    hook.set_active_request_binding(
+        Some(request.request_id.clone()),
+        Some(request.doc_id.clone()),
+        request.requester_did.clone(),
+    )
+    .await;
+    hook.set_request_deadline_at(config.deadline).await;
     let history = prompt_builder.build(&[], &[]).await?.messages;
 
     let inference = crate::agent::loop_stream::run_loop_to_text(
@@ -319,16 +342,18 @@ where
     .map_err(|error| anyhow!("one-shot inference failed: {error}"));
 
     let session_id = hook.session_id().await;
-    let close_result = hook.close().await;
-    if let Some(id) = session_id.as_deref() {
-        lsp_pool.close_session(id).await;
-    } else {
-        lsp_pool.shutdown().await;
-    }
-
     match response {
         Ok(response_text) => {
+            let lifecycle_result = lifecycle.complete().await;
+            let close_result = hook.close().await;
+            if let Some(id) = session_id.as_deref() {
+                lsp_pool.close_session(id).await;
+            } else {
+                lsp_pool.shutdown().await;
+            }
+
             let session_id = session_id.context("one-shot run did not create a session")?;
+            lifecycle_result?;
             close_result.with_context(|| format!("closing one-shot session {session_id}"))?;
 
             Ok(OneshotRunResult {
@@ -337,6 +362,19 @@ where
             })
         }
         Err(error) => {
+            let lifecycle_result = lifecycle.fail_with_reason(&error.to_string()).await;
+            let close_result = hook.close().await;
+            if let Some(id) = session_id.as_deref() {
+                lsp_pool.close_session(id).await;
+            } else {
+                lsp_pool.shutdown().await;
+            }
+
+            if let Err(lifecycle_error) = lifecycle_result {
+                return Err(anyhow!(
+                    "agent prompt failed: {error}; additionally failed to terminalize request: {lifecycle_error}"
+                ));
+            }
             if let Some(session_id) = session_id {
                 if let Err(close_error) = close_result {
                     return Err(anyhow!(

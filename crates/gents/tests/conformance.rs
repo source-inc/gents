@@ -60,13 +60,13 @@ use lean_vocab_test::{
     lean_r4c_background_work_cases, lean_r5_cross_deployment_cases,
     lean_r6_background_theorem_witness, lean_r6_background_theorem_witnesses,
     lean_r6_backgrounding_case, lean_r6_backgrounding_cases, lean_recovery_equivalence_cases,
-    lean_recovery_outcome_cases, lean_recovery_sweep_cases, lean_request_transition_cases,
-    lean_response_interrupt_flow_cases, lean_response_transition_cases,
-    lean_restart_disposition_cases, lean_runtime_reconcile_case, lean_runtime_reconcile_cases,
-    lean_session_recovery_case, lean_startup_readiness_cases, lean_state_machine_contract,
-    lean_subagent_delegation_graph_cases, lean_tool_output_paging_cases, lean_transcript_case,
-    lean_transcript_cases, lean_vocabulary_values, LeanEventDeliveryAction,
-    LeanLifecycleTransitionCase, LeanR4cBackgroundWorkCase,
+    lean_recovery_sweep_cases, lean_request_transition_cases, lean_response_interrupt_flow_cases,
+    lean_response_transition_cases, lean_restart_disposition_cases, lean_runtime_reconcile_case,
+    lean_runtime_reconcile_cases, lean_session_recovery_case, lean_startup_readiness_cases,
+    lean_state_machine_contract, lean_subagent_delegation_graph_cases,
+    lean_tool_output_paging_cases, lean_transcript_case, lean_transcript_cases,
+    lean_vocabulary_values, LeanEventDeliveryAction, LeanLifecycleTransitionCase,
+    LeanR4cBackgroundWorkCase,
 };
 use support::conformance_consumers::assert_registered_conformance_consumers_resolve;
 use support::snapshots::{
@@ -78,11 +78,10 @@ use support::snapshots::{
     RequestLineageSnapshot, RequestSnapshot, ResponseSnapshot, SessionSnapshot, ToolCallSnapshot,
 };
 use support::{
-    build_request, conversation_status_by_doc_id, create_agent_session, create_conversation_row,
-    create_request, create_response_with_content_and_status, create_response_with_status,
-    first_optional_row, first_row, set_interrupt_requested_at, set_request_lifecycle_state,
-    set_valid_until, test_db, test_db_with_duplicate_tolerant_conversations, upsert_conversation,
-    AGENT_DID, AGENT_NAME, BACKEND_ID, DEADLINE_SECS,
+    build_request, create_agent_session, create_conversation_row, create_request,
+    create_response_with_content_and_status, create_response_with_status, first_optional_row,
+    first_row, set_interrupt_requested_at, set_request_lifecycle_state, set_valid_until, test_db,
+    upsert_conversation, AGENT_DID, AGENT_NAME, BACKEND_ID, DEADLINE_SECS,
 };
 
 #[path = "conformance/backend_health.rs"]
@@ -172,11 +171,6 @@ fn generated_recovery_equivalence_cases_pin_uninterrupted_convergence_contract()
 }
 
 #[tokio::test]
-async fn generated_recovery_outcome_cases_fence_duplicate_tolerant_counting() {
-    recovery_sweeps::generated_recovery_outcome_cases_fence_duplicate_tolerant_counting().await;
-}
-
-#[tokio::test]
 async fn generated_restart_disposition_cases_drive_recover_all() {
     recovery_sweeps::generated_restart_disposition_cases_drive_recover_all().await;
 }
@@ -258,9 +252,23 @@ fn generated_subagent_delegation_graph_cases_pin_gap2_contract() {
     background::generated_subagent_delegation_graph_cases_pin_gap2_contract();
 }
 
-#[tokio::test]
-async fn generated_r5_cross_deployment_cases_drive_production_dispatch() {
-    r5_cross_deployment::generated_r5_cross_deployment_cases_drive_production_dispatch().await;
+#[test]
+fn generated_r5_cross_deployment_cases_drive_production_dispatch() {
+    std::thread::Builder::new()
+        .name("r5-cross-deployment-conformance".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build r5 cross-deployment runtime")
+                .block_on(
+                    r5_cross_deployment::generated_r5_cross_deployment_cases_drive_production_dispatch(),
+                );
+        })
+        .expect("spawn r5 cross-deployment conformance thread")
+        .join()
+        .expect("r5 cross-deployment conformance thread panicked");
 }
 
 #[tokio::test]
@@ -272,9 +280,15 @@ async fn generated_composed_invariant_witnesses_drive_tool_lifecycle_conformance
 // This integration fence drives two live runtimes and two P2P nodes. Match the
 // production multi-thread executor so cancellation progress cannot be starved
 // behind a blocking DefraDB operation on the test's coordinator thread.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancel_propagation_cases_drive_production_interrupt() {
-    cancel_propagation::cancel_propagation_cases_drive_production_interrupt().await;
+#[test]
+fn cancel_propagation_cases_drive_production_interrupt() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("build cancel-propagation runtime")
+        .block_on(cancel_propagation::cancel_propagation_cases_drive_production_interrupt());
 }
 
 #[test]
@@ -307,16 +321,38 @@ async fn generated_streaming_response_cases_pin_lifecycle_contract() {
     streaming_compaction::generated_streaming_response_cases_pin_lifecycle_contract().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn generated_streaming_response_interrupt_flow_cases_drive_daemon_contract() {
-    streaming_compaction::generated_streaming_response_interrupt_flow_cases_drive_daemon_contract()
-        .await;
+#[test]
+fn generated_streaming_response_interrupt_flow_cases_drive_daemon_contract() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("build streaming interrupt-flow runtime")
+        .block_on(
+            streaming_compaction::generated_streaming_response_interrupt_flow_cases_drive_daemon_contract(),
+        );
 }
 
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn generated_streaming_response_idle_timeout_case_drives_daemon_contract() {
-    streaming_compaction::generated_streaming_response_idle_timeout_case_drives_daemon_contract()
-        .await;
+#[test]
+fn generated_streaming_response_idle_timeout_case_drives_daemon_contract() {
+    std::thread::Builder::new()
+        .name("streaming-idle-timeout-conformance".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build streaming idle-timeout runtime")
+                .block_on(async {
+                    tokio::time::pause();
+                    streaming_compaction::generated_streaming_response_idle_timeout_case_drives_daemon_contract()
+                        .await;
+                });
+        })
+        .expect("spawn streaming idle-timeout conformance thread")
+        .join()
+        .expect("streaming idle-timeout conformance thread panicked");
 }
 
 #[test]
@@ -324,9 +360,18 @@ fn generated_compaction_reducer_cases_pin_contract() {
     streaming_compaction::generated_compaction_reducer_cases_pin_contract();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn compaction_gate_blocks_reduction_while_a_response_streams() {
-    compaction_gate::compaction_gate_blocks_reduction_while_a_response_streams().await;
+#[test]
+fn compaction_gate_blocks_reduction_while_a_response_streams() {
+    // This test drives the same bulky-history DefraDB replay path as the
+    // runtime. Match the production CLI's worker stack instead of Tokio's 2 MiB
+    // test default, which is too small for that path.
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("build compaction-gate runtime")
+        .block_on(compaction_gate::compaction_gate_blocks_reduction_while_a_response_streams());
 }
 
 #[tokio::test]

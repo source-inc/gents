@@ -1,6 +1,5 @@
 use gents::{
     fetch_interrupt_requested_at,
-    lifecycle::{ClaimOutcome, ExecutionOrigin},
     tool_call_lifecycle::{AwaitMode, CancelPolicy, ToolCallLifecycle},
     RequestLifecycle,
 };
@@ -10,10 +9,9 @@ use crate::support::snapshots::{
     fetch_message_snapshots_for_session, fetch_tool_call_snapshots_for_session,
 };
 use crate::support::{
-    build_request, conversation_status_by_doc_id, create_conversation_row, create_request,
-    create_response_with_content_and_status, create_response_with_status, first_row, test_db,
-    test_db_with_duplicate_tolerant_conversations, upsert_conversation, AGENT_DID, AGENT_NAME,
-    BACKEND_ID, DEADLINE_SECS,
+    create_agent_session, create_request, create_response_with_content_and_status,
+    create_response_with_status, first_row, test_db, upsert_conversation, AGENT_DID, AGENT_NAME,
+    BACKEND_ID,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -25,11 +23,6 @@ struct StatusRow {
 struct ResponseStatusRow {
     status: String,
     content: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ConversationRow {
-    status: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -301,6 +294,15 @@ async fn mark_request_interrupted(node: &gents::defra_node::EmbeddedNode, doc_id
     );
 }
 
+async fn seed_accepted_request_projection(
+    node: &gents::defra_node::EmbeddedNode,
+    session_id: &str,
+    request_id: &str,
+) {
+    create_agent_session(node, session_id, AGENT_NAME, "2026-03-23T00:00:00Z").await;
+    upsert_conversation(node, session_id, request_id, "stuck request", "active").await;
+}
+
 #[tokio::test]
 async fn recover_all_marks_requests_as_error() {
     let db = test_db("lifecycle-recover-error").await;
@@ -312,6 +314,7 @@ async fn recover_all_marks_requests_as_error() {
         "2026-03-23T00:00:00Z",
     )
     .await;
+    seed_accepted_request_projection(&db.node, "session-1", "stuck-1").await;
 
     let report = RequestLifecycle::recover_all(&db.node, AGENT_DID)
         .await
@@ -346,6 +349,7 @@ async fn recover_all_preserves_completed_response() {
         "2026-03-23T00:00:00Z",
     )
     .await;
+    seed_accepted_request_projection(&db.node, "session-complete", "stuck-complete").await;
     create_response_with_status(
         &db.node,
         "stuck-complete",
@@ -354,20 +358,10 @@ async fn recover_all_preserves_completed_response() {
         "complete",
     )
     .await;
-    upsert_conversation(
-        &db.node,
-        "session-complete",
-        "stuck-complete",
-        "hello",
-        "processing",
-    )
-    .await;
-
     let report = RequestLifecycle::recover_all(&db.node, AGENT_DID)
         .await
         .unwrap();
     assert_eq!(report.requests_recovered, 1);
-    assert_eq!(report.conversations_recovered, 1);
 
     let request_resp = db
         .node
@@ -384,26 +378,10 @@ async fn recover_all_preserves_completed_response() {
         first_row::<StatusRow>(&request_resp, "AgentRequest").status,
         "completed"
     );
-
-    let conversation_resp = db
-        .node
-        .execute(
-            r#"{
-                AgentConversation(
-                    filter: { session_id: { _eq: "session-complete" } },
-                    limit: 1
-                ) { status latest_request_id }
-            }"#,
-        )
-        .await;
-    assert_eq!(
-        first_row::<ConversationRow>(&conversation_resp, "AgentConversation").status,
-        "completed"
-    );
 }
 
 #[tokio::test]
-async fn recover_all_marks_partial_streams_error_and_reactivates_conversation() {
+async fn recover_all_marks_partial_streams_error() {
     let db = test_db("lifecycle-recover-partial").await;
     create_request(
         &db.node,
@@ -413,6 +391,7 @@ async fn recover_all_marks_partial_streams_error_and_reactivates_conversation() 
         "2026-03-23T00:00:00Z",
     )
     .await;
+    seed_accepted_request_projection(&db.node, "session-partial", "stuck-partial").await;
     create_response_with_content_and_status(
         &db.node,
         "stuck-partial",
@@ -422,21 +401,11 @@ async fn recover_all_marks_partial_streams_error_and_reactivates_conversation() 
         "streaming",
     )
     .await;
-    upsert_conversation(
-        &db.node,
-        "session-partial",
-        "stuck-partial",
-        "hello",
-        "processing",
-    )
-    .await;
-
     let report = RequestLifecycle::recover_all(&db.node, AGENT_DID)
         .await
         .unwrap();
     assert_eq!(report.responses_recovered, 1);
     assert_eq!(report.requests_recovered, 1);
-    assert_eq!(report.conversations_recovered, 1);
 
     let response_resp = db
         .node
@@ -452,22 +421,6 @@ async fn recover_all_marks_partial_streams_error_and_reactivates_conversation() 
     let response = first_row::<ResponseStatusRow>(&response_resp, "AgentResponse");
     assert_eq!(response.status, "error");
     assert!(response.content.contains("[Response interrupted"));
-
-    let conversation_resp = db
-        .node
-        .execute(
-            r#"{
-                AgentConversation(
-                    filter: { session_id: { _eq: "session-partial" } },
-                    limit: 1
-                ) { status latest_request_id }
-            }"#,
-        )
-        .await;
-    assert_eq!(
-        first_row::<ConversationRow>(&conversation_resp, "AgentConversation").status,
-        "active"
-    );
 }
 
 #[tokio::test]
@@ -481,21 +434,12 @@ async fn recover_all_creates_error_response_when_response_doc_is_missing() {
         "2026-03-23T00:00:00Z",
     )
     .await;
-    upsert_conversation(
-        &db.node,
-        "session-missing",
-        "stuck-missing",
-        "hello",
-        "processing",
-    )
-    .await;
-
+    seed_accepted_request_projection(&db.node, "session-missing", "stuck-missing").await;
     let report = RequestLifecycle::recover_all(&db.node, AGENT_DID)
         .await
         .unwrap();
     assert_eq!(report.responses_recovered, 1);
     assert_eq!(report.requests_recovered, 1);
-    assert_eq!(report.conversations_recovered, 1);
 
     let response_resp = db
         .node
@@ -806,147 +750,5 @@ async fn recover_all_leaves_detached_subagent_tool_running() {
     assert!(
         child_interrupt.is_none(),
         "detached recovery should not interrupt the child request"
-    );
-}
-
-/// #693: a store carrying two `AgentConversation` docs for one `session_id`.
-///
-/// Before the fix this failed twice over: the `session_id`-filtered upsert was
-/// refused by DefraDB (`cannot upsert multiple matching documents`), so *both*
-/// docs stayed `processing` — and the sweep still reported
-/// `conversations_recovered == 2`, because it counted the rows it attempted
-/// rather than the writes that landed. A fully failed pass logged as healthy.
-///
-/// The duplicate condition is real: `session_id` is unique-indexed in the
-/// shipped schema, but DefraDB cannot add an index to an existing collection,
-/// so hosts whose collection predates the index carry duplicates permanently
-/// (replication can mint them too). Four production stores were held back on old
-/// releases by this.
-#[tokio::test]
-async fn recover_all_recovers_canonical_conversation_of_a_duplicated_session() {
-    let db = test_db_with_duplicate_tolerant_conversations("lifecycle-recovery-duplicate").await;
-
-    create_request(
-        &db.node,
-        "dup-req",
-        "session-dup",
-        "processing",
-        "2026-03-23T00:00:00Z",
-    )
-    .await;
-    create_response_with_status(&db.node, "dup-req", "dup-req", "session-dup", "complete").await;
-
-    let canonical = create_conversation_row(
-        &db.node,
-        "session-dup",
-        "Real conversation",
-        "hello",
-        "processing",
-        "2026-03-23T00:00:00Z",
-        "2026-03-23T00:05:00Z",
-        "dup-req",
-    )
-    .await;
-    let duplicate = create_conversation_row(
-        &db.node,
-        "session-dup",
-        "",
-        "",
-        "processing",
-        "2026-03-22T00:00:00Z",
-        "2026-03-22T00:00:00Z",
-        "",
-    )
-    .await;
-    assert_ne!(canonical, duplicate, "the seed must produce two documents");
-
-    let report = RequestLifecycle::recover_all(&db.node, AGENT_DID)
-        .await
-        .expect("recovery must not fail on a duplicate store");
-
-    assert_eq!(report.conversations_recovered, 1);
-    assert_eq!(report.conversations_failed, 0);
-    assert_eq!(report.duplicate_conversation_sessions, 1);
-
-    assert_eq!(
-        conversation_status_by_doc_id(&db.node, &canonical).await,
-        "completed",
-    );
-    assert_eq!(
-        conversation_status_by_doc_id(&db.node, &duplicate).await,
-        "completed",
-    );
-
-    let second = RequestLifecycle::recover_all(&db.node, AGENT_DID)
-        .await
-        .expect("second pass");
-    assert_eq!(second.conversations_recovered, 0);
-    assert_eq!(second.conversations_failed, 0);
-}
-
-#[tokio::test]
-async fn live_request_path_survives_a_duplicated_session() {
-    let db = test_db_with_duplicate_tolerant_conversations("lifecycle-duplicate-live").await;
-
-    let canonical = create_conversation_row(
-        &db.node,
-        "session-live",
-        "Real conversation",
-        "hello",
-        "active",
-        "2026-03-23T00:00:00Z",
-        "2026-03-23T00:05:00Z",
-        "req-old",
-    )
-    .await;
-    let duplicate = create_conversation_row(
-        &db.node,
-        "session-live",
-        "",
-        "",
-        "active",
-        "2026-03-22T00:00:00Z",
-        "2026-03-22T00:00:00Z",
-        "",
-    )
-    .await;
-
-    let doc_id = create_request(
-        &db.node,
-        "req-new",
-        "session-live",
-        "pending",
-        "2026-03-24T00:00:00Z",
-    )
-    .await;
-    let request = build_request(
-        doc_id,
-        "req-new".to_string(),
-        "session-live".to_string(),
-        "2026-03-24T00:00:00Z".to_string(),
-    );
-    let mut lifecycle = RequestLifecycle::new_with_execution_binding(
-        db.node.clone(),
-        AGENT_NAME,
-        AGENT_DID,
-        request,
-        DEADLINE_SECS,
-        ExecutionOrigin::Interactive,
-        BACKEND_ID,
-    );
-    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-
-    lifecycle
-        .prepare_session_with_identity()
-        .await
-        .expect("live conversation write must survive a duplicate store");
-
-    assert_eq!(
-        conversation_status_by_doc_id(&db.node, &canonical).await,
-        "processing",
-    );
-    assert_eq!(
-        conversation_status_by_doc_id(&db.node, &duplicate).await,
-        "active",
     );
 }

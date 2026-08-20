@@ -14,6 +14,11 @@ inductive Transition : RequestContext → RequestContext → Prop where
       pre.admission = .released →
       post = { pre with state := .superseded } →
       Transition pre post
+  | admission_reject {pre post : RequestContext} :
+      pre.state = .pending →
+      pre.admission = .released →
+      post = { pre with state := .failed, admission := .released } →
+      Transition pre post
   | begin_inference {pre post : RequestContext} :
       pre.state = .claimed →
       pre.admission = .acquired →

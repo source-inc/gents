@@ -104,7 +104,14 @@ async fn create_parent_hook(
 ) -> DefraSessionHook {
     let deadline = chrono::Utc::now() + chrono::Duration::minutes(5);
     create_parent_request(db.node.as_ref(), request_id, session_id, deadline).await;
-    let hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    crate::support::create_agent_session(
+        db.node.as_ref(),
+        session_id,
+        PARENT_BEHAVIOR_ID,
+        "2026-05-14T00:00:00Z",
+    )
+    .await;
+    let hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         session_id,
         PARENT_BEHAVIOR_ID,

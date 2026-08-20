@@ -174,8 +174,15 @@ async fn setup_hook(
         "2026-05-14T00:00:00Z",
     )
     .await;
+    crate::support::create_agent_session(
+        db.node.as_ref(),
+        &session_id,
+        "r6-background",
+        "2026-05-14T00:00:00Z",
+    )
+    .await;
 
-    let hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    let hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &session_id,
         "r6-background",

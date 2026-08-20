@@ -20,7 +20,7 @@ use ts_rs::TS;
 
 use crate::contract::BridgeContract;
 use crate::error::{BridgeError, BridgeErrorCode};
-use crate::tauri_commands::chat::{RequestResendResultView, SessionForkResultView};
+use crate::tauri_commands::chat::RequestResendResultView;
 use crate::tauri_commands::inference_setup::{
     CodexLoginRequest, CodexLoginResult, CodexLoginUrl, GrokLoginRequest, GrokLoginResult,
     GrokLoginUrl, InferenceProbeRequest, InferenceProbeResult, ProviderAccountDisconnectRequest,
@@ -247,7 +247,6 @@ fn export_all(dir: &Path) -> Result<(), String> {
         ToolCallView,
         ToolResultView,
         BridgeContract,
-        SessionForkResultView,
         RequestResendResultView,
         WorkspaceListingView,
         DesktopObserverMetrics,

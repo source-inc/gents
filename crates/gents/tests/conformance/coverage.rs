@@ -117,7 +117,7 @@ pub(super) fn lean_executable_contracts_cover_initial_domains() {
             .any(|hook| hook.contains("CommandPolicy")),
         "CommandPolicy should be emitted as generated contract output, not a follow-up hook"
     );
-    assert_eq!(lean_contract_snapshot().runtime_reconcile_cases.len(), 6);
+    assert_eq!(lean_contract_snapshot().runtime_reconcile_cases.len(), 7);
     assert_eq!(lean_contract_snapshot().request_transition_cases.len(), 81);
     assert_eq!(lean_contract_snapshot().process_transition_cases.len(), 25);
     assert_eq!(lean_contract_snapshot().apply_reconcile_cases.len(), 10);
@@ -156,7 +156,7 @@ pub(super) fn lean_executable_contracts_cover_initial_domains() {
     );
     assert_eq!(
         lean_contract_snapshot().frontend_client_shell_cases.len(),
-        15
+        17
     );
     assert_eq!(
         lean_contract_snapshot().desktop_client_shell_case_count,
@@ -164,7 +164,7 @@ pub(super) fn lean_executable_contracts_cover_initial_domains() {
     );
     assert_eq!(
         lean_contract_snapshot().desktop_client_shell_cases.len(),
-        12
+        13
     );
     assert_eq!(lean_contract_snapshot().tool_preflight_cases.len(), 9);
     assert_eq!(lean_contract_snapshot().tool_retry_cases.len(), 63);
@@ -172,9 +172,8 @@ pub(super) fn lean_executable_contracts_cover_initial_domains() {
     assert_eq!(lean_contract_snapshot().command_sandbox_cases.len(), 4);
     assert_eq!(lean_contract_snapshot().command_env_cases.len(), 14);
     assert_eq!(lean_queue_deadline_cases().len(), 5);
-    assert_eq!(lean_recovery_sweep_cases().len(), 37);
-    assert_eq!(lean_recovery_equivalence_cases().len(), 37);
-    assert_eq!(lean_recovery_outcome_cases().len(), 4);
+    assert_eq!(lean_recovery_sweep_cases().len(), 34);
+    assert_eq!(lean_recovery_equivalence_cases().len(), 34);
     assert_eq!(lean_transcript_cases().len(), 7);
     assert_eq!(lean_response_interrupt_flow_cases().len(), 1);
     assert_eq!(lean_subagent_delegation_graph_cases().len(), 3);
@@ -712,12 +711,6 @@ fn lean_contract_coverage_ledger_accounts_for_every_emitted_domain() {
             "RecoverySweepCases".to_string(),
         ));
     }
-    if !lean_recovery_outcome_cases().is_empty() {
-        emitted.insert((
-            "recovery_outcome_cases".to_string(),
-            "RecoveryOutcomeCases".to_string(),
-        ));
-    }
     if !lean_recovery_equivalence_cases().is_empty() {
         emitted.insert((
             "recovery_equivalence_cases".to_string(),
@@ -1063,7 +1056,6 @@ fn lean_contract_coverage_ledger_accounts_for_every_emitted_domain() {
         "live_overlay_cases",
         "queue_deadline_cases",
         "recovery_sweep_cases",
-        "recovery_outcome_cases",
         "recovery_equivalence_cases",
         "restart_disposition_cases",
         "tool_output_paging_cases",

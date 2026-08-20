@@ -99,27 +99,6 @@ pub(crate) async fn enqueue_background_completion_with_message(
         .unwrap_or_else(|| enqueued.request.clone());
         enqueued.created_request = active_request.doc_id == created_request_doc_id;
 
-        if let Err(error) =
-            session::upsert_conversation_from_request_with_identity_and_requester_did(
-                node,
-                &parent.session_id,
-                &behavior_id,
-                &parent.agent_did,
-                &behavior_id,
-                &active_request.request_id,
-                wake_content,
-                "pending",
-                parent.requester_did.as_deref(),
-            )
-            .await
-        {
-            tracing::warn!(
-                request_id = %active_request.request_id,
-                session_id = %parent.session_id,
-                error = %error,
-                "failed to update conversation for background-completion request"
-            );
-        }
         enqueued.request = active_request;
     }
 

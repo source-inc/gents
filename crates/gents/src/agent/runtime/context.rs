@@ -159,7 +159,7 @@ impl RuntimeContext {
                         ),
                     )
                     .with_context(|| build_context.clone())?;
-                    self.run_behavior_with_client(
+                    Box::pin(self.run_behavior_with_client(
                         behavior,
                         request_rx,
                         shutdown,
@@ -170,7 +170,7 @@ impl RuntimeContext {
                         tool_surface.approval_required_tools().to_vec(),
                         tool_surface.output_obligations(),
                         client,
-                    )
+                    ))
                     .await
                 } else {
                     let client: rig::providers::openai::Client<
@@ -190,7 +190,7 @@ impl RuntimeContext {
                         Default::default(),
                     )
                     .with_context(|| build_context.clone())?;
-                    self.run_behavior_with_client(
+                    Box::pin(self.run_behavior_with_client(
                         behavior,
                         request_rx,
                         shutdown,
@@ -201,7 +201,7 @@ impl RuntimeContext {
                         tool_surface.approval_required_tools().to_vec(),
                         tool_surface.output_obligations(),
                         client,
-                    )
+                    ))
                     .await
                 }
             }
@@ -220,7 +220,7 @@ impl RuntimeContext {
                     )
                     .build()
                     .with_context(|| build_context.clone())?;
-                self.run_behavior_with_client(
+                Box::pin(self.run_behavior_with_client(
                     behavior,
                     request_rx,
                     shutdown,
@@ -231,7 +231,7 @@ impl RuntimeContext {
                     tool_surface.approval_required_tools().to_vec(),
                     tool_surface.output_obligations(),
                     client,
-                )
+                ))
                 .await
             }
             BackendProviderKind::ChatGptCodex => {
@@ -257,7 +257,7 @@ impl RuntimeContext {
                         behavior.behavior_id, behavior.backend_endpoint
                     )
                 })?;
-                self.run_behavior_with_client(
+                Box::pin(self.run_behavior_with_client(
                     behavior,
                     request_rx,
                     shutdown,
@@ -268,7 +268,7 @@ impl RuntimeContext {
                     tool_surface.approval_required_tools().to_vec(),
                     tool_surface.output_obligations(),
                     client,
-                )
+                ))
                 .await
             }
             BackendProviderKind::XaiGrokOAuth => {
@@ -295,7 +295,7 @@ impl RuntimeContext {
                     .map_err(|_| timeout_error())
                     .and_then(|result| result)
                     .with_context(|| build_context.clone())?;
-                    self.run_behavior_with_client(
+                    Box::pin(self.run_behavior_with_client(
                         behavior,
                         request_rx,
                         shutdown,
@@ -306,7 +306,7 @@ impl RuntimeContext {
                         tool_surface.approval_required_tools().to_vec(),
                         tool_surface.output_obligations(),
                         client,
-                    )
+                    ))
                     .await
                 } else {
                     let client = tokio::time::timeout(
@@ -321,7 +321,7 @@ impl RuntimeContext {
                     .map_err(|_| timeout_error())
                     .and_then(|result| result)
                     .with_context(|| build_context.clone())?;
-                    self.run_behavior_with_client(
+                    Box::pin(self.run_behavior_with_client(
                         behavior,
                         request_rx,
                         shutdown,
@@ -332,7 +332,7 @@ impl RuntimeContext {
                         tool_surface.approval_required_tools().to_vec(),
                         tool_surface.output_obligations(),
                         client,
-                    )
+                    ))
                     .await
                 }
             }

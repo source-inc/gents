@@ -74,6 +74,9 @@ theorem terminal_irreversibility
   | dedup_lose h_pre _ _ =>
     rw [h_pre] at h_terminal
     exact (pending_not_terminal h_terminal).elim
+  | admission_reject h_pre _ _ =>
+    rw [h_pre] at h_terminal
+    exact (pending_not_terminal h_terminal).elim
   | begin_inference h_pre _ _ =>
     rw [h_pre] at h_terminal
     exact (claimed_not_terminal h_terminal).elim
@@ -111,6 +114,8 @@ theorem progress_monotonic
     simp [h_post]
   | dedup_lose _ _ h_post =>
     simp [h_post]
+  | admission_reject _ _ h_post =>
+    simp [h_post]
   | begin_inference _ _ h_post =>
     simp [h_post]
   | advance _ _ h_post =>
@@ -141,6 +146,8 @@ theorem completed_not_deadline_expired
   | claim _ _ _ h_post =>
     simp [h_post] at h_completed
   | dedup_lose _ _ h_post =>
+    simp [h_post] at h_completed
+  | admission_reject _ _ h_post =>
     simp [h_post] at h_completed
   | begin_inference _ _ h_post =>
     simp [h_post] at h_completed
@@ -225,6 +232,8 @@ theorem persistence_before_completion
     simp [h_post] at h_completed
   | dedup_lose _ _ h_post =>
     simp [h_post] at h_completed
+  | admission_reject _ _ h_post =>
+    simp [h_post] at h_completed
   | begin_inference _ _ h_post =>
     simp [h_post] at h_completed
   | advance h_pre _ h_post =>
@@ -258,6 +267,8 @@ theorem claim_deadline_structural_bound
   | claim _ _ _ h_post =>
       simp [h_post]
   | dedup_lose _ _ h_post =>
+      simp [h_post] at h_claimed
+  | admission_reject _ _ h_post =>
       simp [h_post] at h_claimed
   | begin_inference _ _ h_post =>
       simp [h_post] at h_claimed

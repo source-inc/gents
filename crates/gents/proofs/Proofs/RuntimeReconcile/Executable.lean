@@ -92,7 +92,8 @@ def step? (pre : RuntimeState) : Action → Option RuntimeState
       if CanAdmitRequest pre sessionId requestId then
         some
           { pre with
-            inFlight := insert requestId pre.inFlight
+            accepted := insert requestId pre.accepted
+          , inFlight := insert requestId pre.inFlight
           , requestGeneration := Function.update pre.requestGeneration requestId pre.routerObservedGeneration
           , requestSession := Function.update pre.requestSession requestId sessionId
           , requestBehavior := Function.update pre.requestBehavior requestId (pre.selectedBehavior sessionId)
@@ -280,7 +281,7 @@ theorem accept_step_router_observed_ready_live
   rcases h_coherent with
     ⟨_, _, _, _, _, _, _, _, h_ready_live, _, _, _, _⟩
   simp [step?] at h_step
-  rcases h_step.1 with ⟨_, h_router_eq, h_router_ready, _⟩
+  rcases h_step.1 with ⟨_, _, h_router_eq, h_router_ready, _⟩
   exact ⟨h_router_eq, h_router_ready, h_ready_live _ h_router_ready⟩
 
 theorem accept_step_binding_coherent
@@ -288,7 +289,8 @@ theorem accept_step_binding_coherent
     {sessionId : SessionId}
     {requestId : RequestId}
     (h_step : step? pre (.acceptRequest sessionId requestId) = some post) :
-    requestId ∈ post.inFlight ∧
+    requestId ∈ post.accepted ∧
+      requestId ∈ post.inFlight ∧
       post.requestGeneration requestId = pre.routerObservedGeneration ∧
       post.requestSession requestId = sessionId ∧
       post.requestBehavior requestId = pre.selectedBehavior sessionId ∧
@@ -296,9 +298,41 @@ theorem accept_step_binding_coherent
         some (post.requestBehavior requestId) := by
   simp [step?] at h_step
   rcases h_step with ⟨h_can, h_post⟩
-  rcases h_can with ⟨h_fresh, _, _, _⟩
+  rcases h_can with ⟨_, h_fresh, _, _, _⟩
   cases h_post
   simp [Function.update, bindSessionIfNeeded_selected, h_fresh]
+
+/-- Admission is the atomic boundary: an accepted request already owns its
+session/behavior projection; there is no later repair transition. -/
+theorem accept_step_projects_session_atomically
+    {pre post : RuntimeState}
+    {sessionId : SessionId}
+    {requestId : RequestId}
+    (h_step : step? pre (.acceptRequest sessionId requestId) = some post) :
+    requestId ∈ post.accepted ∧
+      post.requestSession requestId = sessionId ∧
+      post.sessionBehavior sessionId = some (post.requestBehavior requestId) := by
+  have h := accept_step_binding_coherent h_step
+  exact ⟨h.1, h.2.2.2.1, by simpa [h.2.2.2.1] using h.2.2.2.2.2⟩
+
+theorem accept_step_replay_rejected
+    {pre post : RuntimeState}
+    {sessionId : SessionId}
+    {requestId : RequestId}
+    (h_step : step? pre (.acceptRequest sessionId requestId) = some post) :
+    step? post (.acceptRequest sessionId requestId) = none := by
+  simp [step?] at h_step
+  rcases h_step with ⟨h_can, h_post⟩
+  rcases h_can with ⟨h_unaccepted, _, _, _, _⟩
+  cases h_post
+  simp [step?, CanAdmitRequest, h_unaccepted]
+
+theorem accepted_step_monotone
+    {pre post : RuntimeState}
+    {action : Action}
+    (h_step : step? pre action = some post) :
+    pre.accepted ⊆ post.accepted :=
+  transition_accepted_monotone (step_sound h_step)
 
 theorem retire_generation_denies_inFlight_dependency
     {pre post : RuntimeState}

@@ -58,7 +58,7 @@ def projectSendDecision
   else if s.selection.agent.isNone then .blocked .agentNotSelected
   else if ¬ ctx.composerNonEmpty then .blocked .composerEmpty
   else match s.workflow with
-    | .creating _ | .submitting _ _ => .blocked .mutationInFlight
+    | .submitting _ _ => .blocked .mutationInFlight
     | .awaiting _ _                 => .blocked .awaitingObservation
     | .blocked _                    => .blocked .workflowBlocked
     | .idle =>

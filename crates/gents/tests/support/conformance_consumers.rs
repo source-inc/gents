@@ -477,13 +477,6 @@ pub fn registered_conformance_consumers() -> &'static [ConformanceConsumer] {
             function: "generated_recovery_sweep_cases_drive_startup_recovery_contract",
         },
         ConformanceConsumer::RustTest {
-            id: "conformance::generated_recovery_outcome_cases_fence_duplicate_tolerant_counting",
-            package: "gents",
-            source_path: "crates/gents/tests/conformance.rs",
-            module_path: "conformance",
-            function: "generated_recovery_outcome_cases_fence_duplicate_tolerant_counting",
-        },
-        ConformanceConsumer::RustTest {
             id: "conformance::generated_restart_disposition_cases_drive_recover_all",
             package: "gents",
             source_path: "crates/gents/tests/conformance.rs",

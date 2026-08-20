@@ -76,27 +76,6 @@ pub(crate) async fn enqueue_session_request(
         }
     }
 
-    if let Err(error) = session::upsert_conversation_from_request_with_identity_and_requester_did(
-        node,
-        &parent.session_id,
-        &behavior_id,
-        &parent.agent_did,
-        &behavior_id,
-        &enqueued.request_id,
-        content,
-        "pending",
-        parent.requester_did.as_deref(),
-    )
-    .await
-    {
-        tracing::warn!(
-            request_id = %request_id,
-            session_id = %parent.session_id,
-            error = %error,
-            "failed to update conversation for queued session request"
-        );
-    }
-
     Ok(enqueued)
 }
 
@@ -179,27 +158,6 @@ pub(crate) async fn enqueue_steering_request_with_message(
             Err(error) => return Err(error),
         }
     };
-
-    if let Err(error) = session::upsert_conversation_from_request_with_identity_and_requester_did(
-        node,
-        &parent.session_id,
-        &behavior_id,
-        &parent.agent_did,
-        &behavior_id,
-        &enqueued.request_id,
-        content,
-        "pending",
-        parent.requester_did.as_deref(),
-    )
-    .await
-    {
-        tracing::warn!(
-            request_id = %enqueued.request_id,
-            session_id = %parent.session_id,
-            error = %error,
-            "failed to update conversation for steering request"
-        );
-    }
 
     Ok(enqueued)
 }

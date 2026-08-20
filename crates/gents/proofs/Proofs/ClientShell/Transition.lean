@@ -23,9 +23,9 @@ def step
     (ctx : SubmitContext) : ShellState :=
   match input with
   | .user .requestNewConversation =>
-      match s.selection.agent with
-      | some a => { s with workflow := .creating a }
-      | none   => s
+      { s with
+          selection := { s.selection with session := none },
+          workflow  := .idle }
   | .user (.selectDeployment p a) =>
       { s with
           selection := { s.selection with peer := some p, agent := some a, session := none },
@@ -47,12 +47,10 @@ def step
       | _          => s
   | .snapshot store' =>
       { s with workflow := snapshotAdvanceWorkflow s.workflow store' }
-  | .mutation (.created sid) =>
+  | .mutation (.submitted sid req) =>
       { s with
           selection := { s.selection with session := some sid },
-          workflow  := .idle }
-  | .mutation (.submitted sid req) =>
-      { s with workflow := .awaiting sid req }
+          workflow  := .awaiting sid req }
   | .mutation (.failed r) =>
       { s with workflow := .blocked r }
   | .transport _ => s

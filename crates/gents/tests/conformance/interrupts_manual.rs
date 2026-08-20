@@ -240,7 +240,6 @@ async fn processing_interrupted_preserves_partial_response() {
     );
 
     assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-    lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
 
     let partial_content = "partial streamed text";
@@ -309,7 +308,6 @@ async fn input_required_interrupt_is_rejected_without_transition() {
     );
 
     assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-    lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
     set_request_lifecycle_state(&db.node, &doc_id, "inputRequired").await;
 
@@ -415,7 +413,6 @@ async fn transition_to_interrupted_from_processing() {
     );
 
     assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-    lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
 
     let interrupt_at = chrono::Utc::now().to_rfc3339();
@@ -454,7 +451,6 @@ async fn fail_after_interrupt_latch_prefers_interrupted() {
     );
 
     assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-    lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
 
     let interrupt_at = chrono::Utc::now().to_rfc3339();
@@ -541,7 +537,6 @@ async fn interrupt_on_already_terminal_is_noop() {
     );
 
     assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-    lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.complete().await.unwrap();
 
     let before = fetch_request_snapshot(&db.node, &doc_id).await;
@@ -725,8 +720,6 @@ async fn s8_valid_until_never_rewritten_by_transitions() {
         Some(t0.as_str()),
         "S8: claim must not rewrite valid_until"
     );
-
-    lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
     let snap2 = fetch_request_snapshot_raw(&db.node, &doc_id).await;
     assert_eq!(
@@ -837,7 +830,6 @@ async fn ordering_response_interrupted_at_before_request_lifecycle_flip() {
         BACKEND_ID,
     );
     assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-    lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
 
     let partial_content = "Hello wor";

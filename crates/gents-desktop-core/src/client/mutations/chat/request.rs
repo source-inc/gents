@@ -13,7 +13,6 @@ use super::super::graphql::{
     escape_graphql_string, execute_mutation, normalize_optional_string, normalize_required,
 };
 use super::binding::resolve_agent_binding;
-use super::conversation::{build_upsert_conversation_field, build_upsert_session_field};
 
 const DEFAULT_REQUEST_MAX_RETRIES: u32 = 3;
 const RETRY_TRANSACTION_ATTEMPTS: usize = 5;
@@ -96,16 +95,6 @@ pub async fn submit_request(
             (String::new(), None, request_id.clone())
         };
 
-    let session_field = build_upsert_session_field(
-        "session",
-        store,
-        session_id,
-        agent_did,
-        requester_did,
-        &binding.agent_name,
-        &binding.behavior_id,
-        &created_at,
-    );
     let request_field = build_add_agent_request_field(
         "request",
         &request_id,
@@ -124,21 +113,7 @@ pub async fn submit_request(
         "interactive",
         &submit_request_extra_fields(&options),
     );
-    let conversation_field = build_upsert_conversation_field(
-        "conversation",
-        store,
-        session_id,
-        agent_did,
-        requester_did,
-        &binding.agent_name,
-        &binding.behavior_id,
-        &request_id,
-        &content,
-        "active",
-        &created_at,
-    );
-    let mutation =
-        build_coalesced_submit_mutation(&[session_field, request_field, conversation_field]);
+    let mutation = format!("mutation {{\n{request_field}\n}}");
     execute_mutation(node, &mutation, "submit_request").await?;
 
     Ok(SubmittedRequest {
@@ -307,16 +282,8 @@ async fn retry_request_in_txn(
         .unwrap_or(i64::from(DEFAULT_REQUEST_MAX_RETRIES));
     ensure_retry_parent_eligible(&parent, retry_count - 1, max_retries, execution_origin)?;
 
-    let raw_latest_request_id =
-        retry_conversation_latest_in_txn(txn, parent_session_id, agent_did, requester_did).await?;
-    let effective_latest_request_id = effective_retry_latest_in_txn(
-        txn,
-        parent_session_id,
-        agent_did,
-        requester_did,
-        &raw_latest_request_id,
-    )
-    .await?;
+    let effective_latest_request_id =
+        latest_interactive_request_in_txn(txn, parent_session_id, agent_did, requester_did).await?;
     if effective_latest_request_id != parent_request_id {
         bail!(
             "retry parent request must be latest for session {parent_session_id}, got latest_request_id={effective_latest_request_id}"
@@ -362,25 +329,8 @@ async fn retry_request_in_txn(
         execution_origin,
         &retry_extra_fields,
     );
-    let conversation_field = build_retry_conversation_update_field(
-        parent_session_id,
-        agent_did,
-        requester_did,
-        &raw_latest_request_id,
-        candidate_request_id,
-        content,
-        &created_at,
-    );
-    let mutation = format!("mutation {{\n{request_field}\n{conversation_field}\n}}");
-    let response = txn.execute(&mutation).await?;
-    let updated = response
-        .get("data")
-        .and_then(|data| data.get("conversation"))
-        .and_then(Value::as_array)
-        .is_some_and(|rows| !rows.is_empty());
-    if !updated {
-        bail!("retry conversation compare-and-set lost for session {parent_session_id}");
-    }
+    txn.execute(&format!("mutation {{\n{request_field}\n}}"))
+        .await?;
 
     Ok(SubmittedRequest {
         request_id: candidate_request_id.to_string(),
@@ -400,7 +350,6 @@ fn retry_transaction_error_is_retryable(error: &anyhow::Error) -> bool {
         || text.contains("unique")
         || text.contains("constraint")
         || text.contains("database is locked")
-        || text.contains("compare-and-set lost")
 }
 
 async fn load_retry_successor_in_txn(
@@ -535,77 +484,14 @@ async fn load_retry_parent_in_txn(
     Ok((doc_id, request))
 }
 
-async fn retry_conversation_latest_in_txn(
+async fn latest_interactive_request_in_txn(
     txn: &ConfigApplyTxn<'_>,
     session_id: &str,
     agent_did: &str,
     requester_did: &str,
 ) -> Result<String> {
-    let session_id = escape_graphql_string(session_id);
-    let agent_did = escape_graphql_string(agent_did);
-    let requester_did = escape_graphql_string(requester_did);
-    let query = format!(
-        r#"{{
-            AgentConversation(
-                filter: {{
-                    session_id: {{ _eq: "{session_id}" }},
-                    agent_did: {{ _eq: "{agent_did}" }},
-                    requester_did: {{ _eq: "{requester_did}" }}
-                }},
-                limit: 1
-            ) {{ latest_request_id }}
-        }}"#
-    );
-    let response = txn.execute(&query).await?;
-    response
-        .get("data")
-        .and_then(|data| data.get("AgentConversation"))
-        .and_then(Value::as_array)
-        .and_then(|rows| rows.first())
-        .and_then(|row| row.get("latest_request_id"))
-        .and_then(Value::as_str)
-        .and_then(|value| normalize_optional_string(Some(value)))
-        .map(str::to_string)
-        .with_context(|| format!("retry parent conversation not found for session {session_id}"))
-}
-
-async fn effective_retry_latest_in_txn(
-    txn: &ConfigApplyTxn<'_>,
-    session_id: &str,
-    agent_did: &str,
-    requester_did: &str,
-    raw_latest_request_id: &str,
-) -> Result<String> {
-    let latest_id = escape_graphql_string(raw_latest_request_id);
     let agent = escape_graphql_string(agent_did);
     let requester = escape_graphql_string(requester_did);
-    let query = format!(
-        r#"{{
-            AgentRequest(
-                filter: {{
-                    request_id: {{ _eq: "{latest_id}" }},
-                    agent_did: {{ _eq: "{agent}" }}
-                }},
-                limit: 1
-            ) {{ execution_origin metadata }}
-        }}"#
-    );
-    let response = txn.execute(&query).await?;
-    let latest_is_legacy = response
-        .get("data")
-        .and_then(|data| data.get("AgentRequest"))
-        .and_then(Value::as_array)
-        .and_then(|rows| rows.first())
-        .is_some_and(|row| {
-            gents::lifecycle::is_deprecated_background_completion_request(
-                row.get("execution_origin").and_then(Value::as_str),
-                row.get("metadata").and_then(Value::as_str),
-            )
-        });
-    if !latest_is_legacy {
-        return Ok(raw_latest_request_id.to_string());
-    }
-
     let session = escape_graphql_string(session_id);
     let query = format!(
         r#"{{
@@ -615,7 +501,7 @@ async fn effective_retry_latest_in_txn(
                     agent_did: {{ _eq: "{agent}" }},
                     requester_did: {{ _eq: "{requester}" }}
                 }},
-                order: {{ created_at: DESC }}
+                order: [{{ created_at: DESC }}, {{ request_id: DESC }}]
             ) {{ request_id execution_origin metadata }}
         }}"#
     );
@@ -666,40 +552,6 @@ async fn ensure_retry_candidate_is_fresh_in_txn(
         bail!("retry new request id already exists: request_id={candidate_request_id}");
     }
     Ok(())
-}
-
-fn build_retry_conversation_update_field(
-    session_id: &str,
-    agent_did: &str,
-    requester_did: &str,
-    expected_latest_request_id: &str,
-    new_request_id: &str,
-    content: &str,
-    updated_at: &str,
-) -> String {
-    let session_id = escape_graphql_string(session_id);
-    let agent_did = escape_graphql_string(agent_did);
-    let requester_did = escape_graphql_string(requester_did);
-    let expected_latest_request_id = escape_graphql_string(expected_latest_request_id);
-    let new_request_id = escape_graphql_string(new_request_id);
-    let content = escape_graphql_string(content);
-    let updated_at = escape_graphql_string(updated_at);
-    format!(
-        r#"conversation: update_AgentConversation(
-            filter: {{
-                session_id: {{ _eq: "{session_id}" }},
-                agent_did: {{ _eq: "{agent_did}" }},
-                requester_did: {{ _eq: "{requester_did}" }},
-                latest_request_id: {{ _eq: "{expected_latest_request_id}" }}
-            }},
-            input: {{
-                latest_request_id: "{new_request_id}",
-                preview_text: "{content}",
-                status: "active",
-                updated_at: "{updated_at}"
-            }}
-        ) {{ _docID }}"#
-    )
 }
 
 fn ensure_retry_parent_eligible(
@@ -868,13 +720,6 @@ fn build_add_agent_request_field(
                 max_retries: {max_retries}{extra_fields}
             }}) {{ _docID }}
         "#
-    )
-}
-
-fn build_coalesced_submit_mutation(fields: &[String; 3]) -> String {
-    format!(
-        "mutation {{\n{}\n{}\n{}\n}}",
-        fields[0], fields[1], fields[2]
     )
 }
 

@@ -641,6 +641,99 @@ async fn claim_preserves_explicit_behavior_id() {
 }
 
 #[tokio::test]
+async fn claim_rejects_a_behavior_change_without_mutating_the_session() {
+    let db = test_db("lifecycle-behavior-pin").await;
+    let mutation = format!(
+        r#"mutation {{
+            session: create_AgentSession(input: {{
+                session_id: "session-pinned",
+                agent_name: "general",
+                agent_did: "{AGENT_DID}",
+                behavior_id: "general",
+                started: "2026-03-23T00:00:00Z",
+                status: "active"
+            }}) {{ _docID }}
+            request: create_AgentRequest(input: {{
+                request_id: "req-switch",
+                agent_did: "{AGENT_DID}",
+                behavior_id: "code",
+                session_id: "session-pinned",
+                retry_root_request: "req-switch",
+                content: "switch behavior",
+                status: "pending",
+                lifecycle_state: "pending",
+                execution_origin: "interactive",
+                created_at: "2026-03-23T00:00:01Z",
+                retry_count: 0,
+                max_retries: 3
+            }}) {{ _docID }}
+        }}"#,
+    );
+    let response = db.node.execute(&mutation).await;
+    assert!(!response.has_errors(), "{:?}", response.errors);
+
+    let doc_id = first_row::<crate::support::DocIdRow>(
+        &db.node
+            .execute(
+                r#"{
+                    AgentRequest(filter: { request_id: { _eq: "req-switch" } }) { _docID }
+                }"#,
+            )
+            .await,
+        "AgentRequest",
+    )
+    .doc_id;
+    let request = DefraWatcher::new(db.node.clone(), AGENT_DID)
+        .try_fetch_request(&doc_id)
+        .await
+        .unwrap()
+        .expect("pending request");
+    let mut lifecycle =
+        RequestLifecycle::new_with_agent_did(db.node.clone(), AGENT_NAME, AGENT_DID, request, 300);
+    let error = lifecycle
+        .claim()
+        .await
+        .expect_err("behavior switch must fail");
+    assert!(error.to_string().contains("pinned to behavior general"));
+
+    let request = db
+        .node
+        .execute(
+            r#"{
+                AgentRequest(filter: { request_id: { _eq: "req-switch" } }) {
+                    status lifecycle_state
+                }
+            }"#,
+        )
+        .await;
+    let request = first_row::<StatusRow>(&request, "AgentRequest");
+    assert_eq!(request.status, "pending");
+    assert_eq!(request.lifecycle_state.as_deref(), Some("pending"));
+
+    let sessions = db
+        .node
+        .execute(
+            r#"{
+                AgentSession(filter: { session_id: { _eq: "session-pinned" } }) { behavior_id }
+            }"#,
+        )
+        .await;
+    let rows = sessions
+        .data
+        .as_ref()
+        .and_then(|data| data.get("AgentSession"))
+        .and_then(serde_json::Value::as_array)
+        .expect("session rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]
+            .get("behavior_id")
+            .and_then(serde_json::Value::as_str),
+        Some("general")
+    );
+}
+
+#[tokio::test]
 async fn claim_preserves_explicit_request_deadline() {
     let db = test_db("lifecycle-explicit-deadline").await;
     let request_id = "req-explicit-deadline";

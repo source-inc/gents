@@ -29,7 +29,8 @@ def runtimeRouterObserved : RuntimeState :=
 
 def runtimeWithInFlight : RuntimeState :=
   { runtimeRouterObserved with
-    inFlight := {500}
+    accepted := {500}
+  , inFlight := {500}
   , requestGeneration := Function.update runtimeRouterObserved.requestGeneration 500 2
   , requestSession := Function.update runtimeRouterObserved.requestSession 500 100
   , requestBehavior := Function.update runtimeRouterObserved.requestBehavior 500 20
@@ -116,6 +117,13 @@ def runtimeReconcileCases : List RuntimeReconcileCase :=
       "finishRequest"
       runtimeWithInFlight
       (.finishRequest 500)
+      500
+      100
+  , runtimeCaseFromStep
+      "replayed_request_is_not_accepted_twice"
+      "acceptRequest"
+      { runtimeWithInFlight with inFlight := ∅ }
+      (.acceptRequest 100 500)
       500
       100
   , runtimeCaseFromStep

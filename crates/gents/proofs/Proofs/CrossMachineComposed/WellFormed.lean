@@ -116,6 +116,8 @@ theorem allToolsCoherent_preserved
       exact False.elim ((h_no_early_tools tool h_in_pre).1 h_state)
     | dedup_lose h_state _ _ =>
       exact False.elim ((h_no_early_tools tool h_in_pre).1 h_state)
+    | admission_reject h_state _ _ =>
+      exact False.elim ((h_no_early_tools tool h_in_pre).1 h_state)
     | begin_inference h_state _ _ =>
       exact False.elim ((h_no_early_tools tool h_in_pre).2 h_state)
     | advance _ _ h_post =>
@@ -274,6 +276,8 @@ theorem noToolsBeforeProcessing_preserved
     | claim h_state _ _ _ =>
       exact False.elim ((h_no_early_tools tool h_in_pre).1 h_state)
     | dedup_lose h_state _ _ =>
+      exact False.elim ((h_no_early_tools tool h_in_pre).1 h_state)
+    | admission_reject h_state _ _ =>
       exact False.elim ((h_no_early_tools tool h_in_pre).1 h_state)
     | begin_inference h_state _ _ =>
       exact False.elim ((h_no_early_tools tool h_in_pre).2 h_state)

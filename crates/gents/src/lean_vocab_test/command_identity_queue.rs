@@ -204,24 +204,6 @@ pub(crate) struct LeanRestartDispositionCase {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub(crate) struct LeanRecoveryOutcomeCase {
-    pub(crate) name: String,
-    pub(crate) sweep_id: String,
-    pub(crate) collection: String,
-    #[allow(dead_code)]
-    pub(crate) rust_function: String,
-    pub(crate) doc_count: usize,
-    pub(crate) duplicated: bool,
-    pub(crate) write_succeeds: bool,
-    pub(crate) expected_recovered: usize,
-    pub(crate) expected_failed: usize,
-    pub(crate) measure_after: usize,
-    pub(crate) target_selector: String,
-    #[allow(dead_code)]
-    pub(crate) theorem: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct LeanRecoveryEquivalenceCase {
     pub(crate) name: String,
     pub(crate) source_sweep_case: String,

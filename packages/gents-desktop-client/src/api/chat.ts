@@ -33,18 +33,6 @@ export function renameConversation(
   return getDesktopApiAdapter(api).renameConversation(request);
 }
 
-export function forkSession(
-  request: {
-    agentDid: string;
-    sessionId: string;
-    atUserTurn: number;
-    behaviorId?: string | null;
-  },
-  api?: DesktopApiAdapter,
-) {
-  return getDesktopApiAdapter(api).forkSession(request);
-}
-
 export function resendRequest(requestId: string, api?: DesktopApiAdapter) {
   return getDesktopApiAdapter(api).resendRequest(requestId);
 }

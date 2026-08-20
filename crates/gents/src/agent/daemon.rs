@@ -304,13 +304,37 @@ impl<M: CompletionModel + 'static> BehaviorDaemon<M> {
             }
             Err(error) => {
                 record_current_claim_outcome("error");
-                record_current_request_outcome("claim_error");
+                let deterministic_rejection = crate::lifecycle::is_claim_admission_error(&error);
+                record_current_request_outcome(if deterministic_rejection {
+                    "admission_rejected"
+                } else {
+                    "claim_error"
+                });
                 record_current_failure_class(&error);
+                if deterministic_rejection {
+                    tracing::warn!(
+                        behavior_id = %self.behavior.behavior_id,
+                        request_id = %request.request_id,
+                        error = %error,
+                        "rejecting request with an invalid canonical session binding"
+                    );
+                    if let Err(rejection_error) =
+                        lifecycle.reject_admission(&error.to_string()).await
+                    {
+                        tracing::error!(
+                            behavior_id = %self.behavior.behavior_id,
+                            request_id = %request.request_id,
+                            error = %rejection_error,
+                            "failed to persist request admission rejection"
+                        );
+                    }
+                    return;
+                }
                 tracing::warn!(
                     behavior_id = %self.behavior.behavior_id,
                     request_id = %request.request_id,
                     error = %error,
-                    "failed to claim request"
+                    "failed to claim request; leaving it pending for retry"
                 );
                 return;
             }
@@ -358,48 +382,6 @@ impl<M: CompletionModel + 'static> BehaviorDaemon<M> {
                     .await;
                 return;
             }
-        }
-
-        if let Err(error) = lifecycle
-            .prepare_session_with_identity()
-            .instrument(tracing::info_span!(
-                "request.prepare_session",
-                request_id = %request.request_id,
-                session_id = %request.session_id,
-                agent_did = %request.agent_did,
-                behavior_id = %lifecycle.behavior_id(),
-            ))
-            .await
-        {
-            record_current_request_outcome("session_prepare_error");
-            record_current_failure_class(&error);
-            tracing::error!(
-                behavior_id = %self.behavior.behavior_id,
-                request_id = %request.request_id,
-                session_id = %request.session_id,
-                behavior_id = %lifecycle.behavior_id(),
-                error = %error,
-                "failed to prepare behavior-pinned session"
-            );
-            let response_exists = lifecycle.response_exists().await.unwrap_or(false);
-            let response_written = if response_exists {
-                self.stream_writer
-                    .finalize_existing_request_error(&request.request_id, &error.to_string())
-                    .await
-            } else {
-                self.write_error_response(&request, lifecycle.behavior_id(), &error)
-                    .await
-                    .map(|_| true)
-            };
-            if let Err(stream_error) = response_written {
-                tracing::error!(
-                    behavior_id = %self.behavior.behavior_id,
-                    error = %stream_error,
-                    "failed to write session-preparation response"
-                );
-            }
-            finalize_request_failure(&mut lifecycle, &error.to_string(), &request.request_id).await;
-            return;
         }
 
         let (interrupt_tx, interrupt_rx) =

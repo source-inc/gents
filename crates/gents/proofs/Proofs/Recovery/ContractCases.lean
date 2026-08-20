@@ -263,80 +263,7 @@ def recoverySweepCases : List RecoverySweepCase :=
       "running"
       "cancelled"
       "deadline-plumbing-audit-2026-05-12-follow-up-6-pr-e"
-  , recoveryCase
-      conversationRecoverySweep
-      "conversation_processing_completed_parent_to_completed"
-      "processing"
-      "completed"
-      "gents-693-conversation-recovery"
-  , recoveryCase
-      conversationRecoverySweep
-      "conversation_processing_unfinished_parent_to_active"
-      "processing"
-      "active"
-      "gents-693-conversation-recovery"
-  , recoveryCase
-      conversationRecoverySweep
-      "conversation_error_unfinished_parent_to_active"
-      "error"
-      "active"
-      "gents-693-conversation-recovery"
   ]
-
-def outcomeCase
-    (name : String)
-    (docCount : Nat)
-    (duplicated writeSucceeds : Bool)
-    (expectedRecovered expectedFailed measureAfter : Nat)
-    (theoremName : String) : RecoveryOutcomeCase :=
-  { name := name
-  , sweepId := conversationRecoverySweep.sweepId
-  , collection := conversationRecoverySweep.collection.toContract
-  , rustFunction := conversationRecoverySweep.rustFunction
-  , docCount := docCount
-  , duplicated := duplicated
-  , writeSucceeds := writeSucceeds
-  , expectedRecovered := expectedRecovered
-  , expectedFailed := expectedFailed
-  , measureAfter := measureAfter
-  , targetSelector := "_docID"
-  , theoremName := theoremName
-  }
-
-def recoveryOutcomeCases : List RecoveryOutcomeCase :=
-  [
-    outcomeCase
-      "conversation_single_doc_recovers_and_counts_one"
-      1 false true 1 0 0
-      "Recovery.Step.all_succeeded_reports_all"
-  , outcomeCase
-      "conversation_duplicate_group_recovers_canonical_and_counts_one"
-      2 true true 1 0 0
-      "Recovery.duplicate_group_recovers"
-  , outcomeCase
-      "conversation_failed_write_reports_zero_recovered"
-      2 true false 0 1 2
-      "Recovery.Step.all_failed_reports_zero"
-  , outcomeCase
-      "conversation_second_pass_recovers_nothing"
-      2 true true 0 0 0
-      "Recovery.conversation_recover_idempotent"
-  ]
-
-theorem recoveryOutcomeCases_address_docs_by_docId :
-    ∀ witness ∈ recoveryOutcomeCases, witness.targetSelector = "_docID" := by
-  native_decide
-
-theorem recoveryOutcomeCases_count_only_successes :
-    ∀ witness ∈ recoveryOutcomeCases,
-      (witness.writeSucceeds = false → witness.expectedRecovered = 0) ∧
-      witness.expectedRecovered ≤ 1 := by
-  native_decide
-
-theorem recoveryOutcomeCases_failed_write_leaves_rows_stale :
-    ∀ witness ∈ recoveryOutcomeCases,
-      witness.writeSucceeds = false → witness.measureAfter > 0 := by
-  native_decide
 
 def recoveryEquivalenceTheorem (sweepId : String) : String :=
   if sweepId = requestRecoverySweep.sweepId then
@@ -359,8 +286,6 @@ def recoveryEquivalenceTheorem (sweepId : String) : String :=
     "Recovery.expiredChildRecover_matches_uninterrupted"
   else if sweepId = queuedDescendantSweep.sweepId then
     "Recovery.queuedDescendantRecover_matches_uninterrupted"
-  else if sweepId = conversationRecoverySweep.sweepId then
-    "Recovery.conversation_recover_matches_uninterrupted"
   else
     "unregistered_recovery_equivalence"
 

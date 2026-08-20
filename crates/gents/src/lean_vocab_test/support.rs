@@ -85,8 +85,6 @@ pub(crate) struct LeanContractSnapshot {
     pub(crate) queue_deadline_conformance_cases: Vec<LeanQueueDeadlineConformanceCase>,
     pub(crate) recovery_sweep_cases: Vec<LeanRecoverySweepCase>,
     #[serde(default)]
-    pub(crate) recovery_outcome_cases: Vec<LeanRecoveryOutcomeCase>,
-    #[serde(default)]
     pub(crate) recovery_equivalence_cases: Vec<LeanRecoveryEquivalenceCase>,
     #[serde(default)]
     pub(crate) restart_disposition_cases: Vec<LeanRestartDispositionCase>,
@@ -646,10 +644,6 @@ pub(crate) fn lean_queue_deadline_case(name: &str) -> &'static LeanQueueDeadline
 
 pub(crate) fn lean_recovery_sweep_cases() -> &'static [LeanRecoverySweepCase] {
     &lean_contract_snapshot().recovery_sweep_cases
-}
-
-pub(crate) fn lean_recovery_outcome_cases() -> &'static [LeanRecoveryOutcomeCase] {
-    &lean_contract_snapshot().recovery_outcome_cases
 }
 
 pub(crate) fn lean_recovery_sweep_case(name: &str) -> &'static LeanRecoverySweepCase {

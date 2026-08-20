@@ -65,10 +65,6 @@
       "permissionSet": "chat-write"
     },
     {
-      "name": "desktop_session_fork",
-      "permissionSet": "chat-write"
-    },
-    {
       "name": "desktop_request_resend",
       "permissionSet": "resend-control"
     },
@@ -273,7 +269,7 @@
       "permissionSet": "native-e2e"
     }
   ],
-  "contractVersion": "0.9",
+  "contractVersion": "1.0",
   "errorCodes": [
     "clientNotRunning",
     "clientStartFailed",

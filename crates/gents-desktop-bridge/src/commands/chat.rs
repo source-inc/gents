@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use gents_desktop_core::client::ClientCore;
 use gents_protocol::client_protocol::ClientTurnState;
+use uuid::Uuid;
 
 use super::super::types::{ChatSendRequest, ChatSendResult, ConversationRenameRequest};
 
@@ -51,14 +52,9 @@ pub async fn send_chat_message(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let session_id = match requested_session_id {
-        Some(session_id) => session_id.to_string(),
-        None => {
-            core.create_conversation(&agent_did, behavior_id.as_deref())
-                .await?
-                .session_id
-        }
-    };
+    let session_id = requested_session_id
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     let store = core.store().snapshot();
     if let Some(turn_state) = store.derive_turn_for_agent(&session_id, &agent_did) {

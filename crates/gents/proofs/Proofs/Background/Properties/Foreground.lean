@@ -20,6 +20,8 @@ theorem foreground_blocks_parent_advance
         constructor <;> rw [h_post]
       | dedup_lose _ _ h_post =>
         constructor <;> rw [h_post]
+      | admission_reject _ _ h_post =>
+        constructor <;> rw [h_post]
       | begin_inference h_pre_claimed _ h_post =>
         exfalso
         apply h_no_block

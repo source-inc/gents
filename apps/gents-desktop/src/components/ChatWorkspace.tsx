@@ -8,7 +8,6 @@ import type {
 } from "@source-inc/gents-desktop-client";
 import {
   displayBehaviorLabel,
-  forkSession,
   getDesktopApiAdapter,
   resendRequest,
 } from "@source-inc/gents-desktop-client";
@@ -61,7 +60,6 @@ export type ChatWorkspaceProps = {
   onDraftChange: (value: string) => void;
   onSend: (event: FormEvent) => void;
   onRetryMessage?: (requestId: string) => void | Promise<void>;
-  onForkedConversation?: (sessionId: string) => void;
   onOpenMobileNavigation?: () => void;
   onInterruptAccepted?: () => void | Promise<void>;
 };
@@ -112,7 +110,6 @@ export function ActiveChatWorkspace({
   onDraftChange,
   onSend,
   onRetryMessage,
-  onForkedConversation,
   onOpenMobileNavigation,
   onInterruptAccepted,
 }: ActiveChatWorkspaceProps) {
@@ -139,34 +136,6 @@ export function ActiveChatWorkspace({
     tone: "info" | "error";
   } | null>(null);
   const [operationsOpen, setOperationsOpen] = useState(false);
-  const [forking, setForking] = useState(false);
-
-  async function forkConversation(sessionId: string) {
-    const atUserTurn = (session?.timelineItems ?? []).filter(
-      (item) => item.kind === "userMessage",
-    ).length;
-    setForking(true);
-    try {
-      const outcome = await (explicitApi?.forkSession ?? forkSession)({
-        agentDid: selectedDeployment.agentDid,
-        sessionId,
-        atUserTurn,
-      });
-      setInterruptResultBanner({
-        text: `Forked into a new conversation (${outcome.copiedMessages} messages copied)`,
-        tone: "info",
-      });
-      onForkedConversation?.(outcome.sessionId);
-    } catch (error) {
-      setInterruptResultBanner({
-        text: `Fork failed: ${error instanceof Error ? error.message : String(error)}`,
-        tone: "error",
-      });
-    } finally {
-      setForking(false);
-    }
-  }
-
   async function resendStaleRequest(requestId: string) {
     try {
       const submitted = await (explicitApi?.resendRequest ?? resendRequest)(requestId);
@@ -336,8 +305,6 @@ export function ActiveChatWorkspace({
         selectedConversationTitle={selectedConversationTitle}
         selectedSessionId={selectedSessionId}
         onRenameConversationTitle={onRenameConversationTitle}
-        onForkConversation={(sessionId) => void forkConversation(sessionId)}
-        forking={forking}
       />
 
       <section className="chat-workspace">

@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -17,39 +16,6 @@ pub(super) struct SessionRow {
     pub(super) session_id: String,
     #[serde(default)]
     pub(super) started: Option<String>,
-}
-
-pub(in crate::commands::codex_shim) async fn ensure_agent_session(
-    state: &ShimState,
-    session_id: &str,
-) -> Result<()> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let escaped_session_id = escape_graphql_string(session_id);
-    let agent_name = agent_name(state);
-    let behavior_id = behavior_id(state);
-    let escaped_agent_name = escape_graphql_string(&agent_name);
-    let escaped_agent_did = escape_graphql_string(state.agent_did.as_ref());
-    let escaped_behavior_id = escape_graphql_string(&behavior_id);
-    let mutation = format!(
-        r#"mutation {{
-            upsert_AgentSession(
-                filter: {{ session_id: {{ _eq: "{escaped_session_id}" }} }},
-                add: {{
-                    session_id: "{escaped_session_id}",
-                    agent_name: "{escaped_agent_name}",
-                    agent_did: "{escaped_agent_did}",
-                    behavior_id: "{escaped_behavior_id}",
-                    started: "{now}",
-                    status: "active"
-                }},
-                update: {{
-                    status: "active"
-                }}
-            ) {{ _docID }}
-        }}"#
-    );
-    query_node_json(&state.node, &mutation).await?;
-    Ok(())
 }
 
 pub(super) async fn load_scoped_session(
@@ -112,7 +78,7 @@ pub(super) async fn list_scoped_sessions(state: &ShimState) -> Result<Vec<Sessio
         .context("decoding AgentSession rows")
 }
 
-pub(super) async fn codex_marked_session_ids(state: &ShimState) -> Result<HashSet<String>> {
+pub(super) async fn list_scoped_request_session_ids(state: &ShimState) -> Result<Vec<String>> {
     let escaped_agent_did = escape_graphql_string(state.agent_did.as_ref());
     let escaped_behavior_id = escape_graphql_string(state.behavior_id.as_ref());
     let query = format!(
@@ -121,63 +87,23 @@ pub(super) async fn codex_marked_session_ids(state: &ShimState) -> Result<HashSe
                 filter: {{
                     agent_did: {{ _eq: "{escaped_agent_did}" }},
                     behavior_id: {{ _eq: "{escaped_behavior_id}" }}
-                }}
-            ) {{
-                session_id
-                metadata
-            }}
+                }},
+                order: {{ created_at: DESC }}
+            ) {{ session_id }}
         }}"#
     );
     let response = query_node_json(&state.node, &query).await?;
+    let mut seen = std::collections::HashSet::new();
     Ok(response
         .pointer("/data/AgentRequest")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|row| {
-            row.get("metadata")
-                .and_then(Value::as_str)
-                .is_some_and(|metadata| metadata.contains("\"codex_shim\""))
-        })
-        .filter_map(|row| {
-            row.get("session_id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-        })
+        .filter_map(|row| row.get("session_id").and_then(Value::as_str))
+        .filter(|session_id| !session_id.trim().is_empty())
+        .filter(|session_id| seen.insert((*session_id).to_string()))
+        .map(ToOwned::to_owned)
         .collect())
-}
-
-pub(in crate::commands::codex_shim) async fn ensure_agent_session_pinning(
-    state: &ShimState,
-    session_id: &str,
-) -> Result<()> {
-    let escaped_session_id = escape_graphql_string(session_id);
-    let query = format!(
-        r#"{{
-            AgentSession(
-                filter: {{ session_id: {{ _eq: "{escaped_session_id}" }} }},
-                limit: 1
-            ) {{
-                behavior_id
-            }}
-        }}"#
-    );
-    let response = query_node_json(&state.node, &query).await?;
-    let stored_behavior_id = response
-        .pointer("/data/AgentSession/0/behavior_id")
-        .and_then(|v| v.as_str())
-        .map(ToOwned::to_owned);
-    let bound_behavior_id = state.behavior_id.as_ref();
-    if let Some(stored) = stored_behavior_id {
-        if stored != bound_behavior_id {
-            anyhow::bail!(
-                "session {session_id:?} is pinned to behavior {stored:?}, but the shim \
-                 is bound to {bound_behavior_id:?}. Restart the server with \
-                 --codex-shim-behavior-id {stored} to resume this session."
-            );
-        }
-    }
-    Ok(())
 }
 
 pub(super) async fn load_conversation(
@@ -355,21 +281,13 @@ fn absolute_cwd(base_cwd: &Path, cwd: &Path) -> PathBuf {
     }
 }
 
-fn behavior_id(state: &ShimState) -> String {
-    state.behavior_id.as_ref().to_string()
-}
-
-fn agent_name(state: &ShimState) -> String {
-    behavior_id(state)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
     #[test]
-    fn pending_request_projects_even_before_conversation_materializes() {
+    fn pending_request_projects_without_persisting_a_conversation() {
         let request = serde_json::from_value(json!({
             "request_id": "request-1",
             "lifecycle_state": "pending",
@@ -381,15 +299,14 @@ mod tests {
             response: None,
         };
         let conversation = attach_latest_request(None, Some(&turn))
-            .expect("request should provide a projection shell");
+            .expect("a durable request should provide an adapter projection shell");
+        assert_eq!(conversation.latest_request_id, "request-1");
         assert_eq!(
             conversation
                 .latest_request_projection
                 .map(|head| head.request_state),
             Some(gents_protocol::client_protocol::RequestLifecycleState::Pending)
         );
-        assert_eq!(conversation.latest_request_id, "request-1");
-        assert_eq!(conversation.latest_request_failure_reason, None);
     }
 
     #[test]

@@ -98,27 +98,6 @@ pub(crate) async fn enqueue_goal_continuation(
         .or(lookup_request_doc_id_optional(node, &request_id).await?)
         .context("goal continuation create returned no _docID")?;
 
-    if let Err(error) = session::upsert_conversation_from_request_with_identity_and_requester_did(
-        node,
-        &parent.session_id,
-        &behavior_id,
-        &parent.agent_did,
-        &behavior_id,
-        &request_id,
-        content,
-        "pending",
-        parent.requester_did.as_deref(),
-    )
-    .await
-    {
-        tracing::warn!(
-            %request_id,
-            session_id = %parent.session_id,
-            %error,
-            "failed to update conversation for goal continuation"
-        );
-    }
-
     Ok(EnqueuedAgentRequest {
         doc_id,
         request_id,

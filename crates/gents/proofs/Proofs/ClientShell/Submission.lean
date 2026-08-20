@@ -37,7 +37,7 @@ def canSubmit
   else if ¬ ctx.composerNonEmpty then false
   else
     match s.workflow with
-    | .creating _ | .submitting _ _ | .awaiting _ _ | .blocked _ => false
+    | .submitting _ _ | .awaiting _ _ | .blocked _ => false
     | .idle =>
       match s.selection.session with
       | none     => true

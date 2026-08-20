@@ -49,36 +49,6 @@ describe("session ops", () => {
     expect(onOpenMobileNavigation).toHaveBeenCalledOnce();
   });
 
-  it("offers Fork only for a selected conversation and forwards the session id", () => {
-    const onForkConversation = vi.fn();
-    const { rerender } = render(
-      <ChatHeader
-        selectedSessionId="session-1"
-        selectedConversationTitle="planning"
-        behaviorLabel={null}
-        runtimeHealth={null}
-        renamingTitle={false}
-        onRenameConversationTitle={vi.fn()}
-        onForkConversation={onForkConversation}
-      />,
-    );
-    fireEvent.click(screen.getByTestId("conversation-fork"));
-    expect(onForkConversation).toHaveBeenCalledWith("session-1");
-
-    rerender(
-      <ChatHeader
-        selectedSessionId={null}
-        selectedConversationTitle={null}
-        behaviorLabel={null}
-        runtimeHealth={null}
-        renamingTitle={false}
-        onRenameConversationTitle={vi.fn()}
-        onForkConversation={onForkConversation}
-      />,
-    );
-    expect(screen.queryByTestId("conversation-fork")).not.toBeInTheDocument();
-  });
-
   it("keeps a failed title rename open with the operator's draft", async () => {
     const onRenameConversationTitle = vi
       .fn()

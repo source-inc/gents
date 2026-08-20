@@ -149,8 +149,15 @@ async fn setup_background_tool_hook(
         "2026-05-19T00:00:00Z",
     )
     .await;
+    support::create_agent_session(
+        db.node.as_ref(),
+        &session_id,
+        "r6-background-theorem",
+        "2026-05-19T00:00:00Z",
+    )
+    .await;
 
-    let hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    let hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &session_id,
         "r6-background-theorem",
@@ -261,8 +268,15 @@ async fn setup_background_spawn_fixture(
         parent_deadline,
     )
     .await;
+    support::create_agent_session(
+        db.node.as_ref(),
+        &session_id,
+        BACKGROUND_THEOREM_PARENT_BEHAVIOR_ID,
+        "2026-05-19T00:00:00Z",
+    )
+    .await;
 
-    let hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    let hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &session_id,
         BACKGROUND_THEOREM_PARENT_BEHAVIOR_ID,
@@ -1765,7 +1779,7 @@ pub(super) async fn generated_read_tool_output_witness_drives_hook_dispatch() {
         "2026-05-19T00:00:01Z",
     )
     .await;
-    let next_turn_hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    let next_turn_hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &session_id,
         "r6-background-theorem",
@@ -1819,7 +1833,7 @@ pub(super) async fn generated_read_tool_output_witness_drives_hook_dispatch() {
     // Running + NO snapshot: a second hook on the same session has a fresh
     // (empty) live-output registry — exactly what a restarted daemon would
     // observe for this still-running row before recovery interrupts it.
-    let restarted_hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    let restarted_hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &session_id,
         "r6-background-theorem",
