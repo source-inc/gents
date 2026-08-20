@@ -50,18 +50,16 @@ test.describe("desktop responsive layout guardrails", () => {
     }
   });
 
-  test("opened operations drawer stays inside the viewport", async ({ page }) => {
+  test("conversation chrome excludes the operations drawer", async ({ page }) => {
     await gotoHarness(page, "operations-rich");
     await openChat(page);
-    await page.getByRole("button", { name: /open operations drawer/i }).click();
-
-    for (const tab of [/Background/, /Lineage/, /Backends/, /MCP health/]) {
-      await page.getByRole("tab", { name: tab }).click();
-      await expect(
-        page.getByRole("complementary", { name: "Operations" }),
-      ).toBeVisible();
-      await expectNoPageHorizontalOverflow(page);
-    }
+    await expect(
+      page.getByRole("button", { name: /open operations drawer/i }),
+    ).toHaveCount(0);
+    await expect(page.getByRole("complementary", { name: "Operations" })).toHaveCount(
+      0,
+    );
+    await expectNoPageHorizontalOverflow(page);
   });
 
   test("phone chat uses one full-screen pane at a time", async ({ page }) => {
