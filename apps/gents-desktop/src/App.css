@@ -1,4 +1,4 @@
-@layer tokens, base, primitives, shell, sidebar, chat, fleet, config, transcript, components, backend-health, backgrounded-tools, holds, mcp-health, utilities, trace, workspace;
+@layer tokens, base, primitives, shell, sidebar, chat, fleet, config, transcript, components, backend-health, holds, mcp-health, utilities, trace, workspace;
 
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/funnel-display";

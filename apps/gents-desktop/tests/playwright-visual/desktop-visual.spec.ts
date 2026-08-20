@@ -43,16 +43,17 @@ test.describe("desktop visual baselines", () => {
       snapshotName: "chat-transcript.png",
     });
 
-    await page.getByRole("button", { name: /open operations drawer/i }).click();
-    await expect(page.getByRole("complementary", { name: "Operations" })).toBeVisible();
-    await expect(page).toHaveScreenshot("operations-drawer.png", {
+    await gotoHarness(page, "coding");
+    await openChat(page);
+    await expect(page.getByTestId("tool-intro-bash")).toBeVisible();
+    await expect(page).toHaveScreenshot("tool-timeline.png", {
       animations: "disabled",
       fullPage: true,
     });
     snapshots.push({
-      state: "operations drawer",
-      scenario: "default",
-      snapshotName: "operations-drawer.png",
+      state: "tool timeline",
+      scenario: "coding",
+      snapshotName: "tool-timeline.png",
     });
 
     await gotoHarness(page);
@@ -81,7 +82,9 @@ test.describe("desktop visual baselines", () => {
     });
 
     await gotoHarness(page, "bridge-unavailable");
-    await expect(page.getByTestId("error-banner")).toBeVisible();
+    await expect(page.getByTestId("startup-screen")).toContainText(
+      "Desktop native bridge is unavailable",
+    );
     await expect(page).toHaveScreenshot("bridge-error.png", {
       animations: "disabled",
       fullPage: true,

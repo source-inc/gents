@@ -79,8 +79,8 @@ export function ChatTranscriptPanel({
             case "toolGroup":
               return item.tools.map((tool) => [
                 tool.status?.length ?? 0,
-                tool.args?.rawText.length ?? 0,
-                tool.result?.rawText.length ?? 0,
+                JSON.stringify(tool.presentation).length,
+                tool.partialOutputSeq ?? 0,
               ]);
           }
         }),

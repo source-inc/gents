@@ -868,21 +868,15 @@ fn session_snapshot_renders_structured_tool_payloads_in_timeline() {
     let tool = &tools[0];
     assert_eq!(tool.tool_name, "glob");
     assert_eq!(tool.status_kind, "success");
-    assert_eq!(
-        tool.args.as_ref().map(|value| value
-            .fields
-            .iter()
-            .map(|field| field.key.as_str())
-            .collect::<Vec<_>>()),
-        Some(vec!["pattern", "recursive"])
-    );
-    assert_eq!(
-        tool.result
-            .as_ref()
-            .and_then(|value| value.fields.iter().find(|field| field.key == "matches"))
-            .map(|field| field.value.as_str()),
-        Some("12")
-    );
+    assert!(matches!(
+        &tool.presentation,
+        crate::types::ToolPresentationView::FileRead {
+            operation,
+            target: Some(target),
+            fallback_output: Some(output),
+            ..
+        } if operation == "glob" && target == "**/*.rs" && output == "{\"matches\":12}"
+    ));
 }
 
 #[test]

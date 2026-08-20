@@ -7,18 +7,18 @@ test.describe("desktop code experience", () => {
     await gotoHarness(page, "coding");
     await openChat(page);
 
-    const fileEdit = page.getByTestId("code-file-edit");
+    const fileEdit = page.getByTestId("tool-intro-edit-file");
     await expect(fileEdit).toContainText("src/parser.rs");
     await expect(fileEdit).not.toHaveAttribute("open", "");
     await fileEdit.locator("summary").click();
-    await expect(page.getByTestId("code-diff")).toContainText("Ast::default()");
+    await expect(fileEdit.locator(".tool-diff")).toContainText("Ast::default()");
 
-    const command = page.getByTestId("code-command");
+    const command = page.getByTestId("tool-intro-bash");
     await expect(command).toContainText("cargo test parser");
-    await expect(page.getByTestId("code-exit")).toHaveText("exit 0");
+    await expect(command.locator(".tool-exit")).toHaveText("exit 0");
     await expect(command).not.toHaveAttribute("open", "");
     await command.locator("summary").click();
-    await expect(page.getByTestId("code-terminal")).toContainText("2 passed");
+    await expect(command.locator(".tool-payload")).toContainText("2 passed");
   });
 
   test("Code mode surfaces the agent's working directory and permission boundary", async ({
@@ -35,8 +35,8 @@ test.describe("desktop code experience", () => {
       "/tmp/gents-bombadil/workspace",
     );
     await expect(page.getByTestId("code-context-files")).toHaveText("read-only");
-    await page.getByTestId("code-file-edit").locator("summary").click();
-    await expect(page.getByTestId("code-diff")).toBeVisible();
+    await page.getByTestId("tool-intro-edit-file").locator("summary").click();
+    await expect(page.locator(".tool-diff")).toBeVisible();
 
     await page.getByTestId("code-back-to-chat").click();
     await expect(page.getByTestId("code-context-header")).toHaveCount(0);

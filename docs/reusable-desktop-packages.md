@@ -12,9 +12,9 @@ _Design spec — 2026-07-27. Issue [#877](https://github.com/source-inc/gents/is
 | 4 Fixture host       | **done** (composition) | host shell/home/capabilities, file-backed domain plugin, package surfaces, Rust + frontend CI      |
 | 5 Client package     | **done**               | typed transport, one subscription per store, generated public types, testing seam                  |
 | 6 Tokens + UI        | **done**               | semantic token contract, conformance fence, shared primitives                                      |
-| 7 Chat package       | **done**               | projection, transcript/composer/cancel/code/denial components, styles, tests                       |
+| 7 Chat package       | **done**               | projection, transcript/composer/cancel/tool/denial components, styles, tests                       |
 | 8 Fleet package      | **done**               | remote fleet surface + opt-in local-runtime subpath, brand slots, styles, tests                    |
-| 9 Operations package | **done**               | extensible rail, holds, health, lineage, trace, workspace surfaces, styles, tests                  |
+| 9 Operations package | **done**               | focused holds, health, trace, and workspace surfaces, styles, tests                                |
 | 10 Release           | **wired**              | packed clean-consumer gate, exact pins, tag workflow; first real tag remains release-time evidence |
 
 **v1 snapshot projection model (accepted deviation):** grants are
@@ -32,13 +32,9 @@ transport-bound `client.api`; operations providers and fleet package-owned reads
 accept that adapter, while the global API seam remains only for compatibility.
 Package CSS is semantic-token-only but preserves the existing class names to
 keep the extraction behavior-identical; a future collision-hardening release
-may prefix them. Live-lane verification of the serde camelCase fix remains fenced but not
-discharged: a wire-format assertion is in `test:live:chat` (`itemKey` must
-arrive camelCase over real IPC), but the suite fails before reaching it on this
-branch **and at main HEAD** — a pre-existing backgrounded-tools liveness
-assertion failure tracked as
-[#884](https://github.com/source-inc/gents/issues/884); the fence discharges
-this obligation once #884 is fixed. External Amygdala authentication/Cargo-fetch
+may prefix them. Live-lane verification of the serde camelCase fix is fenced by
+a wire-format assertion in `test:live:chat` (`itemKey` must arrive camelCase over
+real IPC). External Amygdala authentication/Cargo-fetch
 and the first real tag publish remain release-environment evidence, not changes
 that can be proven inside this repository. The in-tree fixture proves package
 and plugin composition plus native Gents-home isolation; it does **not** run a
@@ -244,11 +240,10 @@ Six published packages plus the private apps, managed as npm workspaces:
   `AddPeerForm`, `QrScannerDialog`, `peerConnectionImport`, `NetworkPanel`,
   `fleetMetrics`, and `peerConnectionErrors` formatting.
   `BrandLockup` does **not** move — the dashboard takes a `brand` slot/prop.
-- **`@source-inc/gents-desktop-operations`** — `OperationsRail` + its context/tab
-  registry, `HoldsPanel`/`useToolCallHolds`, `BackgroundedToolsPanel`/
-  `useOperationsSnapshot`, `RequestTracePanel`, `subagentLineage/*`,
-  `backendHealth/*`, `mcpHealth/*`, `WorkspaceTreePanel`, interrupt-cascade dialog
-  plumbing.
+- **`@source-inc/gents-desktop-operations`** — focused operator panels:
+  `HoldsPanel`/`useToolCallHolds`, `RequestTracePanel`, `backendHealth/*`,
+  `mcpHealth/*`, and `WorkspaceTreePanel`. Tool lifecycle, background work, and
+  subagent progress are conversation-owned in `-chat`.
 - **Stays app-private**: `App.tsx`, `Sidebar` and sidebar widgets, hand-rolled view
   switching and shortcuts, theme persistence choice, branding assets and strings, the
   config workspace (`ConfigWorkspace` and the `config/*` panels), and
@@ -760,10 +755,7 @@ composition contract for a host shell:
   label/asset overrides where Gents strings exist today.
 - **Navigation**: packages never navigate. Hosts own routes/views (Gents Desktop's
   hand-rolled `workspaceView` state is one valid host; a router-based host is
-  another) and mount package surfaces wherever they choose. The operations rail's
-  tab registry (`operationsRailContext`) is the model for host-extensible panels: a
-  host registers extra tabs/panels through the same context API the package's own
-  panels use.
+  another) and mount package surfaces wherever they choose.
 - **Responsive ownership**: packages own component-level responsiveness — each ships
   its own media queries at the documented narrow breakpoint (`760px`, published as an
   exported constant `NARROW_BREAKPOINT_PX` and used to end the magic-number drift;
@@ -961,10 +953,9 @@ chat-write + fleet-read + fleet-admin + operations-read` permissions (no
    `brand` slot; the fixture host consumes the package surface. Delivered evidence:
    package tests/build and the existing Gents Desktop pairing/fleet lanes. An
    automated fixture clean-install pairing journey remains downstream evidence.
-9. **`@source-inc/gents-desktop-operations`.** Same shape, including the
-   host-extensible rail-tab registry (the fixture registers a domain tab).
-   Delivered evidence: package tests/build, Gents Desktop operations lanes, and
-   fixture compilation; no automated fixture operations journey is claimed.
+9. **`@source-inc/gents-desktop-operations`.** Focused holds, health, trace, and
+   workspace panels. Background and subagent presentation moved into the chat
+   timeline so hosts do not have to compose a second tool-state UI.
 10. **Release wiring.** Publish on tag (GitHub Packages or fallback per phase-5
     evidence); `CHANGELOG.md` + compat matrix; tag-validation extended to npm
     versions; documented downstream update workflow. Exit: a dry-run tag publishes
@@ -997,8 +988,8 @@ chat-write + fleet-read + fleet-admin + operations-read` permissions (no
 | Minimal downstream app owns binary, identity, storage home, schema registration, extra commands | `gents-desktop-bridge::init(BridgeConfig)` + `HomePolicy`; domain plugins own their stores/schemas (co-residence contract)                | 3–4         | Fixture build + grant test; native concurrent-`ClientCore` home-isolation test. A second domain node remains downstream evidence |
 | Working chat surface: streaming, retry, interrupt, reconnect, recovery — no copied source       | `@source-inc/gents-desktop-chat` projection/components over the typed `-client` contract                                                  | 7           | Gents agent-browser/live chat lanes; fixture renders session snapshots. Downstream recovery coordinator/journey remains required |
 | Fleet pairing, health, peer management via package API                                          | `@source-inc/gents-desktop-fleet` (+ bridge `fleet-*` permission sets)                                                                    | 8           | Gents `test:live:fleet` and QR/bearer journeys; fixture composes the surface. Downstream clean-install pairing remains required  |
-| Operator holds/traces/cancellation via package API                                              | `@source-inc/gents-desktop-operations` (+ `operations-read`, interrupt, and hold permission sets)                                         | 9           | `test:live:operations`/`interrupt`/`cascade`, deterministic operations scenarios, fixture rail-tab registration                  |
-| Own branding, semantic theme, navigation, domain routes without patching components             | Semantic tokens contract (split before extraction), `brand` slots, host-owned navigation, rail-tab registry                               | 6–9         | Token-override smoke, fixture-host distinct branding + domain module, visual suite                                               |
+| Operator holds/traces/cancellation via package API                                              | `@source-inc/gents-desktop-operations` (+ `operations-read`, interrupt, and hold permission sets)                                         | 9           | `test:live:operations`/`interrupt`/`cascade` and deterministic operations scenarios                                              |
+| Own branding, semantic theme, navigation, domain routes without patching components             | Semantic tokens contract (split before extraction), `brand` slots, host-owned navigation                                                  | 6–9         | Token-override smoke, fixture-host distinct branding + domain module, visual suite                                               |
 | Gents Desktop builds and passes its checks consuming the extracted packages                     | App consumes all four packages + plugin                                                                                                   | every phase | Standing exit gates on each phase (app is the first consumer throughout)                                                         |
 | Documented version-bump/update workflow                                                         | Lockstep train, exact pins, `CHANGELOG.md`, compat matrix, contract handshake with additive/breaking semantics                            | 10          | Dry-run tag publish + fixture pin-bump rehearsal; packed-artifact gate from phase 5                                              |
 | Non-goals: no plugin marketplace; no Amygdala domain code upstream; no weakened Gents semantics | Extension = co-resident plugins, slots/registry, config only; fixture's domain stays in fixture; runtime authority unchanged (§ Security) | —           | Review fence: dependency-lint + crate graph + permission-set review; no runtime-semantic diffs in extraction PRs                 |

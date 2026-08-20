@@ -47,13 +47,10 @@ test.describe("desktop stable screenshot states", () => {
       "stable-chat-transcript",
     );
 
-    await page.getByRole("button", { name: /open operations drawer/i }).click();
-    await expect(page.getByRole("complementary", { name: "Operations" })).toBeVisible();
-    await captureReviewScreenshot(
-      "operations drawer",
-      "default",
-      "stable-operations-drawer",
-    );
+    await gotoHarness(page, "coding");
+    await openChat(page);
+    await expect(page.getByTestId("tool-intro-bash")).toBeVisible();
+    await captureReviewScreenshot("tool timeline", "coding", "stable-tool-timeline");
 
     await gotoHarness(page);
     await openConfig(page);
@@ -69,7 +66,9 @@ test.describe("desktop stable screenshot states", () => {
     await captureReviewScreenshot("empty fleet", "empty-fleet", "stable-empty-fleet");
 
     await gotoHarness(page, "bridge-unavailable");
-    await expect(page.getByTestId("error-banner")).toBeVisible();
+    await expect(page.getByTestId("startup-screen")).toContainText(
+      "Desktop native bridge is unavailable",
+    );
     await captureReviewScreenshot(
       "bridge error",
       "bridge-unavailable",

@@ -10,13 +10,7 @@ import {
   test,
 } from "./desktopTest";
 
-const scenarios = [
-  "default",
-  "empty-fleet",
-  "loading",
-  "long-content",
-  "operations-rich",
-] as const;
+const scenarios = ["default", "empty-fleet", "loading", "long-content"] as const;
 
 test.describe("desktop responsive layout guardrails", () => {
   for (const scenario of scenarios) {
@@ -48,18 +42,6 @@ test.describe("desktop responsive layout guardrails", () => {
       await expect(page.locator(".config-editor").first()).toBeVisible();
       await expectNoPageHorizontalOverflow(page);
     }
-  });
-
-  test("conversation chrome excludes the operations drawer", async ({ page }) => {
-    await gotoHarness(page, "operations-rich");
-    await openChat(page);
-    await expect(
-      page.getByRole("button", { name: /open operations drawer/i }),
-    ).toHaveCount(0);
-    await expect(page.getByRole("complementary", { name: "Operations" })).toHaveCount(
-      0,
-    );
-    await expectNoPageHorizontalOverflow(page);
   });
 
   test("phone chat uses one full-screen pane at a time", async ({ page }) => {

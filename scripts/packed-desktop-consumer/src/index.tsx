@@ -16,12 +16,7 @@ import {
   InferenceSetupWizard,
   LocalRuntimeConnect,
 } from "@source-inc/gents-desktop-fleet/local-runtime";
-import {
-  BackgroundedToolsPanel,
-  OperationsRail,
-  OperationsRailProvider,
-  type OperationsRailTabDescriptor,
-} from "@source-inc/gents-desktop-operations";
+import { HoldsPanel } from "@source-inc/gents-desktop-operations";
 import {
   ConfirmDialog,
   CopyButton,
@@ -32,13 +27,6 @@ const client = createDesktopClient();
 const store = createDesktopStore(client);
 const generatedContract: BridgeContract | null = null;
 const publicSnapshot: DesktopClientSnapshot | null = null;
-const operationsTabs: OperationsRailTabDescriptor[] = [
-  {
-    id: "background",
-    label: "Background",
-    render: () => <BackgroundedToolsPanel />,
-  },
-];
 const timestamp = formatMessageTime("2026-07-27T00:00:00Z");
 const parsed = parsePeerConnectionJson(
   JSON.stringify({
@@ -73,10 +61,7 @@ const publicComponents: ReactNode[] = [
     onCancel={() => undefined}
     onConfirm={() => undefined}
   />,
-  <OperationsRailProvider api={client.api} tabs={operationsTabs}>
-    <OperationsRail />
-  </OperationsRailProvider>,
-  <BackgroundedToolsPanel />,
+  <HoldsPanel agentDid={null} api={client.api} />,
 ];
 
 void FleetDashboard;

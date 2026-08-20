@@ -80,6 +80,7 @@ export type {
 } from "./types/requests.js";
 export type {
   ChatSendResult,
+  CommandDenialView,
   DesktopSessionSnapshot,
   GoalView,
   MessageView,
@@ -87,9 +88,9 @@ export type {
   RenderedTimelineItem,
   RenderedToolCallView,
   ResponseView,
-  ToolDetailFieldView,
-  ToolDetailValueView,
   ToolCallView,
+  ToolDiffLineView,
+  ToolPresentationView,
   ToolResultView,
   RequestResendResult,
   RequestTimelineView,

@@ -27,7 +27,6 @@ export {
   type BridgeErrorPayload,
 } from "./errors.js";
 export * from "./api.js";
-export * from "./commandDenial.js";
 export * from "./events.js";
 export * from "./types.js";
 

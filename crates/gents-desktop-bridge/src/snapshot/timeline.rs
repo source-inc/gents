@@ -1,5 +1,3 @@
-use serde_json::Value;
-
 use std::collections::BTreeMap;
 
 use gents_protocol::timeline::{
@@ -10,38 +8,12 @@ use gents_protocol::timeline::{
 
 use super::super::types::{
     normalize_optional, MessageView, PendingTurnView, RenderedTimelineItem, RenderedToolCallView,
-    ResponseView, ToolCallView, ToolDetailFieldView, ToolDetailValueView,
+    ResponseView, ToolCallView,
 };
+use super::tool_presentation::project_tool_presentation;
 
 pub(super) fn normalize_timeline_text(value: Option<&str>) -> String {
     value.map(str::trim).unwrap_or_default().to_string()
-}
-
-fn render_json_value(value: &Value) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::String(value) => value.clone(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        _ => serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()),
-    }
-}
-
-fn parse_tool_detail_value(value: Option<&str>) -> Option<ToolDetailValueView> {
-    let raw_text = normalize_optional(value)?;
-    let parsed = serde_json::from_str::<Value>(&raw_text).ok();
-    let fields = match parsed {
-        Some(Value::Object(map)) => map
-            .into_iter()
-            .map(|(key, value)| ToolDetailFieldView {
-                key,
-                value: render_json_value(&value),
-            })
-            .collect::<Vec<_>>(),
-        _ => Vec::new(),
-    };
-
-    Some(ToolDetailValueView { raw_text, fields })
 }
 
 fn tool_status_kind(status: Option<&str>) -> String {
@@ -54,6 +26,7 @@ fn tool_status_kind(status: Option<&str>) -> String {
 }
 
 fn render_tool_call(tool: ToolCallView) -> RenderedToolCallView {
+    let presentation = project_tool_presentation(&tool);
     RenderedToolCallView {
         item_key: tool.tool_call_key.clone(),
         tool_name: tool.tool_name.clone().unwrap_or_else(|| "tool".to_string()),
@@ -61,10 +34,13 @@ fn render_tool_call(tool: ToolCallView) -> RenderedToolCallView {
         status: tool.status.clone(),
         child_request_id: tool.child_request_id.clone(),
         await_mode: tool.await_mode.clone(),
-        args: parse_tool_detail_value(tool.args.as_deref()),
+        cancel_policy: tool.cancel_policy.clone(),
+        started_at: tool.started_at.clone(),
+        deadline_at: tool.deadline_at.clone(),
+        completed_at: tool.completed_at.clone(),
+        presentation,
         partial_output_tail: tool.partial_output_tail.clone(),
         partial_output_seq: tool.partial_output_seq,
-        result: parse_tool_detail_value(tool.result.as_deref()),
         denial: tool.denial.clone(),
         cancel_cause: tool.cancel_cause.clone(),
     }
@@ -462,7 +438,9 @@ mod tests {
             lifecycle_state: Some("running".to_string()),
             child_request_id: Some("child-request-1".to_string()),
             await_mode: Some("background".to_string()),
+            cancel_policy: Some("detach".to_string()),
             started_at: None,
+            deadline_at: None,
             completed_at: None,
             denial: None,
             cancel_cause: None,

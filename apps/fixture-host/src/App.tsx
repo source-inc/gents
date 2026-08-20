@@ -17,12 +17,6 @@ import {
   ChatTranscriptPanel,
 } from "@source-inc/gents-desktop-chat";
 import { FleetDashboard } from "@source-inc/gents-desktop-fleet";
-import {
-  BackgroundedToolsPanel,
-  OperationsRail,
-  OperationsRailProvider,
-  type OperationsRailTabDescriptor,
-} from "@source-inc/gents-desktop-operations";
 
 const DOMAIN = "fixture-domain";
 
@@ -39,7 +33,6 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState("");
   const [session, setSession] = useState<DesktopSessionSnapshot | null>(null);
-  const [operationsOpen, setOperationsOpen] = useState(true);
 
   useEffect(
     () => () => {
@@ -116,38 +109,6 @@ export function App() {
     selectedDeployment,
     storeState.generation,
   ]);
-
-  const operationsTabs = useMemo<OperationsRailTabDescriptor[]>(
-    () => [
-      {
-        id: "background-tools",
-        label: "Background",
-        render: () => (
-          <BackgroundedToolsPanel
-            agentDid={selectedDeployment?.agentDid ?? null}
-          />
-        ),
-      },
-      {
-        id: "fixture-domain",
-        label: "Domain",
-        badge: "host",
-        render: () => (
-          <section
-            className="fixture-domain-tab"
-            data-testid="fixture-domain-tab"
-          >
-            <strong>Fixture-owned tab</strong>
-            <p>
-              Registered by the host through the same operations rail contract
-              as package panels.
-            </p>
-          </section>
-        ),
-      },
-    ],
-    [selectedDeployment?.agentDid],
-  );
 
   function sendChat(event: FormEvent) {
     event.preventDefault();
@@ -319,19 +280,6 @@ export function App() {
             )
           }
         />
-      </section>
-
-      <section
-        className="package-surface fixture-operations"
-        data-testid="fixture-operations-surface"
-      >
-        <h2>Operations package</h2>
-        <OperationsRailProvider api={bridge.api} tabs={operationsTabs}>
-          <OperationsRail
-            open={operationsOpen}
-            onOpenChange={setOperationsOpen}
-          />
-        </OperationsRailProvider>
       </section>
 
       {error ? (

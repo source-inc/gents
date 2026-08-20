@@ -2,7 +2,7 @@
   "name": "@source-inc/gents-desktop-operations",
   "version": "0.12.0",
   "license": "Apache-2.0",
-  "description": "Reusable operations rail, liveness, health, lineage, trace, and workspace surfaces for Gents desktop",
+  "description": "Focused holds, health, trace, and workspace surfaces for Gents desktop",
   "type": "module",
   "sideEffects": [
     "./styles.css",

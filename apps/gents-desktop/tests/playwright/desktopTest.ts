@@ -8,7 +8,6 @@ export type HarnessScenario =
   | "save-error"
   | "backend-health-error"
   | "long-content"
-  | "operations-rich"
   | "active-turn"
   | "cascade-turn"
   | "coding";
