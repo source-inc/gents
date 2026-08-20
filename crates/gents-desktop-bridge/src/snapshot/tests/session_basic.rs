@@ -171,17 +171,33 @@ fn session_snapshot_exposes_pending_turn_when_latest_request_is_not_materialized
                 valid_until: None,
             },
         ],
-        messages: vec![AgentMessageRow {
-            message_key: "msg-1".to_string(),
-            session_id: Some("session-1".to_string()),
-            request_id: None,
-            requester_did: None,
-            sequence: Some(1),
-            role: Some("user".to_string()),
-            content: Some(user_message_json("first question")),
-            reasoning: None,
-            timestamp: Some("2026-04-21T12:00:00Z".to_string()),
-        }],
+        messages: vec![
+            AgentMessageRow {
+                message_key: "msg-1".to_string(),
+                session_id: Some("session-1".to_string()),
+                request_id: Some("req-1".to_string()),
+                requester_did: None,
+                sequence: Some(1),
+                role: Some("user".to_string()),
+                content: Some(user_message_json("first question")),
+                reasoning: None,
+                timestamp: Some("2026-04-21T12:00:00Z".to_string()),
+            },
+            AgentMessageRow {
+                message_key: "msg-3".to_string(),
+                session_id: Some("session-1".to_string()),
+                request_id: Some("req-2".to_string()),
+                requester_did: None,
+                sequence: Some(3),
+                role: Some("assistant".to_string()),
+                content: Some(
+                    r#"{"role":"assistant","content":[{"text":"continued after the partially replicated request"}]}"#
+                        .to_string(),
+                ),
+                reasoning: None,
+                timestamp: Some("2026-04-21T12:01:02Z".to_string()),
+            },
+        ],
         ..ClientStoreRows::default()
     });
 
@@ -191,6 +207,24 @@ fn session_snapshot_exposes_pending_turn_when_latest_request_is_not_materialized
     assert_eq!(pending.request_id, "req-2");
     assert_eq!(pending.content, "follow up question");
     assert_eq!(pending.lifecycle_state.as_deref(), Some("processing"));
+    let pending_position = snapshot
+        .timeline_items
+        .iter()
+        .position(|item| matches!(item, RenderedTimelineItem::PendingUserTurn { .. }))
+        .expect("request-owned pending user turn");
+    let continued_position = snapshot
+        .timeline_items
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                RenderedTimelineItem::AssistantMessage { content, .. }
+                    if content.as_deref()
+                        == Some("continued after the partially replicated request")
+            )
+        })
+        .expect("later replicated assistant message");
+    assert_eq!(pending_position + 1, continued_position);
 }
 
 #[test]
@@ -250,7 +284,7 @@ fn session_snapshot_hides_pending_turn_once_user_message_is_materialized() {
         messages: vec![AgentMessageRow {
             message_key: "msg-2".to_string(),
             session_id: Some("session-1".to_string()),
-            request_id: None,
+            request_id: Some("req-2".to_string()),
             requester_did: None,
             sequence: Some(2),
             role: Some("user".to_string()),
@@ -363,7 +397,7 @@ fn session_snapshot_keeps_pending_turn_for_repeated_prompt_until_second_user_mes
         messages: vec![AgentMessageRow {
             message_key: "msg-1".to_string(),
             session_id: Some("session-1".to_string()),
-            request_id: None,
+            request_id: Some("req-1".to_string()),
             requester_did: None,
             sequence: Some(1),
             role: Some("user".to_string()),

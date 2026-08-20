@@ -4,7 +4,8 @@ import Proofs.Client
 # Client Shell Timeline Ordering (#608 parity)
 
 Every client shell renders a session's transcript in the same order: messages
-interleaved with their tool groups, then the pending turn, then orphan tool
+interleaved with their tool groups, with a pending turn immediately before the
+first durable message from its request (or at the tail), then orphan tool
 groups and the live-assistant overlay. While an unmaterialized foreground tool
 is running, the overlay is placed immediately before that tool's orphan group,
 without jumping ahead of earlier historical orphan groups. Otherwise the
@@ -14,7 +15,7 @@ second shell must reproduce exactly; only the pixels are presentation.
 This models `gents_protocol::timeline::build_timeline_order`. The Rust
 function is structured in the same three phases this model concatenates:
 
-    buildOrder = body ++ pending ++ placedOrphanTail
+    buildOrder = placePending pending body ++ placedOrphanTail
 
 where `body` interleaves each surviving (deduped) message with the tool group it
 owns, `orphans` are the tool groups no surviving message owns, and the final
@@ -110,9 +111,48 @@ inductive OverlayPlacement
   deriving DecidableEq, Repr
 
 structure Overlay where
-  matchesTrailing : Bool
+  hasDurableOwner : Bool
   placement : OverlayPlacement
   deriving DecidableEq, Repr
+
+/-- A request-owned pending user turn normally sits at the body tail. During
+partial replication, a later message from the same request may arrive first;
+then the pending turn is inserted immediately before that message. -/
+inductive PendingPlacement
+  | tail
+  | beforeMessage (seq : Int)
+  deriving DecidableEq, Repr
+
+def insertPendingBefore (target : Int) : List Slot → List Slot
+  | [] => [Slot.pending]
+  | slot :: rest =>
+      match slot with
+      | .message _ seq _ =>
+          if seq = target then Slot.pending :: slot :: rest
+          else slot :: insertPendingBefore target rest
+      | .toolGroup seq =>
+          if seq = target then Slot.pending :: slot :: rest
+          else slot :: insertPendingBefore target rest
+      | _ => slot :: insertPendingBefore target rest
+
+def placePending : Option PendingPlacement → List Slot → List Slot
+  | none, body => body
+  | some .tail, body => body ++ [Slot.pending]
+  | some (.beforeMessage target), body => insertPendingBefore target body
+
+theorem pending_before_matching_message_head
+    (target : Int) (key : Nat) (role : Role) (rest : List Slot) :
+    placePending (some (.beforeMessage target))
+        (Slot.message key target role :: rest) =
+      Slot.pending :: Slot.message key target role :: rest := by
+  simp [placePending, insertPendingBefore]
+
+theorem pending_before_matching_tool_group_head
+    (target : Int) (rest : List Slot) :
+    placePending (some (.beforeMessage target))
+        (Slot.toolGroup target :: rest) =
+      Slot.pending :: Slot.toolGroup target :: rest := by
+  simp [placePending, insertPendingBefore]
 
 /-- Insert `visibleOverlay` immediately before the first matching orphan.
 If the target is absent (a partial-sync race), keep the overlay at the tail. -/
@@ -132,17 +172,16 @@ def placeOrphanTail (placement : OverlayPlacement) (visibleOverlay : List Slot)
 
 /-- The three-phase timeline order. -/
 def buildOrder (groups : List Int) (msgs : List Msg)
-    (hasPending : Bool) (overlay : Option Overlay) : List Slot :=
+    (pending : Option PendingPlacement) (overlay : Option Overlay) : List Slot :=
   let visibleOverlay :=
     match overlay with
-    | some o => if o.matchesTrailing then [] else [Slot.overlay]
+    | some o => if o.hasDurableOwner then [] else [Slot.overlay]
     | none => []
   let placedOrphanTail :=
     match overlay with
     | some o => placeOrphanTail o.placement visibleOverlay (orphans groups msgs)
     | none => (orphans groups msgs).map Slot.toolGroup
-  body groups msgs
-    ++ (if hasPending then [Slot.pending] else [])
+  placePending pending (body groups msgs)
     ++ placedOrphanTail
 
 /-! ## Slot-membership helpers -/
@@ -164,6 +203,31 @@ theorem overlay_not_in_bodyGo (groups : List Int) (attached : List Int) (ms : Li
 theorem overlay_not_in_body (groups : List Int) (msgs : List Msg) :
     Slot.overlay ∉ body groups msgs :=
   overlay_not_in_bodyGo groups [] (kept msgs)
+
+theorem overlay_mem_insertPendingBefore_iff (target : Int) (slots : List Slot) :
+    (Slot.overlay ∈ insertPendingBefore target slots) ↔ Slot.overlay ∈ slots := by
+  induction slots with
+  | nil => simp [insertPendingBefore]
+  | cons slot rest ih =>
+      cases slot with
+      | message key seq role =>
+          by_cases h : seq = target <;> simp [insertPendingBefore, h, ih]
+      | toolGroup seq =>
+          by_cases h : seq = target <;> simp [insertPendingBefore, h, ih]
+      | pending => simp [insertPendingBefore, ih]
+      | overlay =>
+          change (Slot.overlay ∈ Slot.overlay :: insertPendingBefore target rest) ↔ _
+          simp
+
+theorem overlay_mem_placePending_iff (pending : Option PendingPlacement)
+    (slots : List Slot) :
+    (Slot.overlay ∈ placePending pending slots) ↔ Slot.overlay ∈ slots := by
+  cases pending with
+  | none => rfl
+  | some placement =>
+      cases placement with
+      | tail => simp [placePending]
+      | beforeMessage target => exact overlay_mem_insertPendingBefore_iff target slots
 
 theorem overlay_not_in_orphans (groups : List Int) (msgs : List Msg) :
     Slot.overlay ∉ (orphans groups msgs).map Slot.toolGroup := by
@@ -193,15 +257,16 @@ theorem pending_mem_insertOverlayBefore_iff (target : Int) (visible : List Slot)
 
 /-! ## Overlay: shown iff live, and precisely placed -/
 
-/-- The overlay is emitted exactly when it is present and not a duplicate of the
-trailing assistant. -/
+/-- The overlay is emitted exactly when it is present and no durable assistant
+turn already owns the same request-local content. -/
 theorem overlay_shown_iff (groups : List Int) (msgs : List Msg)
-    (hasPending : Bool) (o : Overlay) :
-    (Slot.overlay ∈ buildOrder groups msgs hasPending (some o)) ↔ o.matchesTrailing = false := by
+    (pending : Option PendingPlacement) (o : Overlay) :
+    (Slot.overlay ∈ buildOrder groups msgs pending (some o)) ↔ o.hasDurableOwner = false := by
   unfold buildOrder
   have hb := overlay_not_in_body groups msgs
   have ho := overlay_not_in_orphans groups msgs
-  cases hp : hasPending <;> cases hm : o.matchesTrailing <;>
+  have hp := overlay_mem_placePending_iff pending (body groups msgs)
+  cases hm : o.hasDurableOwner <;>
     cases hplace : o.placement with
     | tail => simp [hp, hm, hplace, placeOrphanTail, List.mem_append, hb, ho]
     | beforeOrphan target =>
@@ -210,12 +275,13 @@ theorem overlay_shown_iff (groups : List Int) (msgs : List Msg)
 
 /-- No overlay slot appears when the overlay is absent. -/
 theorem no_overlay_when_absent (groups : List Int) (msgs : List Msg)
-    (hasPending : Bool) :
-    Slot.overlay ∉ buildOrder groups msgs hasPending none := by
+    (pending : Option PendingPlacement) :
+    Slot.overlay ∉ buildOrder groups msgs pending none := by
   unfold buildOrder
   have hb := overlay_not_in_body groups msgs
   have ho := overlay_not_in_orphans groups msgs
-  cases hp : hasPending <;> simp [hp, List.mem_append, hb, ho]
+  have hp := overlay_mem_placePending_iff pending (body groups msgs)
+  simp [hp, List.mem_append, hb, ho]
 
 /-! ## Partition: every tool group is placed exactly once -/
 
@@ -247,40 +313,68 @@ theorem group_not_both (groups : List Int) (msgs : List Msg) {s : Int}
 
 /-! ## Tail structure -/
 
+theorem pending_not_in_body (groups : List Int) (msgs : List Msg) :
+    Slot.pending ∉ body groups msgs := by
+  unfold body
+  generalize (kept msgs) = ks
+  generalize ([] : List Int) = acc
+  induction ks generalizing acc with
+  | nil => simp [bodyGo]
+  | cons m rest ih =>
+      unfold bodyGo
+      by_cases hg : hasGroup groups m.seq ∧ m.seq ∉ acc
+      · simp only [hg, if_true]; cases m.emitsItem <;> simp [List.mem_append, ih]
+      · simp only [hg, if_false]; cases m.emitsItem <;> simp [List.mem_append, ih]
+
+theorem pending_mem_insertPendingBefore (target : Int) (slots : List Slot) :
+    Slot.pending ∈ insertPendingBefore target slots := by
+  induction slots with
+  | nil => simp [insertPendingBefore]
+  | cons slot rest ih =>
+      cases slot with
+      | message key seq role =>
+          by_cases h : seq = target <;> simp [insertPendingBefore, h, ih]
+      | toolGroup seq =>
+          by_cases h : seq = target <;> simp [insertPendingBefore, h, ih]
+      | pending =>
+          change Slot.pending ∈ Slot.pending :: insertPendingBefore target rest
+          exact List.mem_cons_self Slot.pending _
+      | overlay => simp [insertPendingBefore, ih]
+
+theorem pending_mem_placePending_iff (pending : Option PendingPlacement)
+    (slots : List Slot) (habsent : Slot.pending ∉ slots) :
+    (Slot.pending ∈ placePending pending slots) ↔ pending.isSome := by
+  cases pending with
+  | none => simp [placePending, habsent]
+  | some placement =>
+      cases placement with
+      | tail => simp [placePending]
+      | beforeMessage target => simp [placePending, pending_mem_insertPendingBefore]
+
 /-- The pending turn appears exactly when a turn is pending. -/
 theorem pending_shown_iff (groups : List Int) (msgs : List Msg)
-    (hasPending : Bool) (overlay : Option Overlay) :
-    (Slot.pending ∈ buildOrder groups msgs hasPending overlay) ↔ hasPending = true := by
+    (pending : Option PendingPlacement) (overlay : Option Overlay) :
+    (Slot.pending ∈ buildOrder groups msgs pending overlay) ↔ pending.isSome := by
   unfold buildOrder
-  have hb : Slot.pending ∉ body groups msgs := by
-    unfold body
-    generalize (kept msgs) = ks
-    generalize ([] : List Int) = acc
-    induction ks generalizing acc with
-    | nil => simp [bodyGo]
-    | cons m rest ih =>
-        unfold bodyGo
-        by_cases hg : hasGroup groups m.seq ∧ m.seq ∉ acc
-        · simp only [hg, if_true]; cases m.emitsItem <;> simp [List.mem_append, ih]
-        · simp only [hg, if_false]; cases m.emitsItem <;> simp [List.mem_append, ih]
+  have hb := pending_not_in_body groups msgs
+  have hp := pending_mem_placePending_iff pending (body groups msgs) hb
   have ho : Slot.pending ∉ (orphans groups msgs).map Slot.toolGroup := by simp
-  cases hp : hasPending <;>
-    cases overlay with
-    | none => simp [hp, List.mem_append, hb, ho]
-    | some o =>
-        cases hm : o.matchesTrailing <;> cases hplace : o.placement with
-        | tail =>
-            simp [hp, hm, hplace, placeOrphanTail, List.mem_append, hb, ho]
-        | beforeOrphan target =>
-            simp [hp, hm, hplace, placeOrphanTail, List.mem_append, hb,
-              pending_mem_insertOverlayBefore_iff]
+  cases overlay with
+  | none => simpa [List.mem_append, ho] using hp
+  | some o =>
+      cases hm : o.hasDurableOwner <;> cases hplace : o.placement with
+      | tail =>
+          simpa [hm, hplace, placeOrphanTail, List.mem_append, ho] using hp
+      | beforeOrphan target =>
+          simpa [hm, hplace, placeOrphanTail, List.mem_append, ho,
+            pending_mem_insertOverlayBefore_iff] using hp
 
 /-- **Tail overlay is last.** When no running orphan tool needs the live
 reasoning placed before it, an emitted overlay remains the final slot. -/
 theorem overlay_is_last (groups : List Int) (msgs : List Msg)
-    (hasPending : Bool) (o : Overlay) (hshow : o.matchesTrailing = false)
+    (pending : Option PendingPlacement) (o : Overlay) (hshow : o.hasDurableOwner = false)
     (htail : o.placement = .tail) :
-    (buildOrder groups msgs hasPending (some o)).getLast? = some Slot.overlay := by
+    (buildOrder groups msgs pending (some o)).getLast? = some Slot.overlay := by
   unfold buildOrder
   simp [hshow, htail, placeOrphanTail, List.getLast?_append]
 
@@ -301,14 +395,13 @@ theorem insertOverlayBefore_prefix (target : Int) (visible : List Slot)
 /-- **Running-tool overlay shape.** The emitted overlay appears immediately
 before its target orphan while all earlier historical orphans stay earlier. -/
 theorem overlay_before_target_shape (groups : List Int) (msgs : List Msg)
-    (hasPending : Bool) (o : Overlay) (target : Int) (earlier suffix : List Int)
-    (hshow : o.matchesTrailing = false)
+    (pending : Option PendingPlacement) (o : Overlay) (target : Int) (earlier suffix : List Int)
+    (hshow : o.hasDurableOwner = false)
     (hplace : o.placement = .beforeOrphan target)
     (horphans : orphans groups msgs = earlier ++ target :: suffix)
     (hnot : target ∉ earlier) :
-    buildOrder groups msgs hasPending (some o) =
-      body groups msgs
-        ++ (if hasPending then [Slot.pending] else [])
+    buildOrder groups msgs pending (some o) =
+      placePending pending (body groups msgs)
         ++ earlier.map Slot.toolGroup
         ++ [Slot.overlay]
         ++ Slot.toolGroup target :: suffix.map Slot.toolGroup := by

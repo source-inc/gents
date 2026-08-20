@@ -60,7 +60,7 @@ fn make_streaming_store_with_response_content(content: &str) -> ClientStore {
         messages: vec![AgentMessageRow {
             message_key: "msg-1".to_string(),
             session_id: Some("sess-1".to_string()),
-            request_id: None,
+            request_id: Some("req-1".to_string()),
             requester_did: None,
             sequence: Some(1),
             role: Some("user".to_string()),
@@ -161,7 +161,7 @@ fn session_snapshot_deduplicates_persisted_rows_from_multiple_sources() {
     let assistant = AgentMessageRow {
         message_key: "msg-2".to_string(),
         session_id: Some("sess-1".to_string()),
-        request_id: None,
+        request_id: Some("req-1".to_string()),
         requester_did: None,
         sequence: Some(2),
         role: Some("assistant".to_string()),
@@ -224,7 +224,7 @@ fn session_snapshot_hides_live_overlay_matching_last_materialized_assistant() {
     rows.messages.push(AgentMessageRow {
         message_key: "msg-2".to_string(),
         session_id: Some("sess-1".to_string()),
-        request_id: None,
+        request_id: Some("req-1".to_string()),
         requester_did: None,
         sequence: Some(2),
         role: Some("assistant".to_string()),

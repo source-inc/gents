@@ -12,6 +12,7 @@ import {
   projectChatShell,
   reconcileProjectedWorkflow,
   type ChatWorkflowState,
+  type OptimisticPendingTurn,
 } from "@source-inc/gents-desktop-chat";
 import {
   delay,
@@ -85,6 +86,8 @@ export function useDesktopShell({ api, listenToUpdates }: DesktopShellBridge) {
   const [localWorkflow, setLocalWorkflow] = useState<ChatWorkflowState>({
     kind: "ready",
   });
+  const [optimisticPendingTurn, setOptimisticPendingTurn] =
+    useState<OptimisticPendingTurn | null>(null);
   const [draftsByContext, setDraftsByContext] = useState<Record<string, string>>({});
 
   const deployments = snapshot?.client?.deployments ?? [];
@@ -159,6 +162,20 @@ export function useDesktopShell({ api, listenToUpdates }: DesktopShellBridge) {
       reconcileProjectedWorkflow(current, shellProjection.workflow),
     );
   }, [shellProjection.workflow]);
+
+  useEffect(() => {
+    setOptimisticPendingTurn((current) => {
+      if (!current || current.sessionId !== session?.sessionId) {
+        return current;
+      }
+      const durableOwner = session.timelineItems.some(
+        (item) =>
+          (item.kind === "pendingUserTurn" && item.requestId === current.requestId) ||
+          (item.kind === "userMessage" && item.requestId === current.requestId),
+      );
+      return durableOwner ? null : current;
+    });
+  }, [session]);
 
   const selectedTrackedRequestId =
     trackedRequestIdForSession(selectedSessionId, shellProjection.workflow) ??
@@ -452,6 +469,7 @@ export function useDesktopShell({ api, listenToUpdates }: DesktopShellBridge) {
     setDraft,
     setError,
     setLocalWorkflow,
+    setOptimisticPendingTurn,
     setSelectedBehaviorId,
     setSelectedSessionId,
     setSending,
@@ -483,6 +501,7 @@ export function useDesktopShell({ api, listenToUpdates }: DesktopShellBridge) {
   return {
     snapshot,
     session,
+    optimisticPendingTurn,
     startupPhase,
     loading,
     starting,

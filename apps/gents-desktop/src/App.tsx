@@ -315,6 +315,7 @@ function AppShell({ bridge: explicitBridge }: { bridge?: DesktopShellBridge }) {
               selectedSessionId={shell.selectedSessionId}
               sending={shell.sending}
               session={shell.session}
+              optimisticPendingTurn={shell.optimisticPendingTurn}
               turnState={shell.turnState ?? shell.session?.turnState ?? null}
               onOpenMobileNavigation={() => setMobileChatPane("navigation")}
               onInterruptAccepted={async () => {

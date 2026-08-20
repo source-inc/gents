@@ -7,6 +7,7 @@ use super::operations::DerivedCancelCauseView;
 #[serde(rename_all = "camelCase")]
 pub struct MessageView {
     pub message_key: String,
+    pub request_id: Option<String>,
     pub sequence: Option<i64>,
     pub role: Option<String>,
     pub content: Option<String>,
@@ -153,6 +154,9 @@ pub enum RenderedTimelineItem {
     #[serde(rename_all = "camelCase")]
     UserMessage {
         item_key: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        #[ts(optional = nullable)]
+        request_id: Option<String>,
         sequence: Option<i64>,
         content: String,
         timestamp: Option<String>,

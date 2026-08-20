@@ -82,6 +82,8 @@ pub(crate) struct LeanContractSnapshot {
     pub(crate) command_sandbox_cases: Vec<LeanCommandSandboxCase>,
     pub(crate) command_env_cases: Vec<LeanCommandEnvCase>,
     pub(crate) live_overlay_cases: Vec<LeanLiveOverlayCase>,
+    pub(crate) request_progress_cases: Vec<LeanRequestProgressCase>,
+    pub(crate) pending_user_turn_cases: Vec<LeanPendingUserTurnCase>,
     pub(crate) queue_deadline_conformance_cases: Vec<LeanQueueDeadlineConformanceCase>,
     pub(crate) recovery_sweep_cases: Vec<LeanRecoverySweepCase>,
     #[serde(default)]
@@ -1009,6 +1011,14 @@ pub(crate) fn lean_identity_contracts() -> &'static [LeanIdentityContract] {
 
 pub(crate) fn lean_live_overlay_cases() -> &'static [LeanLiveOverlayCase] {
     &lean_contract_snapshot().live_overlay_cases
+}
+
+pub(crate) fn lean_request_progress_cases() -> &'static [LeanRequestProgressCase] {
+    &lean_contract_snapshot().request_progress_cases
+}
+
+pub(crate) fn lean_pending_user_turn_cases() -> &'static [LeanPendingUserTurnCase] {
+    &lean_contract_snapshot().pending_user_turn_cases
 }
 
 pub(crate) fn lean_vocabulary_values(domain: &str) -> Vec<&'static str> {

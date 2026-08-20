@@ -262,7 +262,7 @@ fn session_snapshot_prefers_tracked_request_over_stale_conversation_latest_reque
         messages: vec![AgentMessageRow {
             message_key: "msg-1".to_string(),
             session_id: Some("session-1".to_string()),
-            request_id: None,
+            request_id: Some("req-1".to_string()),
             requester_did: None,
             sequence: Some(1),
             role: Some("user".to_string()),
@@ -351,7 +351,7 @@ fn session_snapshot_does_not_report_unobserved_preferred_request() {
         messages: vec![AgentMessageRow {
             message_key: "msg-1".to_string(),
             session_id: Some("session-1".to_string()),
-            request_id: None,
+            request_id: Some("req-old".to_string()),
             requester_did: None,
             sequence: Some(1),
             role: Some("user".to_string()),
@@ -911,7 +911,7 @@ fn session_snapshot_stays_renderable_across_single_turn_observation_updates() {
             AgentMessageRow {
                 message_key: "msg-1".to_string(),
                 session_id: Some("session-1".to_string()),
-                request_id: None,
+                request_id: Some("req-1".to_string()),
                 requester_did: None,
                 sequence: Some(1),
                 role: Some("user".to_string()),
@@ -922,7 +922,7 @@ fn session_snapshot_stays_renderable_across_single_turn_observation_updates() {
             AgentMessageRow {
                 message_key: "msg-2".to_string(),
                 session_id: Some("session-1".to_string()),
-                request_id: None,
+                request_id: Some("req-1".to_string()),
                 requester_did: None,
                 sequence: Some(2),
                 role: Some("assistant".to_string()),
@@ -1463,7 +1463,7 @@ fn transcript_message_row(
     AgentMessageRow {
         message_key: message_key.to_string(),
         session_id: Some("session-1".to_string()),
-        request_id: None,
+        request_id: Some("req-1".to_string()),
         requester_did: None,
         sequence: Some(sequence as i64),
         role: Some(role.to_string()),

@@ -13,12 +13,30 @@ def liveOverlayCaseJson (witness : LiveOverlayCase) : String :=
     ++ "\"name\":" ++ jsonString witness.name ++ ","
     ++ "\"responseStatus\":" ++ jsonString witness.responseStatus ++ ","
     ++ "\"materialized\":" ++ boolString witness.materialized ++ ","
+    ++ "\"hasDurableOwner\":" ++ boolString witness.hasDurableOwner ++ ","
     ++ "\"precedingToolCalls\":" ++ toString witness.precedingToolCalls ++ ","
     ++ "\"turnTerminal\":" ++ boolString witness.turnTerminal ++ ","
     ++ "\"turnLabel\":" ++ jsonString witness.turnLabel ++ ","
     ++ "\"hasContent\":" ++ boolString witness.hasContent ++ ","
     ++ "\"hasReasoning\":" ++ boolString witness.hasReasoning ++ ","
     ++ "\"expectOverlay\":" ++ boolString witness.expectOverlay
+    ++ "}"
+
+def requestProgressCaseJson (witness : RequestProgressCase) : String :=
+  "{"
+    ++ "\"name\":" ++ jsonString witness.name ++ ","
+    ++ "\"lifecycleState\":" ++ jsonString witness.lifecycleState ++ ","
+    ++ "\"label\":" ++ jsonString witness.label ++ ","
+    ++ "\"animated\":" ++ boolString witness.animated
+    ++ "}"
+
+def pendingUserTurnCaseJson (witness : PendingUserTurnCase) : String :=
+  "{"
+    ++ "\"name\":" ++ jsonString witness.name ++ ","
+    ++ "\"hasDurableUserOwner\":"
+      ++ boolString witness.hasDurableUserOwner ++ ","
+    ++ "\"unrelatedUserTurns\":" ++ toString witness.unrelatedUserTurns ++ ","
+    ++ "\"expectPendingTurn\":" ++ boolString witness.expectPendingTurn
     ++ "}"
 
 def responseTransitionCaseJson

@@ -50,6 +50,8 @@ pub(crate) struct LeanLiveOverlayCase {
     #[serde(rename = "responseStatus")]
     pub(crate) response_status: String,
     pub(crate) materialized: bool,
+    #[serde(rename = "hasDurableOwner")]
+    pub(crate) has_durable_owner: bool,
     #[serde(rename = "precedingToolCalls")]
     pub(crate) preceding_tool_calls: u64,
     #[serde(rename = "turnTerminal")]
@@ -62,6 +64,26 @@ pub(crate) struct LeanLiveOverlayCase {
     pub(crate) has_reasoning: bool,
     #[serde(rename = "expectOverlay")]
     pub(crate) expect_overlay: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct LeanRequestProgressCase {
+    pub(crate) name: String,
+    #[serde(rename = "lifecycleState")]
+    pub(crate) lifecycle_state: String,
+    pub(crate) label: String,
+    pub(crate) animated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct LeanPendingUserTurnCase {
+    pub(crate) name: String,
+    #[serde(rename = "hasDurableUserOwner")]
+    pub(crate) has_durable_user_owner: bool,
+    #[serde(rename = "unrelatedUserTurns")]
+    pub(crate) unrelated_user_turns: u64,
+    #[serde(rename = "expectPendingTurn")]
+    pub(crate) expect_pending_turn: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

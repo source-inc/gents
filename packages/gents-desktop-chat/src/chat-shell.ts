@@ -1,7 +1,42 @@
 import type {
   ConversationSummary,
   DesktopSessionSnapshot,
+  PendingTurnView,
 } from "@source-inc/gents-desktop-client";
+
+export type OptimisticPendingTurn = PendingTurnView & { sessionId: string };
+
+export type RequestProgressPresentation = {
+  label: string;
+  animated: boolean;
+};
+
+export function requestProgressPresentation(
+  lifecycleState?: string | null,
+): RequestProgressPresentation | null {
+  switch (lifecycleState) {
+    case "pending":
+      return { label: "Queued", animated: true };
+    case "claimed":
+      return { label: "Claimed", animated: true };
+    case "processing":
+      return { label: "Working", animated: true };
+    case "inputRequired":
+      return { label: "Waiting for input", animated: false };
+    case "completed":
+      return { label: "Completed", animated: false };
+    case "failed":
+      return { label: "Failed", animated: false };
+    case "superseded":
+      return { label: "Superseded", animated: false };
+    case "dead":
+      return { label: "Expired", animated: false };
+    case "interrupted":
+      return { label: "Interrupted", animated: false };
+    default:
+      return null;
+  }
+}
 
 export type TurnState =
   | "waitingForClaim"

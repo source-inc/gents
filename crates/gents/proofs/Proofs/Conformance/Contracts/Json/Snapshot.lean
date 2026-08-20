@@ -132,6 +132,10 @@ def snapshotJson : String :=
       ++ jsonArray (CommandPolicy.commandEnvCases.map commandEnvCaseJson) ++ ","
     ++ "\"live_overlay_cases\":"
       ++ jsonArray (liveOverlayCases.map liveOverlayCaseJson) ++ ","
+    ++ "\"request_progress_cases\":"
+      ++ jsonArray (requestProgressCases.map requestProgressCaseJson) ++ ","
+    ++ "\"pending_user_turn_cases\":"
+      ++ jsonArray (pendingUserTurnCases.map pendingUserTurnCaseJson) ++ ","
     ++ "\"queue_deadline_conformance_cases\":"
       ++ jsonArray
         (queueDeadlineConformanceCases.map queueDeadlineConformanceCaseJson) ++ ","
