@@ -73,7 +73,6 @@ wasmtime = { version = "46.0.2", default-features = false, features = [
     "cranelift",
     "runtime",
     "std",
-    "wat",
 ] }
 rig-core.workspace = true
 reqwest.workspace = true
@@ -103,3 +102,4 @@ zstd = "0.13"
 gents-lean-contract.workspace = true
 gents-callback-fixture-create-workspace = { path = "../gents-callbacks/fixture_create_workspace", default-features = false }
 jsonschema = { version = "0.46.5", default-features = false }
+wat = "1.254"

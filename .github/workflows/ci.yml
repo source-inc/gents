@@ -285,6 +285,7 @@ jobs:
         run: |
           cargo test -p gents --lib runtime_status::tests::
           cargo test -p gents --lib toolset::tests::read_only_bash
+          cargo test -p gents --lib callback::
           # The client-authored list-sync fence (#1123/#1125) must fail the
           # PR that drifts the surface, not the post-merge main run.
           cargo test -p gents --test misc client_authored_collections_fence::

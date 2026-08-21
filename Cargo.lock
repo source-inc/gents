@@ -3300,6 +3300,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wasmtime",
+ "wat",
  "windows-sys 0.61.2",
  "zstd",
 ]
@@ -10458,7 +10459,6 @@ dependencies = [
  "wasmtime-internal-jit-icache-coherence",
  "wasmtime-internal-unwinder",
  "wasmtime-internal-versioned-export-macros",
- "wat",
  "windows-sys 0.61.2",
 ]
 

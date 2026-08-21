@@ -25,14 +25,18 @@ use super::documents::{
 };
 use super::host::ensure_local_host_deployment;
 use super::run::{
-    can_emit_callback_result, can_start_executing, emit_plan_from_source, plan_from_binding,
-    resolve_action_plan,
+    apply_planner_deny, can_emit_callback_result, can_start_executing, emit_plan_from_source,
+    journal_has_started_host_execution, plan_from_binding, resolve_action_plan,
+    resolve_action_plan_with_module,
 };
 use super::wasm::{
     compute_module_id, fixture_create_workspace_wasm, fixture_wasm_is_stub, invoke_wasm_planner,
     plan_from_wasm_module, validate_callback_module, CallbackModuleLimits,
 };
-use super::{BUILTIN_CREATE_WORKSPACE, LIFECYCLE_PENDING, LIFECYCLE_RUNNING, LIFECYCLE_SUCCEEDED};
+use super::{
+    BUILTIN_CREATE_WORKSPACE, LIFECYCLE_DENIED, LIFECYCLE_FAILED, LIFECYCLE_PENDING,
+    LIFECYCLE_RUNNING, LIFECYCLE_SUCCEEDED,
+};
 
 fn binding() -> CallbackBindingDoc {
     CallbackBindingDoc {
@@ -309,6 +313,67 @@ fn recovery_reuses_stored_action_plan() {
 }
 
 #[test]
+fn wasm_recovery_reuses_stored_plan_without_reloading_module() {
+    let source = json!({
+        "work_unit_id": "unit-1",
+        "repository_id": "repo-1",
+        "base_sha": "abc",
+        "branch": "topic",
+        "workspace_id": "ws-stored"
+    });
+    let plan = emit_plan_from_source(&binding(), &source).unwrap();
+    let journal = vec![ActionJournalEntry::new(0, ActionJournalState::Executing)];
+    let invocation = CallbackInvocationDoc {
+        invocation_id: "inv-wasm-recover".into(),
+        owner_deployment_id: "deploy-1".into(),
+        binding_id: "bind-1".into(),
+        source_collection: "WorkUnit".into(),
+        source_doc_id: "doc-1".into(),
+        source_version: Some("created".into()),
+        idempotency_key: "bind-1:doc-1:created".into(),
+        lifecycle_state: LIFECYCLE_RUNNING.into(),
+        attempts: Some(1),
+        action_plan: Some(action_plan_canonical_json(&plan).unwrap()),
+        action_journal: Some(serde_json::to_string(&journal).unwrap()),
+        error: None,
+        claimed_at: None,
+        created_at: None,
+    };
+    let mut wasm_binding = binding();
+    wasm_binding.builtin_emitter = None;
+    wasm_binding.module_id = Some("mod-gone".into());
+    let mutated = json!({
+        "work_unit_id": "unit-OTHER",
+        "repository_id": "repo-1",
+        "base_sha": "abc",
+        "branch": "topic-OTHER",
+        "workspace_id": "ws-mutated"
+    });
+    let resolved =
+        resolve_action_plan_with_module(&invocation, &wasm_binding, &mutated, None).unwrap();
+    match &resolved.actions[0] {
+        crate::workspace::HostAction::CreateWorkspace(action) => {
+            assert_eq!(action.workspace_id, "ws-stored");
+        }
+    }
+    assert!(journal_has_started_host_execution(&journal));
+
+    let mut denied = invocation.clone();
+    apply_planner_deny(&mut denied, "CallbackModule mod-gone not found");
+    assert_eq!(denied.lifecycle_state, LIFECYCLE_FAILED);
+    assert_eq!(denied.action_journal, invocation.action_journal);
+    assert_eq!(denied.action_plan, invocation.action_plan);
+    assert!(denied.error.as_deref().unwrap().contains("mod-gone"));
+
+    let mut pre_exec = invocation.clone();
+    pre_exec.action_journal = Some("[]".into());
+    pre_exec.action_plan = None;
+    apply_planner_deny(&mut pre_exec, "CallbackModule missing");
+    assert_eq!(pre_exec.lifecycle_state, LIFECYCLE_DENIED);
+    assert_eq!(pre_exec.action_journal.as_deref(), Some("[]"));
+}
+
+#[test]
 fn builtin_emitter_builds_create_workspace_plan() {
     let source = json!({
         "work_unit_id": "unit-1",
@@ -571,9 +636,13 @@ fn trusted(signer: &str) -> BTreeSet<String> {
     [signer.to_string()].into_iter().collect()
 }
 
-fn wat_returns_json(json: &str) -> String {
+fn compile_wat(wat: &str) -> Vec<u8> {
+    wat::parse_str(wat).unwrap_or_else(|error| panic!("wat parse: {error}"))
+}
+
+fn wat_returns_json(json: &str) -> Vec<u8> {
     let escaped = json.replace('\\', "\\\\").replace('"', "\\\"");
-    format!(
+    compile_wat(&format!(
         r#"(module
   (memory (export "memory") 1)
   (data (i32.const 0) "{escaped}")
@@ -583,7 +652,7 @@ fn wat_returns_json(json: &str) -> String {
     (i32.const {len}))
 )"#,
         len = json.len()
-    )
+    ))
 }
 
 fn tight_limits(fuel: u64, pages: u32, max_in: usize, max_out: usize) -> CallbackModuleLimits {
@@ -637,10 +706,23 @@ fn signer_policy_fail_closes_when_missing_or_untrusted() {
     module.provenance = Some("fixture".into());
     module.signer_did = Some("did:key:zStranger".into());
     let error = validate_callback_module(&module, &trusted("did:key:zTrusted")).unwrap_err();
-    assert!(error.contains("not a trusted principal"), "{error}");
+    assert!(error.contains("not a trusted installer"), "{error}");
 
     module.signer_did = Some("did:key:zTrusted".into());
     validate_callback_module(&module, &trusted("did:key:zTrusted")).expect("trusted signer");
+}
+
+#[test]
+fn installer_signer_need_not_match_binding_principal() {
+    let wasm = wasm_bytes_for_id();
+    let module = module_doc(&wasm, &json!({}), "did:key:zInstaller");
+    validate_callback_module(&module, &trusted("did:key:zInstaller")).unwrap();
+    let mut wasm_binding = binding();
+    wasm_binding.builtin_emitter = None;
+    wasm_binding.module_id = Some(module.module_id.clone());
+    wasm_binding.principal_did = "did:key:zWriter".into();
+    assert_ne!(wasm_binding.principal_did, "did:key:zInstaller");
+    validate_callback_binding(&wasm_binding).unwrap();
 }
 
 #[test]
@@ -653,11 +735,12 @@ fn fuel_exhaustion_denies_without_a_plan() {
     (loop $spin (br $spin))
     unreachable)
 )"#;
-    let error =
-        invoke_wasm_planner(wat.as_bytes(), &tight_limits(1, 1, 64, 64), b"{}").unwrap_err();
+    let wasm = compile_wat(wat);
+    // Empty input skips `alloc` so the first metered call is the spinning `plan`.
+    let error = invoke_wasm_planner(&wasm, &tight_limits(1, 1, 64, 64), b"").unwrap_err();
     assert!(
-        error.to_lowercase().contains("fuel") || error.to_lowercase().contains("denied"),
-        "{error}"
+        error.to_lowercase().contains("fuel"),
+        "expected wasmtime fuel exhaustion, got {error}"
     );
 }
 
@@ -669,38 +752,51 @@ fn memory_limit_denies_at_instantiate() {
   (func (export "output_ptr") (result i32) (i32.const 0))
   (func (export "plan") (param i32 i32) (result i32) (i32.const 0))
 )"#;
-    let error =
-        invoke_wasm_planner(wat.as_bytes(), &tight_limits(10_000, 1, 64, 64), b"{}").unwrap_err();
+    let wasm = compile_wat(wat);
+    let error = invoke_wasm_planner(&wasm, &tight_limits(10_000, 1, 64, 64), b"{}").unwrap_err();
     assert!(error.to_lowercase().contains("denied"), "{error}");
 }
 
 #[test]
 fn input_and_output_byte_limits_deny() {
-    let wat = wat_returns_json(&"x".repeat(32));
-    let error = invoke_wasm_planner(
-        wat.as_bytes(),
-        &tight_limits(10_000_000, 1, 4, 1024),
-        b"0123456789",
-    )
-    .unwrap_err();
+    let wasm = wat_returns_json(&"x".repeat(32));
+    let error = invoke_wasm_planner(&wasm, &tight_limits(10_000_000, 1, 4, 1024), b"0123456789")
+        .unwrap_err();
     assert!(error.contains("max_input_bytes"), "{error}");
 
-    let error = invoke_wasm_planner(wat.as_bytes(), &tight_limits(10_000_000, 1, 1024, 8), b"{}")
-        .unwrap_err();
+    let error =
+        invoke_wasm_planner(&wasm, &tight_limits(10_000_000, 1, 1024, 8), b"{}").unwrap_err();
     assert!(error.contains("max_output_bytes"), "{error}");
 }
 
 #[test]
 fn unknown_action_type_denies_the_entire_plan() {
-    let wat = wat_returns_json(r#"{"abi":1,"actions":[{"type":"not_a_real_action"}]}"#);
-    let output = invoke_wasm_planner(
-        wat.as_bytes(),
-        &tight_limits(10_000_000, 1, 1024, 1024),
-        b"{}",
-    )
-    .expect("guest returned bytes");
-    let error = parse_action_plan_json(std::str::from_utf8(&output).unwrap()).unwrap_err();
+    let wasm = wat_returns_json(r#"{"abi":1,"actions":[{"type":"not_a_real_action"}]}"#);
+    let module = module_doc(&wasm, &json!({}), "did:key:zTrusted");
+    let caps: BTreeSet<String> = [CAP_CREATE_WORKSPACE, CAP_OBSERVE_DIRTY_BASE]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let error = plan_from_wasm_module(&module, &json!({}), &caps).unwrap_err();
     assert!(error.contains("unknown ActionPlan action type"), "{error}");
+}
+
+#[test]
+fn wasi_import_is_denied() {
+    let wasm = compile_wat(
+        r#"(module
+  (import "wasi_snapshot_preview1" "fd_write" (func (param i32 i32 i32 i32) (result i32)))
+  (memory (export "memory") 1)
+  (func (export "alloc") (param i32) (result i32) (i32.const 0))
+  (func (export "output_ptr") (result i32) (i32.const 0))
+  (func (export "plan") (param i32 i32) (result i32) (i32.const 0))
+)"#,
+    );
+    let error = invoke_wasm_planner(&wasm, &tight_limits(10_000, 1, 64, 64), b"{}").unwrap_err();
+    assert!(
+        error.contains("may not import") && error.contains("wasi_snapshot_preview1"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -710,6 +806,59 @@ fn host_path_in_plan_is_denied() {
     )
     .unwrap_err();
     assert!(error.contains("host path"), "{error}");
+    for branch in [
+        r"C:\Users\evil",
+        r"\\?\C:\foo",
+        "file:///tmp/foo",
+        "~/secret",
+        "topic/../escape",
+    ] {
+        let raw = serde_json::to_string(&json!({
+            "abi": 1,
+            "actions": [{
+                "type": "create_workspace",
+                "workspace_id": "ws",
+                "work_unit_id": "u",
+                "repository_id": "r",
+                "base_sha": "s",
+                "branch": branch,
+            }]
+        }))
+        .unwrap();
+        let error = parse_action_plan_json(&raw).unwrap_err();
+        assert!(error.contains("host path"), "{branch}: {error}");
+    }
+}
+
+#[test]
+fn extra_action_fields_deny_the_plan() {
+    let error = parse_action_plan_json(
+        r#"{"abi":1,"actions":[{"type":"create_workspace","workspace_id":"ws","work_unit_id":"u","repository_id":"r","base_sha":"s","branch":"topic","path":"relative"}]}"#,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("schema rejected")
+            || error.contains("unknown field")
+            || error.contains("host_path"),
+        "{error}"
+    );
+    let error = parse_action_plan_json(
+        r#"{"abi":1,"actions":[{"type":"create_workspace","workspace_id":"ws","work_unit_id":"u","repository_id":"r","base_sha":"s","branch":"topic","host_path":"/tmp/ws"}]}"#,
+    )
+    .unwrap_err();
+    assert!(error.contains("host_path"), "{error}");
+}
+
+#[test]
+fn wat_text_and_over_ceiling_limits_are_denied() {
+    let error = invoke_wasm_planner(b"(module)", &tight_limits(1, 1, 64, 64), b"{}").unwrap_err();
+    assert!(error.contains("binary module"), "{error}");
+
+    let wasm = wasm_bytes_for_id();
+    let mut module = module_doc(&wasm, &json!({}), "did:key:zTrusted");
+    module.fuel_limit = Some(i64::MAX);
+    let error = validate_callback_module(&module, &trusted("did:key:zTrusted")).unwrap_err();
+    assert!(error.contains("host maximum"), "{error}");
 }
 
 #[test]

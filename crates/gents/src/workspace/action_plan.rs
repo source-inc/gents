@@ -168,7 +168,7 @@ fn reject_illegal_plan_value(value: &Value) -> Result<(), String> {
             }
         }
         Value::String(text) => {
-            if Path::new(text).is_absolute() {
+            if looks_like_host_path(text) {
                 Err(format!("ActionPlan must not contain host path `{text}`"))
             } else {
                 Ok(())
@@ -285,9 +285,35 @@ fn require_capability(capabilities: &BTreeSet<String>, cap: &str) -> Result<()> 
     }
 }
 
+/// Platform-independent host-path shape: leading `/`, `drive:`, UNC, `file:`,
+/// `~`, or `..` components. Used so replicated ActionPlan JSON cannot carry
+/// host-shaped strings even when this process is not on Windows.
+pub(crate) fn looks_like_host_path(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return false;
+    }
+    if text.starts_with('/') || text.starts_with('\\') || text.starts_with('~') {
+        return true;
+    }
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("file:") {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        if bytes.len() == 2 || bytes[2] == b'\\' || bytes[2] == b'/' {
+            return true;
+        }
+    }
+    Path::new(text)
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
 fn assert_relative_artifact(path: &str) -> Result<()> {
     let path = Path::new(path);
-    if path.is_absolute() {
+    if path.is_absolute() || looks_like_host_path(&path.to_string_lossy()) {
         bail!(
             "clone artifact must be a relative path, got {}",
             path.display()

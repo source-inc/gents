@@ -238,6 +238,33 @@ pub fn resolve_action_plan_with_module(
     plan_from_binding(binding, source, module)
 }
 
+/// Host adapter may already have run; recovery must observe, not wipe.
+pub(crate) fn journal_has_started_host_execution(journal: &[ActionJournalEntry]) -> bool {
+    journal.iter().any(|entry| {
+        matches!(
+            entry.state,
+            ActionJournalState::Validated
+                | ActionJournalState::Executing
+                | ActionJournalState::EffectObserved
+                | ActionJournalState::ResultDocsWritten
+        )
+    })
+}
+
+/// Denied wipes the journal only before host execution. After Validated the
+/// journal is kept and the invocation is Failed so recovery can observe.
+pub(crate) fn apply_planner_deny(invocation: &mut CallbackInvocationDoc, reason: &str) {
+    let journal = decode_journal(invocation.action_journal.as_deref()).unwrap_or_default();
+    if journal_has_started_host_execution(&journal) {
+        invocation.lifecycle_state = LIFECYCLE_FAILED.to_string();
+        invocation.error = Some(reason.to_string());
+        return;
+    }
+    invocation.action_journal = Some("[]".to_string());
+    invocation.lifecycle_state = LIFECYCLE_DENIED.to_string();
+    invocation.error = Some(reason.to_string());
+}
+
 pub async fn run_owned_invocation(
     node: &EmbeddedNode,
     invocation: &CallbackInvocationDoc,
@@ -311,13 +338,31 @@ async fn execute_running_invocation(
         return deny(node, invocation, "illegal action journal prefix").await;
     }
 
-    let module = match load_planner_module(node, binding).await {
-        Ok(module) => module,
-        Err(reason) => return deny(node, invocation, &reason).await,
-    };
-    let plan = match resolve_action_plan_with_module(invocation, binding, source, module.as_ref()) {
+    // Recovery with a stored plan must not reload/re-validate the WASM module.
+    // A missing module or empty trusted-signer set would otherwise deny() and
+    // wipe an Executing journal the host may already have acted on.
+    let stored = match stored_action_plan(invocation) {
         Ok(plan) => plan,
         Err(reason) => return deny(node, invocation, &reason).await,
+    };
+    let plan = if let Some(plan) = stored {
+        plan
+    } else if !journal.is_empty() {
+        return deny(
+            node,
+            invocation,
+            "missing stored ActionPlan with a non-empty journal",
+        )
+        .await;
+    } else {
+        let module = match load_planner_module(node, binding).await {
+            Ok(module) => module,
+            Err(reason) => return deny(node, invocation, &reason).await,
+        };
+        match emit_new_plan(binding, source, module).await {
+            Ok(plan) => plan,
+            Err(reason) => return deny(node, invocation, &reason).await,
+        }
     };
     let canonical = match action_plan_canonical_json(&plan) {
         Ok(json) => json,
@@ -445,14 +490,28 @@ async fn persist_journal(
     Ok(())
 }
 
+async fn emit_new_plan(
+    binding: &CallbackBindingDoc,
+    source: &Value,
+    module: Option<CallbackModuleDoc>,
+) -> Result<ActionPlan, String> {
+    if module.is_some() {
+        let binding = binding.clone();
+        let source = source.clone();
+        tokio::task::spawn_blocking(move || plan_from_binding(&binding, &source, module.as_ref()))
+            .await
+            .map_err(|error| format!("WASM planner task failed: {error}"))?
+    } else {
+        plan_from_binding(binding, source, None)
+    }
+}
+
 async fn deny(
     node: &EmbeddedNode,
     invocation: &mut CallbackInvocationDoc,
     reason: &str,
 ) -> Result<()> {
-    invocation.action_journal = Some("[]".to_string());
-    invocation.lifecycle_state = LIFECYCLE_DENIED.to_string();
-    invocation.error = Some(reason.to_string());
+    apply_planner_deny(invocation, reason);
     if !update_invocation(node, invocation, None).await? {
         anyhow::bail!(
             "CallbackInvocation {} deny persist matched no row",

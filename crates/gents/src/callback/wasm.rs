@@ -19,6 +19,14 @@ use super::documents::CallbackModuleDoc;
 const WASM_PAGE_BYTES: u64 = 65536;
 const CALLBACK_MODULE_ID_DOMAIN: &[u8] = b"gents.callback.module.v1";
 
+/// Host ceilings independent of CallbackModule fields. Over-ceiling → Denied.
+pub const MAX_FUEL: u64 = 100_000_000;
+pub const MAX_MEMORY_PAGES: u32 = 256;
+pub const MAX_INPUT_BYTES: usize = 1_048_576;
+pub const MAX_OUTPUT_BYTES: usize = 1_048_576;
+pub const MAX_WASM_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_TABLE_ELEMENTS: usize = 1024;
+
 pub struct CallbackModuleLimits {
     pub fuel_limit: u64,
     pub memory_pages: u32,
@@ -66,14 +74,25 @@ pub fn parse_canonical_args(raw: Option<&str>) -> Result<Value, String> {
 
 pub fn limits_from_module(module: &CallbackModuleDoc) -> Result<CallbackModuleLimits, String> {
     Ok(CallbackModuleLimits {
-        fuel_limit: positive_u64(module.fuel_limit, "fuel_limit")?,
-        memory_pages: positive_u32(module.memory_pages, "memory_pages")?,
-        max_input_bytes: positive_usize(module.max_input_bytes, "max_input_bytes")?,
-        max_output_bytes: positive_usize(module.max_output_bytes, "max_output_bytes")?,
+        fuel_limit: bounded_u64(module.fuel_limit, "fuel_limit", MAX_FUEL)?,
+        memory_pages: bounded_u32(module.memory_pages, "memory_pages", MAX_MEMORY_PAGES)?,
+        max_input_bytes: bounded_usize(module.max_input_bytes, "max_input_bytes", MAX_INPUT_BYTES)?,
+        max_output_bytes: bounded_usize(
+            module.max_output_bytes,
+            "max_output_bytes",
+            MAX_OUTPUT_BYTES,
+        )?,
     })
 }
 
-/// Desired-state apply and runtime invoke share this fail-closed signer check.
+/// Install/apply predicate for CallbackModule (fail closed).
+///
+/// v1 is an **installer allowlist**, not a cryptographic signature: `signer_did`
+/// must be an enabled `AgentPrincipal` DID. `provenance` is a required non-empty
+/// operator note (pack name, review URL, etc.), not a signature over bytes.
+/// `CallbackBinding.principal_did` is the workspace writer and is not required
+/// to equal `signer_did`. Call this before first use. Recovery that already
+/// has a stored ActionPlan must not re-run it.
 pub fn validate_callback_module(
     module: &CallbackModuleDoc,
     trusted_signers: &BTreeSet<String>,
@@ -93,15 +112,20 @@ pub fn validate_callback_module(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "CallbackModule provenance is missing".to_string())?;
-    let _ = provenance;
     if trusted_signers.is_empty() {
         return Err("CallbackModule signer policy is missing: no trusted principals".into());
     }
     if !trusted_signers.contains(signer) {
         return Err(format!(
-            "CallbackModule signer_did `{signer}` is not a trusted principal"
+            "CallbackModule signer_did `{signer}` is not a trusted installer (allowlist, not a signature)"
         ));
     }
+    tracing::debug!(
+        signer_did = signer,
+        provenance,
+        module_id = %module.module_id,
+        "CallbackModule installer allowlist accepted"
+    );
     let abi = module.abi_version.unwrap_or(0);
     if abi != i64::from(ACTION_PLAN_ABI) {
         return Err(format!(
@@ -153,6 +177,15 @@ pub fn invoke_wasm_planner(
     limits: &CallbackModuleLimits,
     input: &[u8],
 ) -> Result<Vec<u8>, String> {
+    if wasm.len() > MAX_WASM_BYTES {
+        return Err(format!(
+            "WASM module {} bytes exceeds max_wasm_bytes {MAX_WASM_BYTES}",
+            wasm.len()
+        ));
+    }
+    if wasm.get(..4) != Some(&b"\0asm"[..]) {
+        return Err("WASM planner requires a WebAssembly binary module".into());
+    }
     if input.len() > limits.max_input_bytes {
         return Err(format!(
             "WASM planner input {} bytes exceeds max_input_bytes {}",
@@ -160,11 +193,22 @@ pub fn invoke_wasm_planner(
             limits.max_input_bytes
         ));
     }
+    if limits.fuel_limit > MAX_FUEL
+        || limits.memory_pages > MAX_MEMORY_PAGES
+        || limits.max_input_bytes > MAX_INPUT_BYTES
+        || limits.max_output_bytes > MAX_OUTPUT_BYTES
+    {
+        return Err("WASM planner limits exceed host ceilings".into());
+    }
     let engine = planner_engine()?;
     let module =
         Module::new(engine, wasm).map_err(|error| format!("WASM module rejected: {error}"))?;
-    if module.imports().next().is_some() {
-        return Err("WASM planner may not import host functions (no WASI)".into());
+    if let Some(import) = module.imports().next() {
+        return Err(format!(
+            "WASM planner may not import host functions (no WASI); found {}::{}",
+            import.module(),
+            import.name()
+        ));
     }
 
     let memory_bytes = (u64::from(limits.memory_pages))
@@ -173,6 +217,7 @@ pub fn invoke_wasm_planner(
     let host = PlannerHost {
         limits: StoreLimitsBuilder::new()
             .memory_size(memory_bytes)
+            .table_elements(MAX_TABLE_ELEMENTS)
             .memories(1)
             .tables(1)
             .instances(1)
@@ -188,7 +233,7 @@ pub fn invoke_wasm_planner(
     let linker = Linker::new(engine);
     let instance = linker
         .instantiate(&mut store, &module)
-        .map_err(|error| format!("WASM planner denied at instantiate: {error}"))?;
+        .map_err(|error| wasm_err("WASM planner denied at instantiate", &error))?;
 
     let memory = instance
         .get_memory(&mut store, "memory")
@@ -208,7 +253,7 @@ pub fn invoke_wasm_planner(
     } else {
         let ptr = alloc
             .call(&mut store, input.len() as u32)
-            .map_err(|error| format!("WASM planner alloc denied: {error}"))?;
+            .map_err(|error| wasm_err("WASM planner alloc denied", &error))?;
         if ptr == 0 {
             return Err("WASM planner alloc returned null".into());
         }
@@ -220,7 +265,7 @@ pub fn invoke_wasm_planner(
 
     let n = plan
         .call(&mut store, (in_ptr, input.len() as u32))
-        .map_err(|error| format!("WASM planner denied: {error}"))?;
+        .map_err(|error| wasm_err("WASM planner denied", &error))?;
     let len = n.unsigned_abs() as usize;
     if len > limits.max_output_bytes {
         return Err(format!(
@@ -230,7 +275,7 @@ pub fn invoke_wasm_planner(
     }
     let ptr = output_ptr
         .call(&mut store, ())
-        .map_err(|error| format!("WASM planner output_ptr denied: {error}"))?;
+        .map_err(|error| wasm_err("WASM planner output_ptr denied", &error))?;
     let mut buf = vec![0u8; len];
     if len > 0 {
         memory
@@ -242,6 +287,10 @@ pub fn invoke_wasm_planner(
         return Err(format!("WASM planner denied: {reason}"));
     }
     Ok(buf)
+}
+
+fn wasm_err(context: &str, error: &wasmtime::Error) -> String {
+    format!("{context}: {error:?}")
 }
 
 fn planner_engine() -> Result<&'static Engine, String> {
@@ -260,20 +309,26 @@ fn planner_engine() -> Result<&'static Engine, String> {
     Ok(ENGINE.get_or_init(|| engine))
 }
 
-fn positive_u64(value: Option<i64>, field: &str) -> Result<u64, String> {
-    match value {
-        Some(n) if n > 0 => Ok(n as u64),
-        _ => Err(format!("CallbackModule.{field} must be a positive integer")),
+fn bounded_u64(value: Option<i64>, field: &str, max: u64) -> Result<u64, String> {
+    let n = match value {
+        Some(n) if n > 0 => n as u64,
+        _ => return Err(format!("CallbackModule.{field} must be a positive integer")),
+    };
+    if n > max {
+        return Err(format!(
+            "CallbackModule.{field} {n} exceeds host maximum {max}"
+        ));
     }
+    Ok(n)
 }
 
-fn positive_u32(value: Option<i64>, field: &str) -> Result<u32, String> {
-    let n = positive_u64(value, field)?;
+fn bounded_u32(value: Option<i64>, field: &str, max: u32) -> Result<u32, String> {
+    let n = bounded_u64(value, field, u64::from(max))?;
     u32::try_from(n).map_err(|_| format!("CallbackModule.{field} exceeds u32"))
 }
 
-fn positive_usize(value: Option<i64>, field: &str) -> Result<usize, String> {
-    let n = positive_u64(value, field)?;
+fn bounded_usize(value: Option<i64>, field: &str, max: usize) -> Result<usize, String> {
+    let n = bounded_u64(value, field, max as u64)?;
     usize::try_from(n).map_err(|_| format!("CallbackModule.{field} exceeds usize"))
 }
 
