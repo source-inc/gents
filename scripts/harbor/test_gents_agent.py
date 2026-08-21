@@ -479,7 +479,6 @@ class RunnerSupervisionTest(unittest.TestCase):
                 "--enable-context-budget": "false",
                 "--enable-defra-query": "false",
                 "--subagent-spawn-enabled": "false",
-                "--orchestration-enabled": "false",
                 "--subagent-steering-enabled": "false",
                 "--subagent-background-enabled": "false",
                 "--subagent-allow-cross-deployment": "false",

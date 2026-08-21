@@ -27,14 +27,12 @@ pub enum DescendantScope {
     #[default]
     DirectChildren,
     AllDescendants,
-    WorkflowGroup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DescendantQuery {
     pub root_request_id: String,
     pub scope: DescendantScope,
-    pub workflow_group_id: Option<String>,
     pub after: Option<String>,
     pub limit: usize,
     pub include_terminal: bool,
@@ -45,7 +43,6 @@ impl DescendantQuery {
         Self {
             root_request_id: root_request_id.into(),
             scope: DescendantScope::DirectChildren,
-            workflow_group_id: None,
             after: None,
             limit: DEFAULT_DESCENDANT_PAGE_LIMIT,
             include_terminal: true,
@@ -114,12 +111,6 @@ pub struct DescendantEdge {
     pub lifecycle_state: String,
     pub materialization_state: DescendantMaterializationState,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub workflow_group_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workflow_task_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workflow_role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_result_ref: Option<String>,
     pub transcript_cursor: u64,
     pub authorization_state: DescendantAuthorizationState,
@@ -167,8 +158,6 @@ impl DescendantEdge {
 pub struct DescendantPage {
     pub root_request_id: String,
     pub scope: DescendantScope,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workflow_group_id: Option<String>,
     pub edges: Vec<DescendantEdge>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
@@ -238,8 +227,6 @@ struct BridgeRow {
     cancel_policy: Option<String>,
     child_request_id: Option<String>,
     spawn_target_did: Option<String>,
-    workflow_group_id: Option<String>,
-    workflow_role: Option<String>,
     unclaimed_deadline_at: Option<String>,
 }
 
@@ -261,8 +248,6 @@ const BRIDGE_FIELDS: &str = r#"
     cancel_policy
     child_request_id
     spawn_target_did
-    workflow_group_id
-    workflow_role
     unclaimed_deadline_at
 "#;
 
@@ -280,8 +265,6 @@ struct BridgeArgs {
     agent_did: Option<String>,
     #[serde(default)]
     behavior_id: Option<String>,
-    #[serde(default)]
-    workflow_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -320,12 +303,6 @@ pub async fn resolve_descendant_graph(
 ) -> Result<DescendantPage> {
     let root_id = nonempty(Some(query.root_request_id.as_str()))
         .context("descendant graph root_request_id is required")?;
-    if query.scope == DescendantScope::WorkflowGroup
-        && nonempty(query.workflow_group_id.as_deref()).is_none()
-    {
-        anyhow::bail!("workflow_group scope requires workflow_group_id");
-    }
-
     let root = load_unique_request(&access, root_id)
         .await?
         .with_context(|| format!("root AgentRequest {root_id} not found"))?;
@@ -419,9 +396,6 @@ pub async fn resolve_descendant_graph(
     edges.retain(|edge| match query.scope {
         DescendantScope::DirectChildren => edge.is_direct(),
         DescendantScope::AllDescendants => true,
-        DescendantScope::WorkflowGroup => {
-            edge.workflow_group_id.as_deref() == nonempty(query.workflow_group_id.as_deref())
-        }
     });
     edges.sort_by(|left, right| left.cursor.cmp(&right.cursor));
 
@@ -455,7 +429,6 @@ pub async fn resolve_descendant_graph(
     Ok(DescendantPage {
         root_request_id: root_id.to_string(),
         scope: query.scope,
-        workflow_group_id: clean(query.workflow_group_id.as_deref()),
         edges: page_edges,
         next_cursor,
         has_more,
@@ -588,9 +561,6 @@ fn project_descendant_edge(
             cancel_policy: clean(bridge.cancel_policy.as_deref()),
             lifecycle_state,
             materialization_state,
-            workflow_group_id: clean(bridge.workflow_group_id.as_deref()),
-            workflow_task_id: clean(args.workflow_task_id.as_deref()),
-            workflow_role: clean(bridge.workflow_role.as_deref()),
             terminal_result_ref,
             transcript_cursor: 0,
             authorization_state,
@@ -1063,7 +1033,7 @@ mod tests {
     #[test]
     fn generated_descendant_graph_cases_fence_visibility_and_control() {
         let cases = lean_descendant_graph_cases();
-        assert_eq!(cases.len(), 13);
+        assert_eq!(cases.len(), 11);
         for case in cases {
             assert!(case.root_request_id > 0, "{}", case.name);
             assert!(case.parent_request_id > 0, "{}", case.name);
@@ -1093,11 +1063,7 @@ mod tests {
                 "{}",
                 case.name
             );
-            if case.name == "workflow_synthesis_foreground" {
-                assert!(case.visible);
-                assert_eq!(case.workflow_role, "synthesis");
-            }
-            if case.name == "nested_reviewer_visible_not_controllable" {
+            if case.name == "nested_visible_not_controllable" {
                 assert!(case.visible);
                 assert!(!case.controllable);
             }

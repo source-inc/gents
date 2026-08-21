@@ -236,7 +236,6 @@ pub async fn build_runtime_snapshot(core: &ClientCore) -> DesktopRuntimeSnapshot
                     subagent_default_await_mode: normalize_optional(
                         row.subagent_default_await_mode.as_deref(),
                     ),
-                    orchestration_enabled: row.orchestration_enabled,
                 })
                 .collect::<Vec<_>>();
             tool_selections.sort_by(|left, right| left.selection_id.cmp(&right.selection_id));
@@ -904,7 +903,6 @@ mod behavior_environment_tests {
             write_tools: vec![],
             tool_policy_version: None,
             subagent_default_await_mode: None,
-            orchestration_enabled: None,
         }
     }
 

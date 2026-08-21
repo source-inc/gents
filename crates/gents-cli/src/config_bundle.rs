@@ -755,6 +755,9 @@ pub(crate) fn sanitize_import_document(
                 object.insert("last_probe".to_string(), Value::Null);
             }
         }
+        "ToolSelection" => {
+            desired_state::strip_retired_tool_selection_fields(&mut object);
+        }
         "Task" => {
             for field in ["created_at", "updated_at"] {
                 object.remove(field);

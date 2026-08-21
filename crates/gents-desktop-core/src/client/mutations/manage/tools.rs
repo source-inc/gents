@@ -91,10 +91,6 @@ fn build_upsert_tool_selection_mutation(row: &ToolSelectionRow) -> Result<String
             row.subagent_spawn_enabled,
         )),
         Some(graphql_optional_bool_field(
-            "orchestration_enabled",
-            row.orchestration_enabled,
-        )),
-        Some(graphql_optional_bool_field(
             "subagent_steering_enabled",
             row.subagent_steering_enabled,
         )),
@@ -225,10 +221,6 @@ fn build_upsert_tool_selection_mutation(row: &ToolSelectionRow) -> Result<String
         Some(graphql_optional_bool_field(
             "subagent_spawn_enabled",
             row.subagent_spawn_enabled,
-        )),
-        Some(graphql_optional_bool_field(
-            "orchestration_enabled",
-            row.orchestration_enabled,
         )),
         Some(graphql_optional_bool_field(
             "subagent_steering_enabled",

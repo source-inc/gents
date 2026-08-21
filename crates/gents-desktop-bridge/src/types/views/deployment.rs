@@ -151,7 +151,6 @@ pub struct ToolSelectionView {
     pub write_tools: Vec<String>,
     pub tool_policy_version: Option<String>,
     pub subagent_default_await_mode: Option<String>,
-    pub orchestration_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]

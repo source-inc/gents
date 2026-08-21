@@ -123,23 +123,23 @@ def recoverySweepCases : List RecoverySweepCase :=
       "deadline-plumbing-audit-2026-05-12-tool-call-persisted-deadline"
   , recoveryCase
       terminalParentOwnedToolSweep
-      "live_running_composite_parent_interrupted_to_cancelled"
+      "live_running_native_tool_parent_interrupted_to_cancelled"
       "running"
       "cancelled"
-      "gents-837-terminalize-interrupted-composites"
+      "terminal-parent-owned-tool-cleanup"
   , recoveryCase
       terminalParentOwnedToolSweep
       "live_running_tool_parent_terminal_to_failed"
       "running"
       "failed"
-      "gents-837-terminalize-interrupted-composites"
+      "terminal-parent-owned-tool-cleanup"
   ,
     recoveryCase
       terminalParentOwnedToolSweep
       "live_detached_bridge_parent_failed_to_failed"
       "running"
       "failed"
-      "gents-837-terminalize-interrupted-composites"
+      "terminal-parent-owned-tool-cleanup"
   , recoveryCase
       toolCallRecoverySweep
       "tool_backgrounded_running_live_parent_to_cancelled"

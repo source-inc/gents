@@ -174,7 +174,6 @@ pub(crate) struct ParentSubagentContext {
     pub request_deadline_at: DateTime<Utc>,
     pub allowed_targets: Vec<SubagentTarget>,
     pub subagent_spawn_enabled: bool,
-    pub orchestration_enabled: bool,
     pub subagent_background_enabled: bool,
     pub subagent_default_await_mode: AwaitMode,
     /// When false (default), cross-deployment (remote-DID) subagent spawns are
@@ -334,7 +333,6 @@ struct AgentBehaviorToolSelectionRow {
 struct ToolSelectionTargetsRow {
     subagent_targets: Option<Vec<String>>,
     subagent_spawn_enabled: Option<bool>,
-    orchestration_enabled: Option<bool>,
     subagent_background_enabled: Option<bool>,
     subagent_default_await_mode: Option<String>,
     #[serde(default)]
@@ -438,7 +436,6 @@ pub async fn handle_list_subagents(
         &DescendantQuery {
             root_request_id,
             scope: args.scope,
-            workflow_group_id: args.workflow_group_id.clone(),
             after: args.after.clone(),
             limit: crate::descendant_graph::MAX_DESCENDANT_PAGE_LIMIT,
             include_terminal: args.status != ListStatusFilter::Running,
@@ -471,9 +468,6 @@ pub async fn handle_list_subagents(
                 last_update,
                 depth: u32::try_from(edge.depth).unwrap_or(u32::MAX),
                 materialization_state: edge.materialization_state,
-                workflow_group_id: edge.workflow_group_id,
-                workflow_task_id: edge.workflow_task_id,
-                workflow_role: edge.workflow_role,
                 terminal_result_ref: edge.terminal_result_ref,
                 transcript_cursor: edge.transcript_cursor,
                 authorization_state: edge.authorization_state,
@@ -1431,7 +1425,6 @@ pub(crate) async fn load_parent_subagent_context(
         request_deadline_at: deadline,
         allowed_targets: selection.allowed_targets,
         subagent_spawn_enabled: selection.spawn_enabled,
-        orchestration_enabled: selection.orchestration_enabled,
         subagent_background_enabled: selection.background_enabled,
         subagent_default_await_mode: selection.default_await_mode,
         subagent_allow_cross_deployment: selection.allow_cross_deployment,
@@ -1551,7 +1544,6 @@ pub(crate) fn context_allowed_target_names(context: &ParentSubagentContext) -> V
 struct SubagentToolSelection {
     allowed_targets: Vec<SubagentTarget>,
     spawn_enabled: bool,
-    orchestration_enabled: bool,
     background_enabled: bool,
     default_await_mode: AwaitMode,
     allow_cross_deployment: bool,
@@ -1617,7 +1609,6 @@ async fn load_subagent_tool_selection(
             return Ok(SubagentToolSelection {
                 allowed_targets: Vec::new(),
                 spawn_enabled: false,
-                orchestration_enabled: false,
                 background_enabled: false,
                 default_await_mode: AwaitMode::Foreground,
                 allow_cross_deployment: false,
@@ -1635,7 +1626,6 @@ async fn load_subagent_tool_selection(
             ) {{
                 subagent_targets
                 subagent_spawn_enabled
-                orchestration_enabled
                 subagent_background_enabled
                 subagent_default_await_mode
                 subagent_allow_cross_deployment
@@ -1656,7 +1646,6 @@ async fn load_subagent_tool_selection(
         return Ok(SubagentToolSelection {
             allowed_targets: Vec::new(),
             spawn_enabled: false,
-            orchestration_enabled: false,
             background_enabled: false,
             default_await_mode: AwaitMode::Foreground,
             allow_cross_deployment: false,
@@ -1677,7 +1666,6 @@ async fn load_subagent_tool_selection(
     Ok(SubagentToolSelection {
         allowed_targets: parse_subagent_targets(selection.subagent_targets.unwrap_or_default()),
         spawn_enabled: selection.subagent_spawn_enabled.unwrap_or(false),
-        orchestration_enabled: selection.orchestration_enabled.unwrap_or(false),
         background_enabled,
         default_await_mode,
         allow_cross_deployment: selection.subagent_allow_cross_deployment.unwrap_or(false),
@@ -2041,11 +2029,10 @@ fn render_assistant_message_text(content: &str) -> Result<String> {
         anyhow::bail!("materialized child response is not an assistant message");
     };
 
-    // A materialized final response handed to a waiting parent (a subagent
-    // bridge result, or a workflow fan-out outcome fed to the synthesizer) should
-    // be the assistant's ANSWER TEXT — never its chain-of-thought. Render only
-    // `Text` content; drop reasoning/tool-call/image items so no provider's
-    // reasoning trace can leak into a downstream prompt.
+    // A materialized final response handed to a waiting parent should be the
+    // assistant's ANSWER TEXT — never its chain-of-thought. Render only `Text`
+    // content; drop reasoning/tool-call/image items so no provider's reasoning
+    // trace can leak into a downstream prompt.
     let text_parts: Vec<String> = content
         .iter()
         .filter_map(|item| match item {

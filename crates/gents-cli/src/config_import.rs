@@ -115,6 +115,11 @@ pub(crate) fn validate_config_import_bundle(bundle: &ConfigExportBundle) -> Resu
 }
 
 pub(crate) fn migrate_config_import_bundle(bundle: &mut ConfigExportBundle) {
+    for selection in &mut bundle.tool_selections {
+        if let Some(object) = selection.as_object_mut() {
+            desired_state::strip_retired_tool_selection_fields(object);
+        }
+    }
     for backend in &mut bundle.inference_backends {
         if let Some(object) = backend.as_object_mut() {
             desired_state::strip_deprecated_inference_backend_fields(object);

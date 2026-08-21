@@ -741,7 +741,6 @@ pub(crate) fn tool_selection_for_package(
         approval_required_tools: None,
         subagent_targets: Some(Vec::new()),
         subagent_spawn_enabled: Some(false),
-        orchestration_enabled: Some(false),
         subagent_steering_enabled: Some(false),
         subagent_background_enabled: Some(false),
         subagent_default_await_mode: Some("foreground".to_string()),
@@ -1337,7 +1336,6 @@ mod tests {
             assert_eq!(selection.allowed_mcp_service_ids, Some(Vec::new()));
             assert_eq!(selection.subagent_targets, Some(Vec::new()));
             assert_eq!(selection.subagent_spawn_enabled, Some(false));
-            assert_eq!(selection.orchestration_enabled, Some(false));
             assert_eq!(selection.subagent_background_enabled, Some(false));
             assert_eq!(selection.subagent_allow_cross_deployment, Some(false));
         }

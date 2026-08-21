@@ -152,9 +152,6 @@ mod streaming_compaction;
 mod tool_call;
 #[path = "conformance/transcript.rs"]
 mod transcript;
-#[path = "conformance/workflow_barrier.rs"]
-mod workflow_barrier;
-
 #[test]
 fn lean_executable_contracts_cover_initial_domains() {
     coverage::lean_executable_contracts_cover_initial_domains();

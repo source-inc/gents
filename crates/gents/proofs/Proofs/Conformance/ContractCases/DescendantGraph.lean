@@ -12,7 +12,6 @@ structure DescendantGraphCase where
   awaitMode : String
   materialization : String
   lifecycle : String
-  workflowRole : String
   direct : Bool
   visible : Bool
   readable : Bool
@@ -44,8 +43,6 @@ def baseEdge : Edge :=
   , awaitMode := .background
   , materialization := .local
   , lifecycle := .running
-  , workflowGroup := none
-  , workflowRole := .plain
   , bridgeDurable := true
   , physicalCorroborated := true
   , directFromRoot := true }
@@ -66,13 +63,6 @@ def lifecycleString : Lifecycle → String
   | .failed => "failed"
   | .cancelled => "cancelled"
 
-def workflowRoleString : WorkflowRole → String
-  | .plain => "plain"
-  | .fanOut => "fan_out_child"
-  | .synthesis => "synthesis"
-  | .reviewer => "reviewer"
-  | .futureRole => "future_role"
-
 def descendantCase (name : String) (edge : Edge) : DescendantGraphCase :=
   { name
   , rootRequestId := edge.rootRequestId
@@ -81,7 +71,6 @@ def descendantCase (name : String) (edge : Edge) : DescendantGraphCase :=
   , awaitMode := awaitModeString edge.awaitMode
   , materialization := materializationString edge.materialization
   , lifecycle := lifecycleString edge.lifecycle
-  , workflowRole := workflowRoleString edge.workflowRole
   , direct := edge.directFromRoot
   , visible := DescendantGraph.visible viewer edge
   , readable := DescendantGraph.readable viewer edge
@@ -97,18 +86,10 @@ def descendantGraphCases : List DescendantGraphCase :=
   [ descendantCase "background_direct" baseEdge
   , descendantCase "foreground_direct"
       { { baseEdge with awaitMode := .foreground } with childRequestId := 3 }
-  , descendantCase "workflow_fan_out"
-      { { { baseEdge with workflowGroup := some 50 } with
-          workflowRole := .fanOut } with childRequestId := 4 }
-  , descendantCase "workflow_synthesis_foreground"
-      { { { { baseEdge with workflowGroup := some 50 } with
-          workflowRole := .synthesis } with awaitMode := .foreground } with
-          childRequestId := 5 }
-  , descendantCase "nested_reviewer_visible_not_controllable"
-      { { { { { { baseEdge with parentRequestId := 5 } with
+  , descendantCase "nested_visible_not_controllable"
+      { { { { { baseEdge with parentRequestId := 5 } with
           parentToolCallId := 21 } with childRequestId := 6 } with
-          workflowRole := .reviewer } with directFromRoot := false } with
-          controlPrincipal := 11 }
+          directFromRoot := false } with controlPrincipal := 11 }
   , descendantCase "unmaterialized_remote_bridge"
       { { { { { baseEdge with childRequestId := 7 } with childSessionId := none } with
           materialization := .pending } with physicalCorroborated := false } with

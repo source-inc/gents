@@ -336,7 +336,6 @@ impl SelfConfigTarget {
                 "approval_required_tools",
                 "subagent_targets",
                 "subagent_spawn_enabled",
-                "orchestration_enabled",
                 "subagent_steering_enabled",
                 "subagent_background_enabled",
                 "subagent_default_await_mode",

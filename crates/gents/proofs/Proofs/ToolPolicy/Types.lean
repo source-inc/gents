@@ -55,7 +55,6 @@ structure Surface where
   spawn : Bool
   steering : Bool
   background : Bool
-  orchestration : Bool
   crossDeployment : Bool
   skills : Bool
   lsp : Bool

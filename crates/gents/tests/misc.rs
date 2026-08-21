@@ -24,5 +24,3 @@ mod goal_controller;
 mod log_rate_filter;
 #[path = "misc/startup_readiness_barrier.rs"]
 mod startup_readiness_barrier;
-#[path = "misc/workflow_conformance.rs"]
-mod workflow_conformance;

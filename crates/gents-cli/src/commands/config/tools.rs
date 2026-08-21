@@ -54,7 +54,6 @@ pub(super) async fn tool_selection_set(args: ToolSelectionUpsertArgs) -> Result<
         "defra_query_collections": plan.selection.defra_query_collections,
         "subagent_targets": plan.selection.subagent_targets,
         "subagent_spawn_enabled": args.subagent_spawn_enabled,
-        "orchestration_enabled": args.orchestration_enabled,
         "subagent_steering_enabled": args.subagent_steering_enabled,
         "subagent_background_enabled": args.subagent_background_enabled,
         "subagent_allow_cross_deployment": args.subagent_allow_cross_deployment,
@@ -177,7 +176,6 @@ fn tool_selection_command_plan(args: &ToolSelectionUpsertArgs) -> Result<ToolSel
         approval_required_tools: None,
         subagent_targets: subagent_targets.clone(),
         subagent_spawn_enabled: args.subagent_spawn_enabled,
-        orchestration_enabled: args.orchestration_enabled,
         subagent_steering_enabled: args.subagent_steering_enabled,
         subagent_background_enabled: args.subagent_background_enabled,
         subagent_default_await_mode: None,
@@ -443,7 +441,6 @@ mod tests {
             subagent_targets: Vec::new(),
             clear_subagent_targets: false,
             subagent_spawn_enabled: None,
-            orchestration_enabled: None,
             subagent_steering_enabled: None,
             subagent_background_enabled: None,
             subagent_allow_cross_deployment: None,
@@ -463,7 +460,6 @@ mod tests {
         let mut args = default_args();
         args.subagent_targets = vec![target.clone()];
         args.subagent_spawn_enabled = Some(true);
-        args.orchestration_enabled = Some(true);
         args.subagent_steering_enabled = Some(true);
         args.subagent_background_enabled = Some(false);
         args.subagent_allow_cross_deployment = Some(true);
@@ -473,7 +469,6 @@ mod tests {
 
         assert_eq!(plan.selection.subagent_targets, Some(vec![target]));
         assert_eq!(plan.selection.subagent_spawn_enabled, Some(true));
-        assert_eq!(plan.selection.orchestration_enabled, Some(true));
         assert_eq!(plan.selection.subagent_steering_enabled, Some(true));
         assert_eq!(plan.selection.subagent_background_enabled, Some(false));
         assert_eq!(plan.selection.subagent_allow_cross_deployment, Some(true));
@@ -504,7 +499,6 @@ mod tests {
         assert_eq!(plan.selection.defra_query_collections, None);
         assert_eq!(plan.selection.subagent_targets, None);
         assert_eq!(plan.selection.subagent_spawn_enabled, None);
-        assert_eq!(plan.selection.orchestration_enabled, None);
         assert_eq!(plan.selection.subagent_steering_enabled, None);
         assert_eq!(plan.selection.subagent_background_enabled, None);
         assert_eq!(plan.selection.subagent_allow_cross_deployment, None);

@@ -19,7 +19,6 @@ pub(crate) struct LeanToolPolicySurfaceView {
     pub(crate) spawn: bool,
     pub(crate) steering: bool,
     pub(crate) background: bool,
-    pub(crate) orchestration: bool,
     pub(crate) cross_deployment: bool,
     pub(crate) skills: bool,
     #[serde(default)]

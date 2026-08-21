@@ -15,7 +15,7 @@ pub use policy::{
     TOOL_POLICY_V1,
 };
 pub use runtime_context::ToolRuntimeContext;
-pub(crate) use selection::{BackgroundToolConfig, OrchestrationToolConfig, SubagentToolConfig};
+pub(crate) use selection::{BackgroundToolConfig, SubagentToolConfig};
 pub use selection::{CustomToolFactory, ToolSelection};
 
 use std::collections::{HashMap, HashSet};
@@ -32,8 +32,7 @@ use crate::document_config::{QueryToolDecl, SubagentTarget, WriteToolDecl};
 use crate::meta_tools::{build_meta_tools, META_TOOL_NAMES};
 use crate::toolset::{
     background_tool_names, build_background_tools, build_context_budget_tool, build_goal_tools,
-    build_orchestration_tools, build_session_history_tool, build_subagent_tools,
-    orchestration_tool_names, subagent_tool_names, CliToolConfig, ToolSet,
+    build_session_history_tool, build_subagent_tools, subagent_tool_names, CliToolConfig, ToolSet,
     CONTEXT_BUDGET_TOOL_NAME, SESSION_HISTORY_TOOL_NAME,
 };
 #[cfg(feature = "agent-memory")]
@@ -47,7 +46,6 @@ pub struct ToolSurface {
     include_meta_tools: bool,
     allowed_mcp_service_ids: Vec<String>,
     subagent_tools: SubagentToolConfig,
-    orchestration_tools: OrchestrationToolConfig,
     background_tools: BackgroundToolConfig,
     approval_required_tools: Vec<String>,
     custom_tools: Vec<CustomToolFactory>,
@@ -141,11 +139,6 @@ impl ToolSurface {
         &self.approval_required_tools
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn orchestration_tools(&self) -> &OrchestrationToolConfig {
-        &self.orchestration_tools
-    }
-
     pub(crate) fn retain_subagent_targets(
         &mut self,
         own_agent_did: &str,
@@ -166,10 +159,6 @@ impl ToolSurface {
             names.extend(META_TOOL_NAMES.iter().map(|name| (*name).to_string()));
         }
         names.extend(subagent_tool_names(&self.subagent_tools));
-        names.extend(orchestration_tool_names(
-            &self.orchestration_tools,
-            &self.subagent_tools,
-        ));
         names.extend(background_tool_names(&self.background_tools));
         names.extend(self.custom_tools.iter().map(|tool| tool.name().to_string()));
         #[cfg(feature = "agent-memory")]
@@ -232,10 +221,6 @@ impl ToolSurface {
             ));
         }
         tools.extend(build_subagent_tools(self.subagent_tools.clone()));
-        tools.extend(build_orchestration_tools(
-            self.orchestration_tools.clone(),
-            self.subagent_tools.clone(),
-        ));
         tools.extend(build_background_tools(self.background_tools.clone()));
         for tool in &self.custom_tools {
             tools.push(tool.build()?);
@@ -323,7 +308,6 @@ impl std::fmt::Debug for ToolSurface {
             .field("include_meta_tools", &self.include_meta_tools)
             .field("allowed_mcp_service_ids", &self.allowed_mcp_service_ids)
             .field("subagent_tools", &self.subagent_tools)
-            .field("orchestration_tools", &self.orchestration_tools)
             .field("background_tools", &self.background_tools)
             .field(
                 "custom_tools",

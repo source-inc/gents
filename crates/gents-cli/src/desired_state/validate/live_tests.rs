@@ -45,7 +45,6 @@ fn manifest_with_subagent_targets(targets: Vec<SubagentTarget>) -> DesiredStateM
             defra_query_collections: Vec::new(),
             subagent_targets: targets,
             subagent_spawn_enabled: true,
-            orchestration_enabled: false,
             subagent_steering_enabled: false,
             subagent_background_enabled: false,
             subagent_default_await_mode: None,
@@ -602,7 +601,6 @@ async fn all_subagent_fields_persist_and_apply_is_idempotent() -> Result<()> {
                 }
                 .to_entry()],
                 subagent_spawn_enabled: true,
-                orchestration_enabled: true,
                 subagent_steering_enabled: true,
                 subagent_background_enabled: true,
                 subagent_default_await_mode: Some("background".to_string()),
@@ -671,10 +669,6 @@ async fn all_subagent_fields_persist_and_apply_is_idempotent() -> Result<()> {
     assert_eq!(
         live_sel.subagent_spawn_enabled, true,
         "subagent_spawn_enabled must persist through apply"
-    );
-    assert_eq!(
-        live_sel.orchestration_enabled, true,
-        "orchestration_enabled must persist through apply"
     );
     assert_eq!(
         live_sel.subagent_steering_enabled, true,

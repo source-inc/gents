@@ -23,7 +23,6 @@ def Surface.meet (a b : Surface) : Surface :=
   , spawn := a.spawn && b.spawn
   , steering := a.steering && b.steering
   , background := a.background && b.background
-  , orchestration := a.orchestration && b.orchestration
   , crossDeployment := a.crossDeployment && b.crossDeployment
   , skills := a.skills && b.skills
   , lsp := a.lsp && b.lsp
@@ -177,18 +176,6 @@ theorem effective_background_le_ceiling :
 
 theorem effective_background_le_behavior :
     (effective behavior ceiling runtime).background = true → behavior.background = true := by
-  unfold effective Surface.meet
-  intro h
-  exact bool_and_left (bool_and_left h)
-
-theorem effective_orchestration_le_ceiling :
-    (effective behavior ceiling runtime).orchestration = true → ceiling.orchestration = true := by
-  unfold effective Surface.meet
-  intro h
-  exact bool_and_right (bool_and_left h)
-
-theorem effective_orchestration_le_behavior :
-    (effective behavior ceiling runtime).orchestration = true → behavior.orchestration = true := by
   unfold effective Surface.meet
   intro h
   exact bool_and_left (bool_and_left h)

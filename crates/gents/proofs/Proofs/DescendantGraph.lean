@@ -19,7 +19,6 @@ abbrev PrincipalId := Nat
 abbrev DeploymentId := Nat
 abbrev ToolCallId := Nat
 abbrev LineageId := Nat
-abbrev WorkflowGroupId := Nat
 abbrev Cursor := ToolCallId × RequestId
 
 inductive AwaitMode where
@@ -41,18 +40,9 @@ inductive Lifecycle where
   | cancelled
   deriving DecidableEq, Repr
 
-inductive WorkflowRole where
-  | plain
-  | fanOut
-  | synthesis
-  | reviewer
-  | futureRole
-  deriving DecidableEq, Repr
-
 inductive Scope where
   | direct
   | descendants
-  | workflowGroup
   deriving DecidableEq, Repr
 
 structure Viewer where
@@ -78,8 +68,6 @@ structure Edge where
   awaitMode : AwaitMode
   materialization : Materialization
   lifecycle : Lifecycle
-  workflowGroup : Option WorkflowGroupId
-  workflowRole : WorkflowRole
   bridgeDurable : Bool
   physicalCorroborated : Bool
   directFromRoot : Bool
@@ -127,11 +115,10 @@ def controllable (viewer : Viewer) (edge : Edge) : Bool :=
     edge.directFromRoot &&
     edge.controlPrincipal == viewer.rootPrincipal
 
-def inScope (scope : Scope) (group : Option WorkflowGroupId) (edge : Edge) : Bool :=
+def inScope (scope : Scope) (edge : Edge) : Bool :=
   match scope with
   | .direct => edge.directFromRoot
   | .descendants => true
-  | .workflowGroup => edge.workflowGroup == group && group.isSome
 
 /-- A page cursor is derived only from durable edge identity, never from the
     edge's mutable lifecycle/materialization projection. -/
@@ -158,11 +145,6 @@ theorem deployment_change_preserves_visibility
 theorem await_change_preserves_visibility
     (viewer : Viewer) (edge : Edge) (mode : AwaitMode) :
     visible viewer { edge with awaitMode := mode } = visible viewer edge := by
-  rfl
-
-theorem workflow_role_change_preserves_visibility
-    (viewer : Viewer) (edge : Edge) (role : WorkflowRole) :
-    visible viewer { edge with workflowRole := role } = visible viewer edge := by
   rfl
 
 theorem lifecycle_change_preserves_cursor
@@ -284,11 +266,11 @@ theorem control_implies_visibility
 
 theorem direct_scope_excludes_nested
     (edge : Edge) (hNested : edge.directFromRoot = false) :
-    inScope .direct none edge = false := by
+    inScope .direct edge = false := by
   simp [inScope, hNested]
 
 theorem descendants_scope_includes_every_edge (edge : Edge) :
-    inScope .descendants none edge = true := by
+    inScope .descendants edge = true := by
   rfl
 
 end DescendantGraph

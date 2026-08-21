@@ -1960,11 +1960,6 @@ pub(crate) struct ToolSelectionUpsertArgs {
     pub(crate) subagent_spawn_enabled: Option<bool>,
     #[arg(
         long,
-        help = "Enable or disable workflow orchestration tools: --orchestration-enabled true|false. Omit to preserve existing setting"
-    )]
-    pub(crate) orchestration_enabled: Option<bool>,
-    #[arg(
-        long,
         help = "Enable or disable subagent steering tools: --subagent-steering-enabled true|false. Omit to preserve existing setting"
     )]
     pub(crate) subagent_steering_enabled: Option<bool>,

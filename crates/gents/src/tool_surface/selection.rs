@@ -30,11 +30,6 @@ pub(crate) struct SubagentToolConfig {
     pub allow_cross_deployment: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct OrchestrationToolConfig {
-    pub enabled: bool,
-}
-
 impl SubagentToolConfig {
     pub(crate) fn from_document(selection: &crate::document_config::ToolSelectionDocument) -> Self {
         let background_enabled = selection.subagent_background_enabled.unwrap_or(false);
@@ -113,7 +108,6 @@ pub struct ToolSelection {
     pub allowed_mcp_service_ids: Vec<String>,
     pub backgroundable_tool_names: Vec<String>,
     pub approval_required_tools: Vec<String>,
-    pub orchestration_enabled: bool,
     pub enable_memory: bool,
     pub enable_session_history_tool: bool,
     pub enable_context_budget: bool,
@@ -141,7 +135,6 @@ impl Default for ToolSelection {
             allowed_mcp_service_ids: Vec::new(),
             backgroundable_tool_names: Vec::new(),
             approval_required_tools: Vec::new(),
-            orchestration_enabled: false,
             enable_memory: false,
             enable_session_history_tool: false,
             enable_context_budget: true,
@@ -198,7 +191,6 @@ impl ToolSelection {
                 .approval_required_tools
                 .clone()
                 .unwrap_or_default(),
-            orchestration_enabled: selection.orchestration_enabled.unwrap_or(false),
             enable_memory: selection.enable_memory.unwrap_or(false),
             enable_session_history_tool: selection.enable_session_history_tool.unwrap_or(false),
             enable_context_budget: selection

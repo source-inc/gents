@@ -242,8 +242,6 @@ pub struct ToolSelectionSaveRequest {
     pub defra_query_collections: Option<Vec<String>>,
     #[serde(default)]
     pub subagent_default_await_mode: Option<String>,
-    #[serde(default)]
-    pub orchestration_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]

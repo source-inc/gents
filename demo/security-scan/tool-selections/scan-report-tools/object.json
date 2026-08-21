@@ -22,7 +22,6 @@
   "write_tools": [],
   "datastore_tool_surface_ids": ["scan-report-io"],
   "subagent_spawn_enabled": false,
-  "orchestration_enabled": false,
   "subagent_steering_enabled": false,
   "subagent_background_enabled": false,
   "subagent_default_await_mode": null,

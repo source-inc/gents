@@ -14,7 +14,6 @@ def descendantGraphCaseJson (value : DescendantGraphCase) : String :=
     ++ "\"await_mode\":" ++ jsonString value.awaitMode ++ ","
     ++ "\"materialization\":" ++ jsonString value.materialization ++ ","
     ++ "\"lifecycle\":" ++ jsonString value.lifecycle ++ ","
-    ++ "\"workflow_role\":" ++ jsonString value.workflowRole ++ ","
     ++ "\"direct\":" ++ boolString value.direct ++ ","
     ++ "\"visible\":" ++ boolString value.visible ++ ","
     ++ "\"readable\":" ++ boolString value.readable ++ ","

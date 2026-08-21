@@ -25,7 +25,6 @@ fn tool_selection_doc(bash_mode: &str) -> ToolSelectionDocument {
         approval_required_tools: None,
         subagent_targets: Some(Vec::new()),
         subagent_spawn_enabled: Some(false),
-        orchestration_enabled: Some(false),
         subagent_steering_enabled: Some(false),
         subagent_background_enabled: Some(false),
         subagent_default_await_mode: Some("foreground".to_string()),

@@ -21,7 +21,6 @@ structure SurfaceView where
   spawn : Bool
   steering : Bool
   background : Bool
-  orchestration : Bool
   crossDeployment : Bool
   skills : Bool
   lsp : Bool
@@ -214,7 +213,6 @@ def surface (file : FileCap) (bash : BashPolicy)
   , spawn := spawn
   , steering := meta
   , background := spawn
-  , orchestration := spawn
   , crossDeployment := spawn
   , skills := meta
   , lsp := meta
@@ -238,7 +236,6 @@ def view (s : Surface) (mcpProbe : String) (writeProbe : String × String) : Sur
   , spawn := s.spawn
   , steering := s.steering
   , background := s.background
-  , orchestration := s.orchestration
   , crossDeployment := s.crossDeployment
   , skills := s.skills
   , lsp := s.lsp
@@ -368,7 +365,6 @@ def ceilingClampsEachCategory : Surface :=
   , contextBudget := false
   , steering := false
   , background := false
-  , orchestration := false
   , crossDeployment := false
   , skills := false
   , selfConfig := false

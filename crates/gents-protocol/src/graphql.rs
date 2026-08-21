@@ -879,8 +879,6 @@ pub fn session_shape_query(session_id: &str) -> String {
                 lifecycle_state
                 child_request_id
                 await_mode
-                workflow_group_id
-                workflow_role
                 args
                 result
                 deadline_at

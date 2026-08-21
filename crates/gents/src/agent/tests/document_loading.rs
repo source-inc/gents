@@ -194,7 +194,6 @@ async fn from_default_behavior_documents_resolves_tool_selection_with_ceiling() 
                 ),
             ]),
             subagent_spawn_enabled: Some(true),
-            orchestration_enabled: Some(false),
             subagent_steering_enabled: Some(true),
             subagent_background_enabled: Some(true),
             ..Default::default()

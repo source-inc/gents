@@ -87,7 +87,7 @@ Three reuse commitments (these are the design, not implementation detail):
   Today every `BoundedWriteTool` arg is string-typed in the model-visible
   JSON schema. Tightening that is a `WriteToolDecl`-level extension that
   would benefit inline `write_tools` equally — out of scope here.
-- Changing EventTrigger, Task, or `fan_out_and_synthesize` semantics.
+- Changing EventTrigger or Task semantics.
 
 ## Shape
 
@@ -272,7 +272,6 @@ Tool selection (the interesting bits):
   "enable_memory": false,
   "enable_session_history_tool": false,
   "enable_self_config": false,
-  "orchestration_enabled": false,
   "subagent_spawn_enabled": false
 }
 ```

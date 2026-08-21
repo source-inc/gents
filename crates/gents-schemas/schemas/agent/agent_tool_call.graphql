@@ -36,7 +36,9 @@ type AgentToolCall @branchable {
     cancel_cause: String
     child_request_id: String @index
     spawn_target_did: String @index @immutable
+    # deprecated: fan_out_and_synthesize removed; retained for schema compatibility, unused.
     workflow_group_id: String @index
+    # deprecated: fan_out_and_synthesize removed; retained for schema compatibility, unused.
     workflow_role: String @index
     unclaimed_deadline_at: DateTime
     cancel_cascade_intent_at: DateTime

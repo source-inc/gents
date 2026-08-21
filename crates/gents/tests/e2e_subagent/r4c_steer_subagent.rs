@@ -59,7 +59,6 @@ async fn setup_db(
                 None,
             )]),
             subagent_spawn_enabled: Some(true),
-            orchestration_enabled: Some(false),
             subagent_steering_enabled: Some(true),
             subagent_background_enabled: Some(true),
             ..Default::default()

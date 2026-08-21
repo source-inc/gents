@@ -72,7 +72,6 @@ pub(super) fn generated_tool_policy_cases_match_lean_composition() {
                 ("context_budget", case.expected.context_budget),
                 ("steering", case.expected.steering),
                 ("background", case.expected.background),
-                ("orchestration", case.expected.orchestration),
                 ("cross_deployment", case.expected.cross_deployment),
                 ("skills", case.expected.skills),
             ] {
@@ -96,7 +95,7 @@ pub(super) fn generated_tool_policy_cases_match_lean_composition() {
             );
         }
         if case.name == "behavior_all_scopes_clamped_by_ceiling_only" {
-            assert!(case.expected.memory && case.expected.skills && case.expected.orchestration);
+            assert!(case.expected.memory && case.expected.skills);
             assert_eq!(case.expected.cli_scope_kind, "only");
             assert_eq!(case.expected.defra_collections_scope_kind, "only");
             assert_eq!(case.expected.subagent_targets_scope_kind, "only");

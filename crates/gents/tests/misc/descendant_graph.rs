@@ -7,7 +7,7 @@ use gents::tool_call_lifecycle::{
 };
 use gents::{
     resolve_descendant_edge, resolve_descendant_graph, DescendantControlAuthority,
-    DescendantGraphAccess, DescendantMaterializationState, DescendantQuery, DescendantScope,
+    DescendantGraphAccess, DescendantMaterializationState, DescendantQuery,
 };
 
 async fn create_request(
@@ -58,9 +58,7 @@ async fn create_nested_bridge(
     parent_session_id: &str,
     requester_did: &str,
 ) -> String {
-    let args = escape_graphql_string(
-        r#"{"name":"reviewer","behavior_id":"reviewer","workflow_task_id":"review"}"#,
-    );
+    let args = escape_graphql_string(r#"{"name":"reviewer","behavior_id":"reviewer"}"#);
     let now = Utc::now().to_rfc3339();
     let deadline = (Utc::now() + Duration::minutes(5)).to_rfc3339();
     let response = node
@@ -86,8 +84,6 @@ async fn create_nested_bridge(
                     spawn_target_did: "did:test:worker-host",
                     await_mode: "foreground",
                     cancel_policy: "cascade",
-                    workflow_group_id: "workflow-1",
-                    workflow_role: "reviewer",
                     selected_service_id: null,
                     selected_tool_name: null,
                     tool_failure_class: null,
@@ -241,7 +237,6 @@ async fn canonical_graph_preserves_pending_remote_terminal_nested_and_paging_edg
         all.edges[1].control_authority,
         DescendantControlAuthority::VisibilityOnly
     );
-    assert_eq!(all.edges[1].workflow_role.as_deref(), Some("reviewer"));
 
     let direct_exact = resolve_descendant_edge(
         DescendantGraphAccess::Local(db.node.as_ref()),
@@ -286,22 +281,6 @@ async fn canonical_graph_preserves_pending_remote_terminal_nested_and_paging_edg
         .is_none(),
         "a descendant root cannot enumerate an ancestor edge"
     );
-
-    let workflow = resolve_descendant_graph(
-        DescendantGraphAccess::Local(db.node.as_ref()),
-        &DescendantQuery {
-            root_request_id: root_id.to_string(),
-            scope: DescendantScope::WorkflowGroup,
-            workflow_group_id: Some("workflow-1".to_string()),
-            after: None,
-            limit: 20,
-            include_terminal: true,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(workflow.edges.len(), 1);
-    assert_eq!(workflow.edges[0].child_request_id, "request-reviewer");
 
     let first = resolve_descendant_graph(
         DescendantGraphAccess::Local(db.node.as_ref()),

@@ -46,8 +46,6 @@ pub struct ListSubagentsArgs {
     #[serde(default)]
     pub(crate) scope: DescendantScope,
     #[serde(default)]
-    pub(crate) workflow_group_id: Option<String>,
-    #[serde(default)]
     pub(crate) after: Option<String>,
 }
 
@@ -61,7 +59,6 @@ impl Default for ListSubagentsArgs {
             status: ListStatusFilter::default(),
             limit: DEFAULT_LIST_LIMIT,
             scope: DescendantScope::DirectChildren,
-            workflow_group_id: None,
             after: None,
         }
     }
@@ -188,12 +185,6 @@ pub struct ListSubagentsEntry {
     pub last_update: DateTime<Utc>,
     pub depth: u32,
     pub materialization_state: DescendantMaterializationState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workflow_group_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workflow_task_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workflow_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_result_ref: Option<String>,
     pub transcript_cursor: u64,

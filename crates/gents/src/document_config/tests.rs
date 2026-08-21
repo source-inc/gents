@@ -27,7 +27,6 @@ fn wide_open_preset_is_permissive_and_versioned() {
     assert_eq!(preset.enable_context_budget, Some(true));
     assert_eq!(preset.enable_file_tools, Some(false));
     assert_eq!(preset.enable_bash, Some(false));
-    assert_eq!(preset.orchestration_enabled, Some(false));
     assert_eq!(preset.subagent_spawn_enabled, Some(false));
     assert_eq!(preset.subagent_steering_enabled, Some(false));
     assert_eq!(preset.subagent_background_enabled, Some(false));
@@ -942,7 +941,6 @@ fn validate_accepts_well_formed_subagent_targets() {
         agent_did: "did:test:test".to_string(),
         subagent_targets: Some(vec![code_entry, research_entry]),
         subagent_spawn_enabled: Some(true),
-        orchestration_enabled: Some(false),
         subagent_steering_enabled: Some(false),
         subagent_background_enabled: Some(true),
         ..Default::default()

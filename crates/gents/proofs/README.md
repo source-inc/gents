@@ -114,7 +114,7 @@ The current proof suite covers seventeen practical areas:
     ledger across tool turns and retracted attempts
 16. Canonical descendant graphs: durable pending bridge visibility,
     logical-plus-physical materialization authorization, behavior/deployment/
-    await/workflow-role independence, replicated authorization equivalence,
+    await-mode independence, replicated authorization equivalence,
     and the separation between ancestor visibility and direct-parent control
 17. Agent self-configuration writes: per-collection writable/protected field
     partitions, patch-merge identity immutability and containment,

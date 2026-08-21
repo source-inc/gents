@@ -26,7 +26,6 @@ def surfaceViewJson (v : SurfaceView) : String :=
     ++ "\"spawn\":" ++ boolJson v.spawn ++ ","
     ++ "\"steering\":" ++ boolJson v.steering ++ ","
     ++ "\"background\":" ++ boolJson v.background ++ ","
-    ++ "\"orchestration\":" ++ boolJson v.orchestration ++ ","
     ++ "\"cross_deployment\":" ++ boolJson v.crossDeployment ++ ","
     ++ "\"skills\":" ++ boolJson v.skills ++ ","
     ++ "\"lsp\":" ++ boolJson v.lsp ++ ","

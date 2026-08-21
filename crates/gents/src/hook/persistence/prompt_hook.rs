@@ -78,26 +78,6 @@ impl DefraSessionHook {
                 }
             };
         }
-        if tool_name == FAN_OUT_AND_SYNTHESIZE_TOOL_NAME {
-            let result = self
-                .persist_fan_out_and_synthesize_tool_call(tool_call_id, internal_call_id, args)
-                .instrument(tracing::info_span!(
-                    "tool.call",
-                    tool_name = %tool_name,
-                    tool_call_id = %internal_call_id,
-                ))
-                .await;
-
-            return match result {
-                Ok(action) => {
-                    self.record_success();
-                    action
-                }
-                Err(e) => {
-                    self.on_tool_persistence_error("persist fan_out_and_synthesize tool call", &e)
-                }
-            };
-        }
         if tool_name == SPAWN_SUBAGENT_TOOL_NAME {
             let result = self
                 .persist_spawn_subagent_tool_call(tool_call_id, internal_call_id, args)

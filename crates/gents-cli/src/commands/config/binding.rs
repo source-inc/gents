@@ -548,7 +548,6 @@ mod tests {
             defra_query_collections: Vec::new(),
             subagent_targets: targets,
             subagent_spawn_enabled: true,
-            orchestration_enabled: false,
             subagent_steering_enabled: false,
             subagent_background_enabled: false,
             subagent_default_await_mode: None,

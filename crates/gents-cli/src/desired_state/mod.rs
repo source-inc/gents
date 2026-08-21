@@ -17,7 +17,9 @@ pub(crate) use convert::{
 };
 pub(crate) use diff::diff_manifests;
 pub(crate) use load::load_manifest_root;
-pub(crate) use normalize::strip_deprecated_inference_backend_fields;
+pub(crate) use normalize::{
+    strip_deprecated_inference_backend_fields, strip_retired_tool_selection_fields,
+};
 pub(crate) use write::write_manifest_root;
 
 use serde::de::Error as _;
@@ -189,8 +191,6 @@ pub(crate) struct DesiredToolSelection {
     pub(crate) datastore_tool_surface_ids: Vec<String>,
     #[serde(default)]
     pub(crate) subagent_spawn_enabled: bool,
-    #[serde(default)]
-    pub(crate) orchestration_enabled: bool,
     #[serde(default)]
     pub(crate) subagent_steering_enabled: bool,
     #[serde(default)]

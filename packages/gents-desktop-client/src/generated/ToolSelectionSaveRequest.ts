@@ -7,4 +7,4 @@ export type ToolSelectionSaveRequest = { agentDid: string, selectionId: string, 
  * it (empty list clears). This is the field whose silent revert was the SP2
  * data-loss bug.
  */
-defraQueryCollections: Array<string> | null, subagentDefaultAwaitMode: string | null, orchestrationEnabled: boolean | null, };
+defraQueryCollections: Array<string> | null, subagentDefaultAwaitMode: string | null, };

@@ -12,8 +12,7 @@ use super::build::{
 use super::modes::ToolCeiling;
 use super::policy::{EndpointScope, RuntimeToolAvailability, ToolPolicySurface};
 use super::selection::{
-    BackgroundToolConfig, CustomToolFactory, OrchestrationToolConfig, SubagentToolConfig,
-    ToolSelection,
+    BackgroundToolConfig, CustomToolFactory, SubagentToolConfig, ToolSelection,
 };
 use super::ToolSurface;
 use crate::document_config::{QueryToolDecl, WriteToolDecl};
@@ -24,7 +23,6 @@ pub struct BehaviorToolConfig {
     enable_meta_tools: bool,
     allowed_mcp_service_ids: Vec<String>,
     subagent_tools: SubagentToolConfig,
-    orchestration_tools: OrchestrationToolConfig,
     background_tools: BackgroundToolConfig,
     approval_required_tools: Vec<String>,
     custom_tools: Vec<CustomToolFactory>,
@@ -58,7 +56,6 @@ impl BehaviorToolConfig {
             enable_meta_tools: true,
             allowed_mcp_service_ids: Vec::new(),
             subagent_tools: SubagentToolConfig::default(),
-            orchestration_tools: OrchestrationToolConfig::default(),
             background_tools: BackgroundToolConfig::default(),
             approval_required_tools: Vec::new(),
             custom_tools: Vec::new(),
@@ -148,7 +145,6 @@ impl BehaviorToolConfig {
             allowed_mcp_service_ids,
             backgroundable_tool_names,
             approval_required_tools,
-            orchestration_enabled: _,
             enable_memory,
             enable_session_history_tool: _,
             enable_context_budget,
@@ -210,9 +206,6 @@ impl BehaviorToolConfig {
                 background_enabled: static_policy.background,
                 default_await_mode: subagent_tools.default_await_mode,
                 allow_cross_deployment: static_policy.cross_deployment,
-            },
-            orchestration_tools: OrchestrationToolConfig {
-                enabled: static_policy.orchestration,
             },
             background_tools: BackgroundToolConfig {
                 allowlist: background_allowlist,
@@ -289,11 +282,6 @@ impl BehaviorToolConfig {
         &self.background_tools
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn orchestration_tools(&self) -> &OrchestrationToolConfig {
-        &self.orchestration_tools
-    }
-
     pub fn custom_tool_names(&self) -> Vec<String> {
         self.custom_tools
             .iter()
@@ -345,7 +333,6 @@ impl BehaviorToolConfig {
             include_meta_tools,
             allowed_mcp_service_ids,
             subagent_tools,
-            orchestration_tools: self.orchestration_tools.clone(),
             background_tools: self.background_tools.clone(),
             approval_required_tools: self.approval_required_tools.clone(),
             custom_tools: self.custom_tools.clone(),
@@ -503,7 +490,6 @@ impl std::fmt::Debug for BehaviorToolConfig {
             .field("enable_meta_tools", &self.enable_meta_tools)
             .field("allowed_mcp_service_ids", &self.allowed_mcp_service_ids)
             .field("subagent_tools", &self.subagent_tools)
-            .field("orchestration_tools", &self.orchestration_tools)
             .field("background_tools", &self.background_tools)
             .field(
                 "custom_tools",

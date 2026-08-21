@@ -422,10 +422,6 @@ pub struct AgentToolCallRow {
     #[serde(default)]
     pub cancel_policy: Option<String>,
     #[serde(default)]
-    pub workflow_group_id: Option<String>,
-    #[serde(default)]
-    pub workflow_role: Option<String>,
-    #[serde(default)]
     pub started_at: Option<String>,
     #[serde(default)]
     pub deadline_at: Option<String>,
@@ -769,8 +765,6 @@ pub struct ToolSelectionRow {
     pub subagent_targets: Vec<String>,
     #[serde(default)]
     pub subagent_spawn_enabled: Option<bool>,
-    #[serde(default)]
-    pub orchestration_enabled: Option<bool>,
     #[serde(default)]
     pub subagent_steering_enabled: Option<bool>,
     #[serde(default)]
@@ -1164,7 +1158,6 @@ mod tests {
             "agent_did": "did:test:amy",
             "subagent_targets": ["amy-research"],
             "subagent_spawn_enabled": true,
-            "orchestration_enabled": true,
             "subagent_steering_enabled": true,
             "subagent_background_enabled": true,
             "subagent_allow_cross_deployment": true,
@@ -1175,7 +1168,6 @@ mod tests {
         let row: ToolSelectionRow = serde_json::from_str(json).expect("parse");
         assert_eq!(row.subagent_targets, vec!["amy-research".to_string()]);
         assert_eq!(row.subagent_spawn_enabled, Some(true));
-        assert_eq!(row.orchestration_enabled, Some(true));
         assert_eq!(row.subagent_steering_enabled, Some(true));
         assert_eq!(row.subagent_background_enabled, Some(true));
         assert_eq!(row.subagent_allow_cross_deployment, Some(true));

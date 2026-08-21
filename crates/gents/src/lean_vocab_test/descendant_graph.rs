@@ -9,7 +9,6 @@ pub(crate) struct LeanDescendantGraphCase {
     pub(crate) await_mode: String,
     pub(crate) materialization: String,
     pub(crate) lifecycle: String,
-    pub(crate) workflow_role: String,
     pub(crate) direct: bool,
     pub(crate) visible: bool,
     pub(crate) readable: bool,

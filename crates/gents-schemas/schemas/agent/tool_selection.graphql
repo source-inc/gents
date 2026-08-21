@@ -32,6 +32,7 @@ type ToolSelection @branchable {
     approval_required_tools: [String]
     subagent_targets: [String]
     subagent_spawn_enabled: Boolean
+    # deprecated: fan_out_and_synthesize removed; retained for schema compatibility, unused.
     orchestration_enabled: Boolean
     subagent_steering_enabled: Boolean
     subagent_background_enabled: Boolean

@@ -117,8 +117,6 @@ struct ToolCallRow {
     child_request_id: Option<String>,
     spawn_target_did: Option<String>,
     unclaimed_deadline_at: Option<String>,
-    workflow_group_id: Option<String>,
-    workflow_role: Option<String>,
 }
 
 impl ToolCallLifecycle {
@@ -160,8 +158,6 @@ impl ToolCallLifecycle {
                     child_request_id
                     spawn_target_did
                     unclaimed_deadline_at
-                    workflow_group_id
-                    workflow_role
                 }}
             }}"#
         );
@@ -265,8 +261,6 @@ impl ToolCallLifecycle {
             child_request_id,
             spawn_target_did,
             unclaimed_deadline_at,
-            workflow_group_id: row.workflow_group_id.filter(|value| !value.is_empty()),
-            workflow_role: row.workflow_role.filter(|value| !value.is_empty()),
         }))
     }
 }

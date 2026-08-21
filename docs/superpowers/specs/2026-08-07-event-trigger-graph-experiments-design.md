@@ -40,9 +40,8 @@ Substantially all runtime infrastructure already exists. This workstream adds:
 
 No new harness code under `demo/`.
 
-This design deliberately **does not** use `fan_out_and_synthesize` for
-experiment topology. Fan-out becomes "N EventTriggers on the same seed
-create." Pipeline stages become "stage agents create next-collection docs."
+Fan-out is expressed as N EventTriggers on the same seed create. Pipeline
+stages become "stage agents create next-collection docs."
 Barrier / fan-in is **out of scope for v1** (see Non-goals).
 
 ## Constraints from the runtime (v1 EventTrigger)
@@ -149,8 +148,6 @@ The pack uses backend **`exp-deepseek`**:
 - `openai_wire_api`: `chat_completions`
 - `model_name` / models: **`d4f`** (server id for DeepSeek-V4-Flash)
 
-Tool selections set `orchestration_enabled: false`.
-
 ### Config surface
 
 A pack is a desired-state root in the layout `gents config export` writes
@@ -163,7 +160,7 @@ pipeline/
   inference-backends/<backend_id>/object.json
   inference-profiles/<profile_id>/object.json
   datastore-tool-surfaces/<surface_id>/object.json
-  tool-selections/<selection_id>/object.json     orchestration_enabled: false
+  tool-selections/<selection_id>/object.json
   agent-behaviors/<behavior_id>/object.json      (+ system_prompt.md sidecar)
   tasks/<task_id>/object.json                    (+ prompt.md sidecar)
   event_triggers/<trigger_id>/object.json        note: underscore dir name
@@ -230,7 +227,6 @@ eval-jsonl; score offline.
 - New harness/runner code under `demo/` — packs are config + docs
 - **CI e2e** (`experiment_graph_e2e.rs`) or any new CI workflow for packs
   (optional follow-up only)
-- Replacing or extending `fan_out_and_synthesize` barrier semantics
 - `event_kind: updated` / "on lifecycle completed" triggers
 - Claiming topology quality wins without a separate judge suite
 - Cross-node P2P packs

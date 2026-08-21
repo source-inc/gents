@@ -129,7 +129,7 @@ def writableFields : Target → List FieldKey
       , "read_only_command_allowlist", "command_network_mode", "cli_tool_names"
       , "enable_meta_tools", "allowed_mcp_service_ids"
       , "backgroundable_tool_names", "approval_required_tools", "subagent_targets"
-      , "subagent_spawn_enabled", "orchestration_enabled"
+      , "subagent_spawn_enabled"
       , "subagent_steering_enabled", "subagent_background_enabled"
       , "subagent_default_await_mode", "subagent_allow_cross_deployment"
       , "cross_deployment_spawn_timeout_seconds", "enable_memory"

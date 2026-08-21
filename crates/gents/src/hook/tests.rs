@@ -1453,14 +1453,12 @@ async fn cancelling_detached_subagent_tool_does_not_interrupt_child() {
     let _ = std::fs::remove_dir_all(&data_path);
 }
 
-/// #837: outer `fan_out_and_synthesize` composite must terminalize when the
-/// parent interrupt path drains in-flight lifecycles — not wait for deadline.
+/// A parent interrupt drains both native tools and child bridges from the
+/// in-flight lifecycle map without waiting for their deadlines.
 #[tokio::test]
-async fn cancelling_in_flight_terminalizes_fan_out_composite_and_children() {
-    let data_path = std::env::temp_dir().join(format!(
-        "agent-hook-composite-cancel-{}",
-        uuid::Uuid::new_v4()
-    ));
+async fn cancelling_in_flight_terminalizes_native_tools_and_children() {
+    let data_path =
+        std::env::temp_dir().join(format!("agent-hook-mixed-cancel-{}", uuid::Uuid::new_v4()));
     let node = Arc::new(
         defra_node::EmbeddedNode::builder()
             .data_path(&data_path)
@@ -1470,8 +1468,8 @@ async fn cancelling_in_flight_terminalizes_fan_out_composite_and_children() {
     );
     ensure_schemas(&node).await.unwrap();
 
-    let session_id = "session-composite";
-    let child_request_id = "child-composite-fan";
+    let session_id = "session-mixed-tools";
+    let child_request_id = "child-mixed-tools";
     create_interruptible_request(&node, child_request_id, session_id).await;
 
     let hook = DefraSessionHook::with_identity(
@@ -1482,31 +1480,31 @@ async fn cancelling_in_flight_terminalizes_fan_out_composite_and_children() {
     );
     let deadline = chrono::Utc::now() + chrono::Duration::minutes(5);
 
-    // Outer composite (no child_request_id) — the row that used to survive interrupt.
+    // Native tool without a child request.
     let mut outer = crate::tool_call_lifecycle::ToolCallLifecycle::new(
         node.clone(),
-        "parent-composite".to_string(),
+        "parent-mixed-tools".to_string(),
         session_id.to_string(),
         "did:test:general".to_string(),
-        "composite-outer".to_string(),
+        "native-tool".to_string(),
         1,
-        crate::workflow::FAN_OUT_AND_SYNTHESIZE_TOOL_NAME.to_string(),
-        r#"{"tasks":[]}"#.to_string(),
+        "slow_tool".to_string(),
+        "{}".to_string(),
         deadline,
     );
     outer.start_running().await.unwrap();
     hook.in_flight_lifecycles
         .lock()
         .await
-        .insert("composite-outer".to_string(), outer);
+        .insert("native-tool".to_string(), outer);
 
-    // One fan-out child bridge under the same parent cancel map.
+    // One child bridge under the same parent cancel map.
     let mut bridge = crate::tool_call_lifecycle::ToolCallLifecycle::new_subagent(
         node.clone(),
-        "parent-composite".to_string(),
+        "parent-mixed-tools".to_string(),
         session_id.to_string(),
         "did:test:general".to_string(),
-        "composite-fan-0".to_string(),
+        "child-bridge".to_string(),
         2,
         "spawn_subagent".to_string(),
         "{}".to_string(),
@@ -1516,18 +1514,17 @@ async fn cancelling_in_flight_terminalizes_fan_out_composite_and_children() {
         child_request_id.to_string(),
         "did:test:target".to_string(),
     );
-    bridge.set_workflow_group("composite-outer", "fan_out_child");
     bridge.start_running().await.unwrap();
     hook.in_flight_lifecycles
         .lock()
         .await
-        .insert("composite-fan-0".to_string(), bridge);
+        .insert("child-bridge".to_string(), bridge);
 
     assert_eq!(hook.cancel_in_flight_tool_calls().await.unwrap(), 2);
     // Duplicate interrupt delivery is a no-op once the map is empty.
     assert_eq!(hook.cancel_in_flight_tool_calls().await.unwrap(), 0);
 
-    let outer_row = fetch_tool_call_row(&node, session_id, "composite-outer").await;
+    let outer_row = fetch_tool_call_row(&node, session_id, "native-tool").await;
     assert_eq!(
         outer_row
             .get("lifecycle_state")
@@ -1551,7 +1548,7 @@ async fn cancelling_in_flight_terminalizes_fan_out_composite_and_children() {
         Some("cascade")
     );
 
-    let bridge_row = fetch_tool_call_row(&node, session_id, "composite-fan-0").await;
+    let bridge_row = fetch_tool_call_row(&node, session_id, "child-bridge").await;
     assert_eq!(
         bridge_row
             .get("lifecycle_state")
@@ -1577,7 +1574,7 @@ async fn cancelling_in_flight_terminalizes_fan_out_composite_and_children() {
     let mut reloaded = crate::tool_call_lifecycle::ToolCallLifecycle::load(
         node.clone(),
         session_id,
-        "composite-outer",
+        "native-tool",
     )
     .await
     .unwrap()
@@ -1590,7 +1587,7 @@ async fn cancelling_in_flight_terminalizes_fan_out_composite_and_children() {
         reloaded.is_cancelled(),
         "late complete must adopt durable cancelled state"
     );
-    let outer_after = fetch_tool_call_row(&node, session_id, "composite-outer").await;
+    let outer_after = fetch_tool_call_row(&node, session_id, "native-tool").await;
     assert_eq!(
         outer_after
             .get("lifecycle_state")

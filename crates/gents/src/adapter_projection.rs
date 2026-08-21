@@ -2265,7 +2265,7 @@ fn build_multi_agent_task(
             &mut participants,
             edge.principal_did.clone(),
             edge.behavior_id.clone(),
-            edge.workflow_role.as_deref().unwrap_or("delegate"),
+            "delegate",
         );
         delegations.push(MultiAgentDelegation {
             parent_request_id: edge.immediate_parent_request_id.clone(),

@@ -380,7 +380,7 @@ const CONFIG_SCHEMA_COLLECTIONS: &[&str] = &[
 pub(crate) const EXPORT_AGENT_PRINCIPAL_FIELDS: &str =
     "agent_did display_name default_behavior_id enabled created_at created_by";
 pub(crate) const EXPORT_AGENT_BEHAVIOR_FIELDS: &str = "behavior_id agent_did display_name description summary system_prompt request_context_template backend_id model_name tool_selection_id inference_profile_id compaction_strategy compaction_threshold enabled skill_refs skill_excludes created_at";
-pub(crate) const EXPORT_TOOL_SELECTION_FIELDS: &str = "selection_id agent_did display_name tool_policy_version enable_file_tools file_tools_mode file_tool_root enable_bash bash_mode command_execution_policy command_allowed_argv_prefixes command_forbidden_argv_prefixes read_only_command_allowlist command_network_mode cli_tool_names enable_meta_tools allowed_mcp_service_ids delegate_to backgroundable_tool_names approval_required_tools enable_memory enable_session_history_tool enable_context_budget enable_defra_query defra_query_collections subagent_targets subagent_spawn_enabled orchestration_enabled subagent_steering_enabled subagent_background_enabled subagent_default_await_mode subagent_allow_cross_deployment cross_deployment_spawn_timeout_seconds write_tools datastore_tool_surface_ids enable_self_config self_config_categories self_config_no_lockout self_config_dry_run enable_lsp lsp_config";
+pub(crate) const EXPORT_TOOL_SELECTION_FIELDS: &str = "selection_id agent_did display_name tool_policy_version enable_file_tools file_tools_mode file_tool_root enable_bash bash_mode command_execution_policy command_allowed_argv_prefixes command_forbidden_argv_prefixes read_only_command_allowlist command_network_mode cli_tool_names enable_meta_tools allowed_mcp_service_ids delegate_to backgroundable_tool_names approval_required_tools enable_memory enable_session_history_tool enable_context_budget enable_defra_query defra_query_collections subagent_targets subagent_spawn_enabled subagent_steering_enabled subagent_background_enabled subagent_default_await_mode subagent_allow_cross_deployment cross_deployment_spawn_timeout_seconds write_tools datastore_tool_surface_ids enable_self_config self_config_categories self_config_no_lockout self_config_dry_run enable_lsp lsp_config";
 pub(crate) const EXPORT_DATASTORE_TOOL_SURFACE_FIELDS: &str =
     "surface_id agent_did display_name enabled entries";
 pub(crate) const EXPORT_SKILL_FIELDS: &str =
@@ -767,6 +767,22 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_tool_selection_drops_retired_orchestration_field() {
+        let input = serde_json::json!({
+            "selection_id": "legacy-tools",
+            "orchestration_enabled": true
+        });
+
+        let out = sanitize_import_document("ToolSelection", &input, false).unwrap();
+        let obj = out.as_object().unwrap();
+        assert!(!obj.contains_key("orchestration_enabled"));
+        assert_eq!(
+            obj.get("selection_id").and_then(Value::as_str),
+            Some("legacy-tools")
+        );
+    }
+
+    #[test]
     fn read_config_import_bundle_migrates_v1_backend_capability_fields() {
         let tempdir = tempfile::tempdir().unwrap();
         let path = tempdir.path().join("config.json");
@@ -812,6 +828,36 @@ mod tests {
         assert!(!backend.contains_key("supports_streaming"));
         assert!(!backend.contains_key("supports_structured_outputs"));
         assert!(!backend.contains_key("supports_json_schema"));
+    }
+
+    #[test]
+    fn read_config_import_bundle_drops_retired_tool_selection_field() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("config.json");
+        fs::write(
+            &path,
+            serde_json::to_string(&serde_json::json!({
+                "format": CONFIG_EXPORT_FORMAT,
+                "agent_did": "did:test:test",
+                "exported_at": "2026-08-21T00:00:00Z",
+                "access_mode": "local",
+                "agent_principal": null,
+                "agent_behaviors": [],
+                "tool_selections": [{
+                    "selection_id": "legacy-tools",
+                    "orchestration_enabled": false
+                }],
+                "inference_backends": [],
+                "inference_profiles": [],
+                "tool_service_registries": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let bundle = read_config_import_bundle(Some(&path)).unwrap();
+        let selection = bundle.tool_selections[0].as_object().unwrap();
+        assert!(!selection.contains_key("orchestration_enabled"));
     }
 
     #[test]

@@ -351,13 +351,21 @@ where
         let Some(bytes) = read_document_json(&object_path, errors) else {
             continue;
         };
-        let parsed: T = match serde_json::from_slice(&bytes) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                errors.push(format!("invalid {}: {error}", object_path.display()));
-                continue;
-            }
-        };
+        let parsed: T =
+            match serde_json::from_slice::<serde_json::Value>(&bytes).and_then(|mut value| {
+                if collection == Collection::ToolSelection {
+                    if let Some(object) = value.as_object_mut() {
+                        super::strip_retired_tool_selection_fields(object);
+                    }
+                }
+                serde_json::from_value(value)
+            }) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    errors.push(format!("invalid {}: {error}", object_path.display()));
+                    continue;
+                }
+            };
 
         if let Some(prior) = id_to_handle.get(parsed.unique_id()) {
             errors.push(format!(

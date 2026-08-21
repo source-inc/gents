@@ -141,3 +141,7 @@ pub(crate) fn strip_deprecated_inference_backend_fields(object: &mut Map<String,
         object.remove(field);
     }
 }
+
+pub(crate) fn strip_retired_tool_selection_fields(object: &mut Map<String, Value>) {
+    object.remove("orchestration_enabled");
+}

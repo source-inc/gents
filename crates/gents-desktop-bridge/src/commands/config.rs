@@ -399,7 +399,6 @@ pub async fn save_tool_selection_config(
             backgroundable_tool_names: Vec::new(),
             subagent_targets: Vec::new(),
             subagent_spawn_enabled: Some(false),
-            orchestration_enabled: Some(false),
             subagent_steering_enabled: Some(false),
             subagent_background_enabled: Some(false),
             subagent_allow_cross_deployment: Some(false),
@@ -490,7 +489,6 @@ pub async fn save_tool_selection_config(
     }
     row.subagent_default_await_mode =
         trim_optional(request.subagent_default_await_mode).or(row.subagent_default_await_mode);
-    row.orchestration_enabled = request.orchestration_enabled.or(row.orchestration_enabled);
     core.save_tool_selection(&row).await?;
     Ok(())
 }

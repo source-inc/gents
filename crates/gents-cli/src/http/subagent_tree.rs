@@ -506,8 +506,6 @@ mod tests {
             "cancel_policy": "cascade",
             "child_request_id": child_request_id,
             "spawn_target_did": null,
-            "workflow_group_id": null,
-            "workflow_role": null,
             "unclaimed_deadline_at": null
         })
     }

@@ -322,8 +322,8 @@ impl super::ToolCallLifecycle {
     /// 7. Then project already-terminal children onto bridges (matches startup
     ///    child-precedence so restart and live ticks converge).
     ///
-    /// Covers the durable bad state observed for `fan_out_and_synthesize`:
-    /// parent interrupted, outer composite still `running`, no executor active.
+    /// Covers running native tool calls stranded under a terminal parent with
+    /// no executor active.
     pub async fn reconcile_terminal_parent_owned_tools(
         node: &EmbeddedNode,
         agent_did: &str,

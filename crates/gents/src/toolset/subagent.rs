@@ -287,8 +287,8 @@ impl Tool for ListSubagentsTool {
         ToolDefinition {
             name: Self::NAME.to_string(),
             description: "List the canonical descendant graph owned by this parent lineage. \
-Foreground, background, workflow, cross-behavior, and pending remote children use the same edge \
-shape. Use `scope=all_descendants` for nested children or `scope=workflow_group` with a group id."
+Foreground, background, cross-behavior, and pending remote children use the same edge shape. \
+Use `scope=all_descendants` for nested children."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -308,13 +308,9 @@ shape. Use `scope=all_descendants` for nested children or `scope=workflow_group`
                     },
                     "scope": {
                         "type": "string",
-                        "enum": ["direct_children", "all_descendants", "workflow_group"],
+                        "enum": ["direct_children", "all_descendants"],
                         "default": "direct_children",
                         "description": "Graph scope to enumerate."
-                    },
-                    "workflow_group_id": {
-                        "type": "string",
-                        "description": "Required when scope is workflow_group."
                     },
                     "after": {
                         "type": "string",

@@ -21,7 +21,6 @@
   "write_tools": [],
   "datastore_tool_surface_ids": [],
   "subagent_spawn_enabled": true,
-  "orchestration_enabled": false,
   "subagent_steering_enabled": false,
   "subagent_background_enabled": true,
   "subagent_default_await_mode": "background",

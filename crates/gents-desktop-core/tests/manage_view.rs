@@ -111,7 +111,6 @@ async fn manage_document_saves_refresh_store() -> Result<()> {
         defra_query_collections: vec!["AgentSession".to_string()],
         subagent_targets: vec!["amy-research".to_string()],
         subagent_spawn_enabled: Some(true),
-        orchestration_enabled: Some(true),
         subagent_steering_enabled: Some(true),
         subagent_background_enabled: Some(true),
         subagent_allow_cross_deployment: Some(true),
@@ -210,7 +209,6 @@ async fn manage_document_saves_refresh_store() -> Result<()> {
     );
     assert_eq!(tools.subagent_targets, vec!["amy-research".to_string()]);
     assert_eq!(tools.subagent_spawn_enabled, Some(true));
-    assert_eq!(tools.orchestration_enabled, Some(true));
     assert_eq!(tools.subagent_steering_enabled, Some(true));
     assert_eq!(tools.subagent_background_enabled, Some(true));
     assert_eq!(tools.subagent_allow_cross_deployment, Some(true));
