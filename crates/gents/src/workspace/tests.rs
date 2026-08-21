@@ -1052,8 +1052,22 @@ fn integrate_writer(
         mode: IntegrateMode::ApplyDiff,
     });
     let mut journal = Vec::new();
-    execute_integrate_workspace_plan(&plan, &mut journal, &mut fx.ctx(docs, integrate_caps()))
-        .expect("integrate")
+    let outcome =
+        execute_integrate_workspace_plan(&plan, &mut journal, &mut fx.ctx(docs, integrate_caps()))
+            .expect("integrate");
+    finalize_integrate_trunk(&fx.repo, outcome.pending_head_sha.as_deref())
+        .expect("finalize trunk");
+    if let Some(binding) = docs
+        .load_bindings(workspace_id)
+        .unwrap()
+        .into_iter()
+        .find(|binding| binding.is_active_integrate() && binding.request_id == request_id)
+    {
+        docs.write_binding(super::binding::release_binding(binding))
+            .unwrap();
+    }
+    super::executor::clear_integrate_journal(&fx.repo, workspace_id);
+    outcome
 }
 
 fn cleanup_ws(
@@ -1326,6 +1340,191 @@ fn provision_failed_and_sealed_rejected_remain_until_cleanup() {
 }
 
 #[test]
+fn integrate_does_not_commit_until_receipt_and_retries_from_journal() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-crash", "unit-1", "topic-crash");
+    let created = execute_create_workspace_plan(
+        &emit_create_workspace_plan(action),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    fs::write(dest.join("patch.rs"), "fn patch() {}\n").unwrap();
+    let sealed = seal_writer(&fx, &mut docs, "ws-crash", "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    bind_integrate(&mut docs, "ws-crash", "req-int", &hash);
+    let base = git(&fx.repo, &["rev-parse", "HEAD"]);
+
+    let first = execute_integrate_workspace_plan(
+        &emit_integrate_workspace_plan(IntegrateWorkspaceAction {
+            workspace_id: "ws-crash".into(),
+            produced_by_request_id: "req-int".into(),
+            produced_by_request_doc_id: "req-int-doc".into(),
+            mode: IntegrateMode::ApplyDiff,
+        }),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, integrate_caps()),
+    )
+    .expect("prepare integrate");
+    assert!(
+        first.pending_head_sha.is_some(),
+        "HEAD must not move before receipt flush"
+    );
+    assert_eq!(git(&fx.repo, &["rev-parse", "HEAD"]), base);
+    assert!(
+        !fx.repo.join("patch.rs").exists(),
+        "trunk worktree unchanged until finalize"
+    );
+    assert_eq!(first.receipt.kind, "integrator");
+
+    docs.receipts.clear();
+    let second = execute_integrate_workspace_plan(
+        &emit_integrate_workspace_plan(IntegrateWorkspaceAction {
+            workspace_id: "ws-crash".into(),
+            produced_by_request_id: "req-int".into(),
+            produced_by_request_doc_id: "req-int-doc".into(),
+            mode: IntegrateMode::ApplyDiff,
+        }),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, integrate_caps()),
+    )
+    .expect("retry observes pending commit");
+    assert_eq!(second.receipt.seal_hash, hash);
+    assert_eq!(second.receipt.head_sha, first.receipt.head_sha);
+    assert_eq!(git(&fx.repo, &["rev-parse", "HEAD"]), base);
+
+    finalize_integrate_trunk(&fx.repo, second.pending_head_sha.as_deref()).unwrap();
+    assert_eq!(
+        fs::read_to_string(fx.repo.join("patch.rs")).unwrap(),
+        "fn patch() {}\n"
+    );
+    let count = git(&fx.repo, &["rev-list", "--count", "HEAD"])
+        .parse::<u32>()
+        .unwrap();
+    let base_count = git(&fx.repo, &["rev-list", "--count", &base])
+        .parse::<u32>()
+        .unwrap();
+    assert_eq!(
+        count,
+        base_count + 1,
+        "retry must not mint a second trunk commit"
+    );
+}
+
+#[test]
+fn integrate_uses_isolated_index_and_ignores_unrelated_staged_files() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-idx", "unit-1", "topic-idx");
+    let created = execute_create_workspace_plan(
+        &emit_create_workspace_plan(action),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    fs::write(dest.join("patch.rs"), "fn patch() {}\n").unwrap();
+    let sealed = seal_writer(&fx, &mut docs, "ws-idx", "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    bind_integrate(&mut docs, "ws-idx", "req-int", &hash);
+
+    fs::write(fx.repo.join("unrelated.txt"), "operator wip\n").unwrap();
+    git(&fx.repo, &["add", "unrelated.txt"]);
+    integrate_writer(&fx, &mut docs, "ws-idx", "req-int");
+    let show = git(
+        &fx.repo,
+        &["show", "--name-only", "--pretty=format:", "HEAD"],
+    );
+    assert!(show.contains("patch.rs"), "{show}");
+    assert!(
+        !show.contains("unrelated.txt"),
+        "integrator commit must not swallow staged operator files: {show}"
+    );
+    let staged = git(&fx.repo, &["diff", "--cached", "--name-only"]);
+    assert!(
+        staged.contains("unrelated.txt"),
+        "unrelated staged file stays in the default index"
+    );
+}
+
+#[test]
+fn integrate_binary_file_round_trips() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-bin", "unit-1", "topic-bin");
+    let created = execute_create_workspace_plan(
+        &emit_create_workspace_plan(action),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    let bytes: Vec<u8> = (0u8..=255).collect();
+    fs::write(dest.join("blob.bin"), &bytes).unwrap();
+    let sealed = seal_writer(&fx, &mut docs, "ws-bin", "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    bind_integrate(&mut docs, "ws-bin", "req-int", &hash);
+    integrate_writer(&fx, &mut docs, "ws-bin", "req-int");
+    let got = fs::read(fx.repo.join("blob.bin")).unwrap();
+    assert_eq!(got, bytes);
+}
+
+#[test]
+fn cleanup_refuses_ready_and_active_bindings() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-ready-c", "unit-1", "topic-ready-c");
+    let created = execute_create_workspace_plan(
+        &emit_create_workspace_plan(action),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    let err = execute_cleanup_workspace_plan(
+        &emit_cleanup_workspace_plan(CleanupWorkspaceAction {
+            workspace_id: "ws-ready-c".into(),
+        }),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, cleanup_caps()),
+    )
+    .expect_err("Ready cleanup denied");
+    assert!(err.to_string().contains("ready"), "{err}");
+    assert!(dest.is_dir(), "Ready tree stays on disk");
+    assert_eq!(
+        docs.load_isolated_workspace("ws-ready-c")
+            .unwrap()
+            .unwrap()
+            .lifecycle_state,
+        "ready"
+    );
+
+    fs::write(dest.join("patch.rs"), "fn patch() {}\n").unwrap();
+    let sealed = seal_writer(&fx, &mut docs, "ws-ready-c", "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    docs.write_binding(super::binding::new_binding(
+        "ws-ready-c",
+        "req-review",
+        "doc-review",
+        crate::toolset::WorkspaceAuthority::ReadOnly,
+        "deploy-1",
+        Some(&hash),
+    ))
+    .unwrap();
+    let err = execute_cleanup_workspace_plan(
+        &emit_cleanup_workspace_plan(CleanupWorkspaceAction {
+            workspace_id: "ws-ready-c".into(),
+        }),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, cleanup_caps()),
+    )
+    .expect_err("Active bindings block cleanup");
+    assert!(err.to_string().contains("Active binding"), "{err}");
+    assert!(dest.is_dir());
+}
+
 fn integrate_and_cleanup_plans_omit_host_path() {
     let integrate = emit_integrate_workspace_plan(IntegrateWorkspaceAction {
         workspace_id: "ws-1".into(),

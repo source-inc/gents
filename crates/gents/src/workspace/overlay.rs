@@ -385,14 +385,17 @@ async fn ensure_request_binding(
         optional_id(request.workspace_seal_hash.as_deref())
             .or(optional_id(workspace.seal_hash.as_deref())),
     );
-    let release_previous = matches!(authority, WorkspaceAuthority::ReadWrite)
-        && previous_read_write_is_stale(
-            node,
-            &workspace.workspace_id,
-            &existing,
-            &request.request_id,
-        )
-        .await?;
+    let release_previous = matches!(
+        authority,
+        WorkspaceAuthority::ReadWrite | WorkspaceAuthority::Integrate
+    ) && previous_exclusive_is_stale(
+        node,
+        &workspace.workspace_id,
+        &existing,
+        &request.request_id,
+        matches!(authority, WorkspaceAuthority::Integrate),
+    )
+    .await?;
     match admit_workspace_binding(
         &workspace.workspace_id,
         &workspace.lifecycle_state,
@@ -411,19 +414,28 @@ async fn ensure_request_binding(
     }
 }
 
-pub(super) async fn previous_read_write_is_stale(
+pub(super) async fn previous_exclusive_is_stale(
     node: &EmbeddedNode,
     workspace_id: &str,
     existing: &[WorkspaceBindingDoc],
     request_id: &str,
+    integrate: bool,
 ) -> Result<bool> {
     let others: Vec<_> = existing
         .iter()
-        .filter(|binding| binding.is_active_read_write() && binding.request_id != request_id)
+        .filter(|binding| {
+            let exclusive = if integrate {
+                binding.is_active_integrate()
+            } else {
+                binding.is_active_read_write()
+            };
+            exclusive && binding.request_id != request_id
+        })
         .collect();
     if others.len() > 1 {
+        let label = if integrate { "Integrate" } else { "ReadWrite" };
         anyhow::bail!(
-            "multiple Active ReadWrite bindings exist for workspace {workspace_id}; failing closed"
+            "multiple Active {label} bindings exist for workspace {workspace_id}; failing closed"
         );
     }
     let Some(active) = others.into_iter().next() else {

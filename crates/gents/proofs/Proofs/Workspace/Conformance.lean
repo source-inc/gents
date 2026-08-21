@@ -134,6 +134,7 @@ def bindingCaseLegal (c : WorkspaceBindingCase) : Bool :=
   let bindings := candidate :: c.existingBindings
   candidateBindingLegal w candidate &&
     decide (UniqueActiveReadWrite w.workspaceId bindings) &&
+    decide (UniqueActiveIntegrate w.workspaceId bindings) &&
     (!c.gitMetadataWrite || decide (GitMetadataWriteOk w.creationPolicy candidate.authority)) &&
     decide (AuthorityMeetOk c.behaviorCommandMode candidate.authority)
 
@@ -209,6 +210,10 @@ def workspaceBindingCases : List WorkspaceBindingCase :=
   , mkBindingCase "integrate_matching_seal_legal" .sealed
       (mkWitness "b-1" .integrate (sealHash := some "seal-1")) true
       (workspaceSealHash := some "seal-1")
+  , mkBindingCase "second_active_integrate_illegal" .sealed
+      (mkWitness "b-2" .integrate (sealHash := some "seal-1") (requestId := "req-2")) false
+      (workspaceSealHash := some "seal-1")
+      (existing := [mkWitness "b-1" .integrate (sealHash := some "seal-1")])
   ]
 
 theorem workspaceBindingCasesLegalCorrect :

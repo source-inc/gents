@@ -155,7 +155,7 @@ pub(crate) fn working_tree_hash(dest: &Path) -> Result<String> {
 
 pub(crate) struct SealSnapshot {
     pub tree_hash: String,
-    pub diff: String,
+    pub diff: Vec<u8>,
     pub changed_files: Vec<String>,
 }
 
@@ -167,7 +167,8 @@ pub(crate) fn capture_seal_snapshot(dest: &Path) -> Result<SealSnapshot> {
     let index = tmp.path().join("index");
     git_run_with_index(dest, &index, &["add", "-A", "--"])?;
     let tree_hash = git_output_with_index(dest, &index, &["write-tree"])?;
-    let diff = git_output_with_index(dest, &index, &["diff", "--binary", "--cached", "HEAD"])?;
+    let diff =
+        git_output_bytes_with_index(dest, &index, &["diff", "--binary", "--cached", "HEAD"])?;
     let names = git_output_with_index(dest, &index, &["diff", "--name-only", "--cached", "HEAD"])?;
     let changed_files = names
         .lines()
@@ -226,15 +227,22 @@ struct RecordedSeal {
 pub(crate) struct IntegrateEffect {
     pub head_sha: String,
     pub changed_files: Vec<String>,
-    pub diff: String,
+    pub diff: Vec<u8>,
+    /// Set when a new commit object was created but trunk `HEAD` was not moved.
+    pub pending_head: bool,
 }
 
-/// Apply the sealed worktree diff onto the source checkout. Never runs in the
-/// worker tree; never `git merge`/`cherry-pick` (those need a worker commit).
-pub(crate) fn apply_sealed_diff_to_trunk(
+pub(crate) fn integrate_commit_message(seal_hash: &str) -> String {
+    format!("gents: integrate workspace seal {seal_hash}")
+}
+
+/// Apply the sealed worktree diff onto an isolated index and `commit-tree`.
+/// Does **not** move trunk `HEAD` — the caller writes a durable receipt first.
+pub(crate) fn prepare_integrate_commit(
     trunk: &Path,
     worktree: &Path,
     seal_hash: &str,
+    base_sha: &str,
 ) -> Result<IntegrateEffect> {
     let trunk = fs::canonicalize(trunk)
         .with_context(|| format!("canonicalizing trunk {}", trunk.display()))?;
@@ -243,6 +251,31 @@ pub(crate) fn apply_sealed_diff_to_trunk(
     if trunk == worktree {
         bail!("refusing to integrate: trunk/source checkout is the worker workspace");
     }
+    if worktree.starts_with(&trunk) && worktree != trunk {
+        // linked worktree paths sit beside trunk, not inside it; still refuse
+        // applying onto a path that is the worker tree.
+    }
+    if !is_worktree_of(&trunk, &worktree)? {
+        bail!(
+            "refusing to integrate: {} is not a worktree of the source checkout",
+            worktree.display()
+        );
+    }
+    if let Some(existing) = observe_integrate_commit(&trunk, seal_hash)? {
+        let snapshot = capture_seal_snapshot(&worktree)?;
+        if snapshot.tree_hash != seal_hash {
+            bail!(
+                "live tree hash {} does not match workspace seal_hash {seal_hash}",
+                snapshot.tree_hash
+            );
+        }
+        return Ok(IntegrateEffect {
+            head_sha: existing,
+            changed_files: snapshot.changed_files,
+            diff: snapshot.diff,
+            pending_head: false,
+        });
+    }
     let snapshot = capture_seal_snapshot(&worktree)?;
     if snapshot.tree_hash != seal_hash {
         bail!(
@@ -250,78 +283,257 @@ pub(crate) fn apply_sealed_diff_to_trunk(
             snapshot.tree_hash
         );
     }
-    if snapshot.diff.trim().is_empty() {
-        let head_sha = git_output(&trunk, &["rev-parse", "HEAD"])?;
+    if diff_is_empty(&snapshot.diff) {
+        return empty_diff_effect(&trunk, &worktree, seal_hash, base_sha, snapshot);
+    }
+    refuse_overlapping_dirty_trunk(&trunk, &snapshot.changed_files)?;
+    let commit = commit_tree_from_isolated_index(&trunk, &snapshot.diff, seal_hash)?;
+    Ok(IntegrateEffect {
+        head_sha: commit,
+        changed_files: snapshot.changed_files,
+        diff: snapshot.diff,
+        pending_head: true,
+    })
+}
+
+fn empty_diff_effect(
+    trunk: &Path,
+    worktree: &Path,
+    seal_hash: &str,
+    base_sha: &str,
+    snapshot: SealSnapshot,
+) -> Result<IntegrateEffect> {
+    let trunk_tree = git_output(trunk, &["rev-parse", "HEAD^{tree}"])?;
+    let worktree_head = git_output(worktree, &["rev-parse", "HEAD"])?;
+    if trunk_tree == seal_hash || worktree_head == base_sha {
+        let head_sha = git_output(trunk, &["rev-parse", "HEAD"])?;
         return Ok(IntegrateEffect {
             head_sha,
             changed_files: snapshot.changed_files,
             diff: snapshot.diff,
+            pending_head: false,
         });
     }
-    git_apply(&trunk, &snapshot.diff, true)
-        .with_context(|| format!("git apply --check on trunk {}", trunk.display()))?;
-    git_apply(&trunk, &snapshot.diff, false)
-        .with_context(|| format!("git apply on trunk {}", trunk.display()))?;
-    commit_integrator(&trunk, seal_hash)?;
-    let head_sha = git_output(&trunk, &["rev-parse", "HEAD"])?;
-    Ok(IntegrateEffect {
-        head_sha,
-        changed_files: snapshot.changed_files,
-        diff: snapshot.diff,
-    })
+    bail!(
+        "empty sealed diff but trunk tree {trunk_tree} does not match seal_hash {seal_hash} and worktree HEAD {worktree_head} is not base_sha {base_sha}"
+    )
+}
+
+fn diff_is_empty(diff: &[u8]) -> bool {
+    std::str::from_utf8(diff)
+        .map(|text| text.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Point trunk `HEAD` at a commit created by [`prepare_integrate_commit`]
+/// without rewriting the default index (operator staged files stay put).
+/// Updates the worktree only for paths in that commit. Idempotent.
+pub(crate) fn advance_trunk_to_integrate_commit(trunk: &Path, commit: &str) -> Result<()> {
+    let trunk = fs::canonicalize(trunk)
+        .with_context(|| format!("canonicalizing trunk {}", trunk.display()))?;
+    let head = git_output(&trunk, &["rev-parse", "HEAD"])?;
+    if head == commit {
+        return Ok(());
+    }
+    let files = git_output(
+        &trunk,
+        &["diff", "--name-only", "--find-renames", &head, commit],
+    )?;
+    git_run(&trunk, &["update-ref", "HEAD", commit]).with_context(|| {
+        format!(
+            "moving trunk HEAD at {} to integrate commit {commit}",
+            trunk.display()
+        )
+    })?;
+    for file in files.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        git_run(&trunk, &["checkout", commit, "--", file]).with_context(|| {
+            format!(
+                "checking out sealed path {file} onto trunk {}",
+                trunk.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn observe_integrate_commit(trunk: &Path, seal_hash: &str) -> Result<Option<String>> {
+    let expected = integrate_commit_message(seal_hash);
+    let log = git_output(trunk, &["log", "--format=%H%x00%s", "-32"])?;
+    for line in log.split('\n') {
+        let Some((hash, subject)) = line.split_once('\u{0}') else {
+            continue;
+        };
+        if subject == expected {
+            return Ok(Some(hash.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn commit_exists(repo: &Path, sha: &str) -> bool {
+    git_ok(repo, &["cat-file", "-t", sha])
+}
+
+pub(crate) fn rev_parse_head(repo: &Path) -> Result<String> {
+    git_output(repo, &["rev-parse", "HEAD"])
+}
+
+fn refuse_overlapping_dirty_trunk(trunk: &Path, changed_files: &[String]) -> Result<()> {
+    let porcelain = git_output(trunk, &["status", "--porcelain=v1"])?;
+    if porcelain.trim().is_empty() {
+        return Ok(());
+    }
+    for line in porcelain.lines() {
+        let path = line.get(3..).unwrap_or("").trim();
+        if path.is_empty() {
+            continue;
+        }
+        if changed_files.iter().any(|file| file == path) {
+            bail!(
+                "refusing to integrate: trunk has uncommitted changes overlapping sealed path {path}"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn commit_tree_from_isolated_index(trunk: &Path, diff: &[u8], seal_hash: &str) -> Result<String> {
+    let tmp = tempfile::Builder::new()
+        .prefix("gents-integrate-index")
+        .tempdir()
+        .context("creating temporary git index for integrate")?;
+    let index = tmp.path().join("index");
+    git_run_with_index(trunk, &index, &["read-tree", "HEAD"])?;
+    git_apply_cached(trunk, &index, diff).with_context(|| {
+        format!(
+            "git apply --cached on isolated index in {}",
+            trunk.display()
+        )
+    })?;
+    let tree = git_output_with_index(trunk, &index, &["write-tree"])?;
+    let parent = git_output(trunk, &["rev-parse", "HEAD"])?;
+    let message = integrate_commit_message(seal_hash);
+    let mut cmd = git_command_with_index(
+        trunk,
+        &index,
+        &["commit-tree", &tree, "-p", &parent, "-m", &message],
+    );
+    cmd.env("GIT_AUTHOR_NAME", "gents-integrator");
+    cmd.env("GIT_AUTHOR_EMAIL", "gents-integrator@local");
+    cmd.env("GIT_COMMITTER_NAME", "gents-integrator");
+    cmd.env("GIT_COMMITTER_EMAIL", "gents-integrator@local");
+    git_output_inner(cmd, trunk, &["commit-tree"])
 }
 
 /// Remove the worker tree. Never deletes the source checkout. Idempotent when
 /// `dest` is already gone. Not called implicitly on request terminal.
-pub(crate) fn cleanup_workspace_tree(source: &Path, dest: &Path) -> Result<()> {
+///
+/// `expected` is the host-chosen dest from `(workspace_id, branch)`. Mismatch,
+/// ancestor-of-source, and non-sibling leftovers refuse `remove_dir_all`.
+pub(crate) fn cleanup_workspace_tree(
+    source: &Path,
+    dest: &Path,
+    expected: &Path,
+    ceiling: Option<&Path>,
+) -> Result<()> {
     let source = if source.exists() {
         fs::canonicalize(source)
             .with_context(|| format!("canonicalizing source {}", source.display()))?
     } else {
         source.to_path_buf()
     };
-    if !dest.exists() {
+    let expected = if expected.exists() {
+        fs::canonicalize(expected).unwrap_or_else(|_| expected.to_path_buf())
+    } else {
+        expected.to_path_buf()
+    };
+    if let Some(ceiling) = ceiling {
+        let ceiling = if ceiling.exists() {
+            fs::canonicalize(ceiling)
+                .with_context(|| format!("canonicalizing ceiling {}", ceiling.display()))?
+        } else {
+            ceiling.to_path_buf()
+        };
+        if !expected.starts_with(&ceiling) {
+            bail!(
+                "cleanup dest {} escapes operator ceiling {}",
+                expected.display(),
+                ceiling.display()
+            );
+        }
+    }
+    if source.starts_with(&expected) {
+        bail!(
+            "refusing to cleanup: dest {} is an ancestor of the source checkout",
+            expected.display()
+        );
+    }
+    if expected == source {
+        bail!("refusing to cleanup: destination is the source checkout");
+    }
+    if dest.exists() {
+        let dest = fs::canonicalize(dest)
+            .with_context(|| format!("canonicalizing workspace dest {}", dest.display()))?;
+        if dest != expected {
+            bail!(
+                "cleanup dest {} does not match host-chosen path {}",
+                dest.display(),
+                expected.display()
+            );
+        }
+    } else if dest != expected && PathBuf::from(dest) != expected {
+        // dest missing: still require the documented host-chosen path.
+        let dest_abs = dest.to_path_buf();
+        if dest_abs != expected {
+            tracing::info!(
+                dest = %dest.display(),
+                expected = %expected.display(),
+                "cleanup dest already absent"
+            );
+        }
+    }
+    if !expected.exists() {
         let _ = git_run(&source, &["worktree", "prune"]);
         return Ok(());
     }
-    let dest = fs::canonicalize(dest)
-        .with_context(|| format!("canonicalizing workspace dest {}", dest.display()))?;
-    if dest == source {
+    if expected == source {
         bail!("refusing to cleanup: destination is the source checkout");
     }
-    let dest_str = dest.display().to_string();
-    let _ = git_run(&source, &["worktree", "remove", "--force", &dest_str]);
-    if dest.exists() {
-        if is_worktree_of(&source, &dest)? {
-            bail!("git worktree remove left {} in place", dest.display());
+    let dest_str = expected.display().to_string();
+    let remove = git_run(&source, &["worktree", "remove", "--force", &dest_str]);
+    if expected.exists() {
+        if is_worktree_of(&source, &expected)? {
+            return Err(remove.err().unwrap_or_else(|| {
+                anyhow!("git worktree remove left {} in place", expected.display())
+            }));
         }
-        fs::remove_dir_all(&dest)
-            .with_context(|| format!("removing leftover workspace {}", dest.display()))?;
+        // ProvisionFailed leftover at the exact host-chosen dest: not a worktree.
+        fs::remove_dir_all(&expected)
+            .with_context(|| format!("removing leftover workspace {}", expected.display()))?;
         let _ = git_run(&source, &["worktree", "prune"]);
     }
     Ok(())
 }
 
-fn git_apply(cwd: &Path, diff: &str, check: bool) -> Result<()> {
-    let args: &[&str] = if check {
-        &["apply", "--check", "--whitespace=nowarn", "-"]
-    } else {
-        &["apply", "--index", "--whitespace=nowarn", "-"]
-    };
-    let mut cmd = git_command(cwd, args);
+fn git_apply_cached(cwd: &Path, index: &Path, diff: &[u8]) -> Result<()> {
+    let mut cmd = git_command_with_index(
+        cwd,
+        index,
+        &["apply", "--cached", "--whitespace=nowarn", "-"],
+    );
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child = cmd
         .spawn()
-        .with_context(|| format!("spawning git apply in {}", cwd.display()))?;
+        .with_context(|| format!("spawning git apply --cached in {}", cwd.display()))?;
     {
         let mut stdin = child
             .stdin
             .take()
             .ok_or_else(|| anyhow!("git apply stdin closed"))?;
-        stdin.write_all(diff.as_bytes())?;
-        if !diff.ends_with('\n') {
+        stdin.write_all(diff)?;
+        if !diff.ends_with(b"\n") {
             stdin.write_all(b"\n")?;
         }
     }
@@ -335,33 +547,6 @@ fn git_apply(cwd: &Path, diff: &str, check: bool) -> Result<()> {
             "git apply failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ))
-    }
-}
-
-fn commit_integrator(trunk: &Path, seal_hash: &str) -> Result<()> {
-    if cached_diff_empty(trunk)? {
-        return Ok(());
-    }
-    let message = format!("gents: integrate workspace seal {seal_hash}");
-    let mut cmd = git_command(trunk, &["commit", "-m", &message]);
-    cmd.env("GIT_AUTHOR_NAME", "gents-integrator");
-    cmd.env("GIT_AUTHOR_EMAIL", "gents-integrator@local");
-    cmd.env("GIT_COMMITTER_NAME", "gents-integrator");
-    cmd.env("GIT_COMMITTER_EMAIL", "gents-integrator@local");
-    git_run_inner(cmd, trunk, &["commit", "-m", &message])
-}
-
-fn cached_diff_empty(trunk: &Path) -> Result<bool> {
-    let output = git_command(trunk, &["diff", "--cached", "--quiet"])
-        .output()
-        .with_context(|| format!("git diff --cached --quiet in {}", trunk.display()))?;
-    match output.status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        _ => Err(anyhow!(
-            "git diff --cached --quiet failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )),
     }
 }
 
@@ -442,7 +627,7 @@ fn identity_path(dest: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(git_dir).join(IDENTITY_FILE_NAME))
 }
 
-fn is_worktree_of(source: &Path, dest: &Path) -> Result<bool> {
+pub(crate) fn is_worktree_of(source: &Path, dest: &Path) -> Result<bool> {
     if !dest.exists() {
         return Ok(false);
     }
@@ -587,11 +772,27 @@ fn git_output(cwd: &Path, args: &[&str]) -> Result<String> {
     git_output_inner(git_command(cwd, args), cwd, args)
 }
 
+pub(crate) fn absolute_git_dir(repo: &Path) -> Result<PathBuf> {
+    Ok(PathBuf::from(git_output(
+        repo,
+        &["rev-parse", "--absolute-git-dir"],
+    )?))
+}
+
 fn git_output_with_index(cwd: &Path, index: &Path, args: &[&str]) -> Result<String> {
     git_output_inner(git_command_with_index(cwd, index, args), cwd, args)
 }
 
-fn git_output_inner(mut cmd: Command, cwd: &Path, args: &[&str]) -> Result<String> {
+fn git_output_bytes_with_index(cwd: &Path, index: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    git_output_bytes_inner(git_command_with_index(cwd, index, args), cwd, args)
+}
+
+fn git_output_inner(cmd: Command, cwd: &Path, args: &[&str]) -> Result<String> {
+    let bytes = git_output_bytes_inner(cmd, cwd, args)?;
+    Ok(String::from_utf8_lossy(&bytes).trim().to_string())
+}
+
+fn git_output_bytes_inner(mut cmd: Command, cwd: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let output = cmd
         .output()
         .with_context(|| format!("running git {} in {}", args.join(" "), cwd.display()))?;
@@ -602,7 +803,7 @@ fn git_output_inner(mut cmd: Command, cwd: &Path, args: &[&str]) -> Result<Strin
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(output.stdout)
 }
 
 fn git_command(cwd: &Path, args: &[&str]) -> Command {

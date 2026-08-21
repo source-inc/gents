@@ -519,15 +519,8 @@ impl<M: CompletionModel + 'static> BehaviorDaemon<M> {
                         error = %error,
                         "failed to integrate workspace after integrator success"
                     );
-                    if let Err(release_error) =
-                        crate::workspace::release_writer_binding(self.node.as_ref(), &request).await
-                    {
-                        tracing::warn!(
-                            request_id = %request.request_id,
-                            error = %release_error,
-                            "failed to release workspace binding after integrate failure"
-                        );
-                    }
+                    // Keep the Active Integrate binding so a retry can observe
+                    // a pending commit-tree and write the durable receipt.
                     finalize_request_failure(
                         &mut lifecycle,
                         &error.to_string(),

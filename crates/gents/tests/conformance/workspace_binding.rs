@@ -81,6 +81,19 @@ fn unique_active_read_write(case: &LeanWorkspaceBindingCase) -> bool {
         <= 1
 }
 
+fn unique_active_integrate(case: &LeanWorkspaceBindingCase) -> bool {
+    case.existing
+        .iter()
+        .chain(std::iter::once(&case.candidate))
+        .filter(|binding| {
+            binding.workspace_id == case.workspace_id
+                && binding.authority == "integrate"
+                && binding.state == "active"
+        })
+        .count()
+        <= 1
+}
+
 fn git_metadata_write_ok(policy: &str, authority: &str) -> bool {
     !(policy == "git_worktree_diff" && authority == "readWrite")
 }
@@ -122,6 +135,7 @@ fn authority_meet_ok(behavior: &str, authority: &str) -> bool {
 fn binding_case_legal(case: &LeanWorkspaceBindingCase) -> bool {
     candidate_binding_legal(case)
         && unique_active_read_write(case)
+        && unique_active_integrate(case)
         && (!case.git_metadata_write
             || git_metadata_write_ok(&case.creation_policy, &case.candidate.authority))
         && authority_meet_ok(&case.behavior_command_mode, &case.candidate.authority)
@@ -176,6 +190,7 @@ fn generated_workspace_binding_cases_match_lean_predicate() {
             "two_active_read_only_after_seal_legal",
             "integrate_before_seal_illegal",
             "integrate_mismatched_seal_hash_illegal",
+            "second_active_integrate_illegal",
             "non_owner_deployment_cannot_claim",
             "git_worktree_diff_read_write_git_metadata_write_illegal",
             "authority_meet_read_write_not_unrestricted",

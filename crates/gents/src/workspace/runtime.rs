@@ -13,18 +13,21 @@ use crate::toolset::WorkspaceAuthority;
 use crate::watcher::AgentRequest;
 
 use super::action_plan::{
-    emit_integrate_workspace_plan, emit_seal_workspace_plan, IntegrateWorkspaceAction,
-    SealWorkspaceAction, CAP_INTEGRATE_WORKSPACE, CAP_SEAL_WORKSPACE,
+    emit_cleanup_workspace_plan, emit_integrate_workspace_plan, emit_seal_workspace_plan,
+    CleanupWorkspaceAction, IntegrateWorkspaceAction, SealWorkspaceAction, CAP_CLEANUP_WORKSPACE,
+    CAP_INTEGRATE_WORKSPACE, CAP_SEAL_WORKSPACE,
 };
 use super::binding::{admit_workspace_binding, new_binding, release_binding, AdmitBinding};
 use super::documents::{
-    workspace_integrate_docs_mutation, workspace_seal_docs_mutation, IsolatedWorkspaceDoc,
-    MemoryWorkspaceDocuments, WorkspaceBindingDoc, WorkspaceDocuments, WorkspacePlacementDoc,
-    WorkspaceReceiptDoc, LIFECYCLE_SEALED, RECEIPT_KIND_WRITER,
+    workspace_cleanup_docs_mutation, workspace_integrate_docs_mutation,
+    workspace_seal_docs_mutation, IsolatedWorkspaceDoc, MemoryWorkspaceDocuments,
+    WorkspaceBindingDoc, WorkspaceDocuments, WorkspacePlacementDoc, WorkspaceReceiptDoc,
+    LIFECYCLE_SEALED, RECEIPT_KIND_WRITER,
 };
 use super::executor::{
-    execute_integrate_workspace_plan, execute_seal_workspace_plan, HostExecutorContext,
-    IntegrateWorkspaceOutcome, RepositoryPlacementRef, SealWorkspaceOutcome,
+    clear_integrate_journal, execute_cleanup_workspace_plan, execute_integrate_workspace_plan,
+    execute_seal_workspace_plan, finalize_integrate_trunk, CleanupWorkspaceOutcome,
+    HostExecutorContext, IntegrateWorkspaceOutcome, RepositoryPlacementRef, SealWorkspaceOutcome,
 };
 use super::overlay::{optional_id, IsolatedWorkspaceRecord};
 
@@ -242,6 +245,7 @@ pub async fn integrate_on_integrator_success(
     let mut journal = Vec::new();
     let mut capabilities = BTreeSet::new();
     capabilities.insert(CAP_INTEGRATE_WORKSPACE.to_string());
+    let trunk = PathBuf::from(&ctx_repository_path(&repository));
     let outcome = {
         let mut ctx = HostExecutorContext {
             deployment_id: workspace.owner_deployment_id.clone(),
@@ -257,7 +261,62 @@ pub async fn integrate_on_integrator_success(
         execute_integrate_workspace_plan(&plan, &mut journal, &mut ctx)
             .map_err(|err| anyhow::anyhow!("{err}"))?
     };
-    flush_integrate_outcome(node, &docs, &outcome).await
+    flush_integrate_outcome(node, &outcome).await?;
+    release_integrate_binding(node, &docs, &outcome).await?;
+    finalize_integrate_trunk(&trunk, outcome.pending_head_sha.as_deref())?;
+    clear_integrate_journal(&trunk, workspace_id);
+    Ok(())
+}
+
+fn ctx_repository_path(repository: &RepositoryPlacementRef) -> PathBuf {
+    repository.host_path.clone()
+}
+
+/// Explicit operator/ack cleanup. Never invoked from request terminal.
+pub async fn cleanup_workspace(
+    node: &EmbeddedNode,
+    workspace_id: &str,
+    operator_tool_root: Option<&Path>,
+) -> Result<()> {
+    let workspace_id = optional_id(Some(workspace_id))
+        .ok_or_else(|| anyhow::anyhow!("cleanup_workspace requires a workspace_id"))?;
+    let mut docs = load_docs(node, workspace_id).await?;
+    let workspace = docs
+        .load_isolated_workspace(workspace_id)?
+        .ok_or_else(|| anyhow::anyhow!("isolated workspace {workspace_id} not found"))?;
+    let placement = docs
+        .load_placement(workspace_id)?
+        .ok_or_else(|| anyhow::anyhow!("workspace placement {workspace_id} not found"))?;
+    let repository = load_repository(
+        node,
+        &workspace.repository_id,
+        &workspace.owner_deployment_id,
+        Path::new(&placement.host_path),
+    )
+    .await?;
+
+    let plan = emit_cleanup_workspace_plan(CleanupWorkspaceAction {
+        workspace_id: workspace_id.to_string(),
+    });
+    let mut journal = Vec::new();
+    let mut capabilities = BTreeSet::new();
+    capabilities.insert(CAP_CLEANUP_WORKSPACE.to_string());
+    let outcome = {
+        let mut ctx = HostExecutorContext {
+            deployment_id: workspace.owner_deployment_id.clone(),
+            repository,
+            ceiling: operator_tool_root,
+            capabilities,
+            writer_principal: workspace.writer_principal.clone(),
+            integrator_principal: workspace.integrator_principal.clone(),
+            caused_by_invocation_id: workspace.caused_by_invocation_id.clone(),
+            caused_by_correlation: workspace.caused_by_correlation.clone(),
+            documents: &mut docs,
+        };
+        execute_cleanup_workspace_plan(&plan, &mut journal, &mut ctx)
+            .map_err(|err| anyhow::anyhow!("{err}"))?
+    };
+    flush_cleanup_outcome(node, &docs, &outcome).await
 }
 
 /// Crash recovery: this writer already sealed (or left a Sealed workspace
@@ -340,9 +399,17 @@ pub async fn materialize_workspace_binding(
         optional_id(lineage.workspace_seal_hash.as_deref())
             .or(optional_id(workspace.seal_hash.as_deref())),
     );
-    let release_previous = matches!(authority, WorkspaceAuthority::ReadWrite)
-        && super::overlay::previous_read_write_is_stale(node, workspace_id, &existing, request_id)
-            .await?;
+    let release_previous = matches!(
+        authority,
+        WorkspaceAuthority::ReadWrite | WorkspaceAuthority::Integrate
+    ) && super::overlay::previous_exclusive_is_stale(
+        node,
+        workspace_id,
+        &existing,
+        request_id,
+        matches!(authority, WorkspaceAuthority::Integrate),
+    )
+    .await?;
     match admit_workspace_binding(
         workspace_id,
         &workspace.lifecycle_state,
@@ -534,8 +601,55 @@ async fn flush_seal_outcome(
 
 async fn flush_integrate_outcome(
     node: &EmbeddedNode,
+    outcome: &IntegrateWorkspaceOutcome,
+) -> Result<()> {
+    let mutation = workspace_integrate_docs_mutation(&[], &outcome.receipt);
+    graphql_mutation_with_transaction_retry(node, &mutation, "integrate workspace docs")
+        .await
+        .with_context(|| {
+            format!(
+                "persist integrator receipt {} for workspace {}",
+                outcome.receipt.receipt_id, outcome.workspace.workspace_id
+            )
+        })?;
+    Ok(())
+}
+
+async fn release_integrate_binding(
+    node: &EmbeddedNode,
     docs: &MemoryWorkspaceDocuments,
     outcome: &IntegrateWorkspaceOutcome,
+) -> Result<()> {
+    let released: Vec<WorkspaceBindingDoc> = docs
+        .bindings
+        .values()
+        .filter(|binding| {
+            binding.workspace_id == outcome.workspace.workspace_id
+                && binding.is_active_integrate()
+                && binding.request_id == outcome.receipt.produced_by_request_id
+        })
+        .cloned()
+        .map(release_binding)
+        .collect();
+    if released.is_empty() {
+        return Ok(());
+    }
+    let mutation = workspace_integrate_docs_mutation(&released, &outcome.receipt);
+    graphql_mutation_with_transaction_retry(node, &mutation, "release integrate binding")
+        .await
+        .with_context(|| {
+            format!(
+                "release Integrate binding for receipt {}",
+                outcome.receipt.receipt_id
+            )
+        })?;
+    Ok(())
+}
+
+async fn flush_cleanup_outcome(
+    node: &EmbeddedNode,
+    docs: &MemoryWorkspaceDocuments,
+    outcome: &CleanupWorkspaceOutcome,
 ) -> Result<()> {
     let bindings: Vec<WorkspaceBindingDoc> = docs
         .bindings
@@ -543,13 +657,13 @@ async fn flush_integrate_outcome(
         .filter(|binding| binding.workspace_id == outcome.workspace.workspace_id)
         .cloned()
         .collect();
-    let mutation = workspace_integrate_docs_mutation(&bindings, &outcome.receipt);
-    graphql_mutation_with_transaction_retry(node, &mutation, "integrate workspace docs")
+    let mutation = workspace_cleanup_docs_mutation(&outcome.workspace, &bindings);
+    graphql_mutation_with_transaction_retry(node, &mutation, "cleanup workspace docs")
         .await
         .with_context(|| {
             format!(
-                "persist integrator receipt {} for workspace {}",
-                outcome.receipt.receipt_id, outcome.workspace.workspace_id
+                "persist cleaned workspace {}",
+                outcome.workspace.workspace_id
             )
         })?;
     Ok(())

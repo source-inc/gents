@@ -649,8 +649,6 @@ pub fn workspace_integrate_docs_mutation(
 
 /// Explicit cleanup: IsolatedWorkspace lifecycle plus released bindings.
 /// Placement is left in place for audit; the host path is no longer a worktree.
-/// Compiled in tests until an operator/callback caller persists this mutation.
-#[cfg(test)]
 pub fn workspace_cleanup_docs_mutation(
     workspace: &IsolatedWorkspaceDoc,
     bindings: &[WorkspaceBindingDoc],

@@ -16,16 +16,17 @@ pub enum AdmitBinding {
 
 /// Admit an append-only workspace binding.
 ///
-/// ReadWrite is exclusive while Ready. `release_previous_read_write` is the
-/// retry path: the previous Active ReadWrite is Released first. After Sealed,
-/// ReadWrite is illegal; ReadOnly/Integrate copy and verify `seal_hash`.
+/// ReadWrite is exclusive while Ready; Integrate is exclusive while Sealed.
+/// `release_previous` is the retry path: the previous Active exclusive
+/// binding is Released first. After Sealed, ReadWrite is illegal;
+/// ReadOnly/Integrate copy and verify `seal_hash`.
 pub fn admit_workspace_binding(
     workspace_id: &str,
     workspace_state: &str,
     workspace_seal_hash: Option<&str>,
     existing: &[WorkspaceBindingDoc],
     candidate: WorkspaceBindingDoc,
-    release_previous_read_write: bool,
+    release_previous: bool,
 ) -> Result<AdmitBinding> {
     let authority = WorkspaceAuthority::parse(&candidate.authority)?;
     if !authority.bindable_lifecycle_state(workspace_state) {
@@ -63,14 +64,24 @@ pub fn admit_workspace_binding(
         }
     }
 
-    if matches!(authority, WorkspaceAuthority::ReadWrite) {
-        let active: Vec<_> = existing
-            .iter()
-            .filter(|binding| {
-                binding.workspace_id == workspace_id && binding.is_active_read_write()
-            })
-            .cloned()
-            .collect();
+    if matches!(
+        authority,
+        WorkspaceAuthority::ReadWrite | WorkspaceAuthority::Integrate
+    ) {
+        let exclusive = |binding: &WorkspaceBindingDoc| {
+            binding.workspace_id == workspace_id
+                && match authority {
+                    WorkspaceAuthority::ReadWrite => binding.is_active_read_write(),
+                    WorkspaceAuthority::Integrate => binding.is_active_integrate(),
+                    WorkspaceAuthority::ReadOnly => false,
+                }
+        };
+        let label = match authority {
+            WorkspaceAuthority::ReadWrite => "ReadWrite",
+            WorkspaceAuthority::Integrate => "Integrate",
+            WorkspaceAuthority::ReadOnly => "ReadOnly",
+        };
+        let active: Vec<_> = existing.iter().filter(|b| exclusive(b)).cloned().collect();
         let others: Vec<_> = active
             .iter()
             .filter(|binding| binding.request_id != candidate.request_id)
@@ -78,7 +89,7 @@ pub fn admit_workspace_binding(
             .collect();
         if others.len() > 1 {
             bail!(
-                "multiple Active ReadWrite bindings exist for workspace {workspace_id}; failing closed"
+                "multiple Active {label} bindings exist for workspace {workspace_id}; failing closed"
             );
         }
         if let Some(existing_active) = active
@@ -87,10 +98,10 @@ pub fn admit_workspace_binding(
         {
             return Ok(AdmitBinding::Reuse(existing_active.clone()));
         }
-        if !others.is_empty() && !release_previous_read_write {
-            bail!("unique Active ReadWrite binding already exists for workspace {workspace_id}");
+        if !others.is_empty() && !release_previous {
+            bail!("unique Active {label} binding already exists for workspace {workspace_id}");
         }
-        let release = if release_previous_read_write {
+        let release = if release_previous {
             others
                 .into_iter()
                 .map(|mut binding| {
@@ -378,6 +389,34 @@ mod tests {
     }
 
     #[test]
+    fn unique_active_integrate_while_sealed() {
+        let first = admit_workspace_binding(
+            "ws-1",
+            "sealed",
+            Some("hash-1"),
+            &[],
+            sealed_integrate("req-int-1", "hash-1"),
+            false,
+        )
+        .unwrap();
+        let AdmitBinding::Create { binding: a, .. } = first else {
+            panic!("expected create");
+        };
+        let err = admit_workspace_binding(
+            "ws-1",
+            "sealed",
+            Some("hash-1"),
+            std::slice::from_ref(&a),
+            sealed_integrate("req-int-2", "hash-1"),
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("unique Active Integrate"),
+            "{err:#}"
+        );
+    }
+
     fn integrate_seal_hash_mismatch_is_denied() {
         let err = admit_workspace_binding(
             "ws-1",

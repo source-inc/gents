@@ -33,21 +33,23 @@ pub use action_plan::{
 };
 pub use documents::{
     isolated_workspace_upsert_mutation, workspace_binding_upsert_mutation,
-    workspace_placement_upsert_mutation, workspace_receipt_create_mutation, IsolatedWorkspaceDoc,
-    MemoryWorkspaceDocuments, ProvisioningObservation, WorkspaceBindingDoc, WorkspaceDocuments,
-    WorkspacePlacementDoc, WorkspaceReceiptDoc,
+    workspace_cleanup_docs_mutation, workspace_placement_upsert_mutation,
+    workspace_receipt_create_mutation, IsolatedWorkspaceDoc, MemoryWorkspaceDocuments,
+    ProvisioningObservation, WorkspaceBindingDoc, WorkspaceDocuments, WorkspacePlacementDoc,
+    WorkspaceReceiptDoc,
 };
 pub use executor::{
     execute_cleanup_workspace_plan, execute_create_workspace_plan,
-    execute_integrate_workspace_plan, execute_seal_workspace_plan, workspace_host_path,
-    CleanupWorkspaceOutcome, CreateWorkspaceOutcome, HostExecuteError, HostExecutorContext,
-    IntegrateWorkspaceOutcome, LogicalWorkspaceIdentity, RepositoryPlacementRef,
-    SealWorkspaceOutcome,
+    execute_integrate_workspace_plan, execute_seal_workspace_plan, finalize_integrate_trunk,
+    workspace_host_path, CleanupWorkspaceOutcome, CreateWorkspaceOutcome, HostExecuteError,
+    HostExecutorContext, IntegrateWorkspaceOutcome, LogicalWorkspaceIdentity,
+    RepositoryPlacementRef, SealWorkspaceOutcome,
 };
 pub use instructions::{
     instruction_context_section, InstructionFile, InstructionManifest, DEFAULT_INSTRUCTION_PATHS,
 };
 pub use journal::{action_journal_prefix_legal, ActionJournalEntry, ActionJournalState};
+pub use runtime::cleanup_workspace;
 pub(crate) use runtime::{
     integrate_on_integrator_success, materialize_workspace_binding, release_writer_binding,
     seal_on_writer_success, stamp_workspace_lineage, writer_request_already_sealed,
