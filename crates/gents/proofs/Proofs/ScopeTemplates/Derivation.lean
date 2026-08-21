@@ -158,6 +158,9 @@ theorem machine_filter_eq (peerDid homeDid : Did) :
         [ { collection := "PersonaConfigRequest"
           , field := "requester_did"
           , value := peerDid }
+        , { collection := "SessionHydrationRequest"
+          , field := "requester_did"
+          , value := peerDid }
         , { collection := "AgentDirectoryEntry"
           , field := "source_did"
           , value := homeDid } ] := by
@@ -167,7 +170,8 @@ theorem machine_filters_transcript_persona_and_directory (peerDid homeDid : Did)
     ((scopeFilter machineTemplate.scope [] peerDid homeDid).map
         (fun k => k.collection)).toFinset
       = (conversationTranscriptCollections ++
-          ["PersonaConfigRequest", "AgentDirectoryEntry"]).toFinset := by
+          ["PersonaConfigRequest", "SessionHydrationRequest",
+           "AgentDirectoryEntry"]).toFinset := by
   simp [scopeFilter, machineTemplate, machineRules, machineCollections,
     conversationRules, conversationCollections, conversationTranscriptCollections]
 

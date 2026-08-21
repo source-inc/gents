@@ -96,6 +96,9 @@ pub const NETWORK_JOIN_REQUEST: &str =
 pub const PERSONA_CONFIG_REQUEST_NAME: &str = "PersonaConfigRequest";
 pub const PERSONA_CONFIG_REQUEST: &str =
     include_str!("../schemas/agent/persona_config_request.graphql");
+pub const SESSION_HYDRATION_REQUEST_NAME: &str = "SessionHydrationRequest";
+pub const SESSION_HYDRATION_REQUEST: &str =
+    include_str!("../schemas/agent/session_hydration_request.graphql");
 
 /// Every agent-domain schema in registration order.
 pub const ALL: &[&str] = &[
@@ -138,6 +141,7 @@ pub const ALL: &[&str] = &[
     PEER_ENDPOINT,
     NETWORK_JOIN_REQUEST,
     PERSONA_CONFIG_REQUEST,
+    SESSION_HYDRATION_REQUEST,
 ];
 
 /// Collection names matching [`ALL`] order.
@@ -181,6 +185,7 @@ pub const ALL_COLLECTION_NAMES: &[&str] = &[
     PEER_ENDPOINT_NAME,
     NETWORK_JOIN_REQUEST_NAME,
     PERSONA_CONFIG_REQUEST_NAME,
+    SESSION_HYDRATION_REQUEST_NAME,
 ];
 
 /// Agent-domain collections the desktop bulk-syncs after pairing.

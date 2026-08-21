@@ -75,6 +75,10 @@ fn model_homes() -> BTreeMap<&'static str, Home> {
         ("Scheduling", Module("conformance/scheduling.rs")),
         ("ScopeTemplates", Module("conformance/scope_templates.rs")),
         ("SelfConfig", Module("conformance/self_config.rs")),
+        (
+            "SessionHydration",
+            Module("conformance/session_hydration.rs"),
+        ),
         ("SessionRecovery", Module("conformance/session_recovery.rs")),
         (
             "Skills",

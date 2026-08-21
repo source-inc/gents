@@ -143,6 +143,8 @@ mod recovery_sweeps;
 mod replicated_request_convergence;
 #[path = "conformance/request_lifecycle.rs"]
 mod request_lifecycle;
+#[path = "conformance/session_hydration.rs"]
+mod session_hydration;
 #[path = "conformance/session_recovery.rs"]
 mod session_recovery;
 #[path = "conformance/startup_readiness.rs"]

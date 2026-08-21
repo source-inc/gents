@@ -154,6 +154,13 @@ pub fn registered_conformance_consumers() -> &'static [ConformanceConsumer] {
             function: "pairing_reconcile_state_machine_contract_is_complete",
         },
         ConformanceConsumer::RustTest {
+            id: "conformance::session_hydration::generated_session_hydration_cases_match_decision_core",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/session_hydration.rs",
+            module_path: "conformance::session_hydration",
+            function: "generated_session_hydration_cases_match_decision_core",
+        },
+        ConformanceConsumer::RustTest {
             id: "config_import::lean_apply_write_boundary_tests::generated_apply_reconcile_cases_fence_production_apply_write_boundary",
             package: "gents-cli",
             source_path:
