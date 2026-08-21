@@ -20,6 +20,7 @@ mod native_runner;
 pub use native_runner::enable_self_runner;
 mod session_history;
 mod shared;
+pub(crate) use shared::is_secret_env_name;
 mod subagent;
 #[cfg(test)]
 mod tests;

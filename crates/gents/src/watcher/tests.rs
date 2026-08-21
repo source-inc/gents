@@ -854,3 +854,53 @@ async fn try_fetch_request_terminalizes_incoherent_subagent_linkage() {
     assert!(terminal["terminalized_at"].is_string());
     assert_eq!(terminal["terminal_redrive_attempts"], 0);
 }
+
+#[tokio::test]
+async fn pending_requests_skip_workspace_bound_rows_owned_elsewhere() {
+    let node = test_node().await;
+    crate::ensure_runtime_schemas(node.as_ref()).await.unwrap();
+    let agent_did = "did:key:z-watcher-workspace-owner";
+    let now = "2026-08-21T00:00:00Z";
+    let mutation = format!(
+        r#"mutation {{
+            create_AgentRequest(input: {{
+                request_id: "req-owned",
+                agent_did: "{agent_did}",
+                session_id: "sess-owned",
+                retry_parent_request: "",
+                retry_root_request: "req-owned",
+                superseded_by_request: "",
+                content: "test",
+                status: "pending",
+                lifecycle_state: "pending",
+                backend_id: "",
+                created_at: "{now}",
+                retry_count: 0,
+                max_retries: 0,
+                workspace_id: "ws-1",
+                workspace_authority: "readWrite",
+                workspace_owner_deployment_id: "deploy-owner"
+            }}) {{ _docID }}
+        }}"#
+    );
+    let response = node.execute(&mutation).await;
+    assert!(!response.has_errors(), "{:?}", response.errors);
+
+    let replica =
+        DefraWatcher::new(node.clone(), agent_did).with_local_deployment_id("deploy-replica");
+    let pending = replica.pending_requests().await.unwrap();
+    assert!(
+        pending.is_empty(),
+        "non-owner watcher must not claim workspace-bound work: {pending:?}"
+    );
+
+    let owner = DefraWatcher::new(node, agent_did).with_local_deployment_id("deploy-owner");
+    let pending = owner.pending_requests().await.unwrap();
+    assert_eq!(
+        pending
+            .iter()
+            .map(|request| request.request_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["req-owned"]
+    );
+}

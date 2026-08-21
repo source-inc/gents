@@ -28,15 +28,17 @@ use tokio::sync::watch;
 use crate::graphql::escape_graphql_string;
 use crate::lifecycle::{
     active_runtime_lifecycle_state_graphql_list, task_run_conversation_title,
-    write_pending_agent_request_with_lineage_and_conversation_title, ExecutionOrigin,
-    TriggerLineage,
+    write_pending_agent_request_with_lineage_workspace_and_conversation_title, ExecutionOrigin,
+    TriggerLineage, WorkspaceLineage,
 };
 use crate::runtime_snapshot::{ActiveRuntimeSnapshot, ResolvedTask};
 use crate::trigger_engine::{MaterializerHandle, TriggerKind};
+use crate::watcher::workspace_bound_request_claimable;
 
 pub(crate) struct ProductionMaterializer {
     node: Arc<EmbeddedNode>,
     snapshot_rx: watch::Receiver<Arc<ActiveRuntimeSnapshot>>,
+    local_deployment_id: Option<String>,
 }
 
 impl ProductionMaterializer {
@@ -44,7 +46,19 @@ impl ProductionMaterializer {
         node: Arc<EmbeddedNode>,
         snapshot_rx: watch::Receiver<Arc<ActiveRuntimeSnapshot>>,
     ) -> Self {
-        Self { node, snapshot_rx }
+        Self {
+            node,
+            snapshot_rx,
+            local_deployment_id: None,
+        }
+    }
+
+    pub(crate) fn with_local_deployment_id(mut self, deployment_id: impl Into<String>) -> Self {
+        let deployment_id = deployment_id.into();
+        if !deployment_id.trim().is_empty() {
+            self.local_deployment_id = Some(deployment_id);
+        }
+        self
     }
 
     fn resolve_behavior(&self, task: &ResolvedTask) -> Result<(String, String, u64, String)> {
@@ -141,9 +155,22 @@ impl MaterializerHandle for ProductionMaterializer {
         let trigger_kind_str = trigger_kind.as_str().to_owned();
 
         let execution_origin = execution_origin_for_trigger_kind(trigger_kind);
+        let local_deployment_id = self.local_deployment_id.clone();
 
         Box::pin(async move {
             let (behavior_name, behavior_did, _deadline_secs, _backend_id) = resolved?;
+            let workspace = WorkspaceLineage::from_trigger_context(trigger_context.as_deref())?;
+            if workspace.is_bound()
+                && !workspace_bound_request_claimable(
+                    local_deployment_id.as_deref(),
+                    workspace.workspace_id.as_deref(),
+                    workspace.workspace_owner_deployment_id.as_deref(),
+                )
+            {
+                anyhow::bail!(
+                    "workspace-bound request is owned by another deployment; not claimable here"
+                );
+            }
             let lineage = TriggerLineage {
                 trigger_id: trigger_id.clone(),
                 trigger_kind: Some(trigger_kind_str),
@@ -152,16 +179,19 @@ impl MaterializerHandle for ProductionMaterializer {
                 trigger_context,
             };
             let conversation_title = task_run_conversation_title(&task_label);
-            let enqueued = write_pending_agent_request_with_lineage_and_conversation_title(
-                node.as_ref(),
-                &behavior_did,
-                &behavior_name,
-                &rendered_prompt,
-                execution_origin,
-                lineage,
-                Some(&conversation_title),
-            )
-            .await?;
+            let workspace_ref = workspace.is_bound().then_some(&workspace);
+            let enqueued =
+                write_pending_agent_request_with_lineage_workspace_and_conversation_title(
+                    node.as_ref(),
+                    &behavior_did,
+                    &behavior_name,
+                    &rendered_prompt,
+                    execution_origin,
+                    lineage,
+                    Some(&conversation_title),
+                    workspace_ref,
+                )
+                .await?;
             tracing::info!(
                 task_id = %task_id,
                 trigger_id = ?trigger_id,

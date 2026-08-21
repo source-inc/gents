@@ -4,6 +4,7 @@ mod filesystem;
 
 #[cfg(test)]
 pub(crate) use command::apply_workspace_authority;
+pub(crate) use command::is_secret_env_name;
 pub(crate) use command::parse_argv_prefixes;
 pub(super) use command::run_command;
 pub(crate) use command::validate_command_policy;

@@ -15,11 +15,13 @@ use super::context::BehaviorResolution;
 pub(super) async fn run_router(
     node: Arc<defra_node::EmbeddedNode>,
     agent_did: String,
+    local_deployment_id: String,
     active_snapshot_rx: watch::Receiver<Arc<ActiveRuntimeSnapshot>>,
     shutdown: watch::Receiver<bool>,
     startup_demotions: Arc<crate::startup_readiness::StartupDemotions>,
 ) -> Result<()> {
-    let watcher = DefraWatcher::new(node.clone(), &agent_did);
+    let watcher =
+        DefraWatcher::new(node.clone(), &agent_did).with_local_deployment_id(local_deployment_id);
     run_router_with_watcher(
         node,
         agent_did,

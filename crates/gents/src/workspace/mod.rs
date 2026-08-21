@@ -9,7 +9,7 @@ mod action_plan;
 pub(crate) mod adapter;
 mod documents;
 mod executor;
-mod journal;
+pub(crate) mod journal;
 pub(crate) mod overlay;
 
 pub use action_plan::{

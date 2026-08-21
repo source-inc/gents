@@ -89,6 +89,46 @@ fn trigger_lineage_graphql_fields(trigger_lineage: &TriggerLineage) -> Result<St
     ))
 }
 
+fn workspace_lineage_graphql_fields(workspace: Option<&WorkspaceLineage>) -> String {
+    let Some(workspace) = workspace else {
+        return String::new();
+    };
+    let mut fields = String::new();
+    let mut push = |name: &str, value: Option<&str>| {
+        if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+            fields.push_str(&format!(
+                r#"
+                    {name}: "{}","#,
+                escape_graphql_string(value)
+            ));
+        }
+    };
+    push("workspace_id", workspace.workspace_id.as_deref());
+    let authority = workspace
+        .workspace_authority
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            workspace
+                .workspace_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|_| "readWrite")
+        });
+    push("workspace_authority", authority);
+    push(
+        "workspace_owner_deployment_id",
+        workspace.workspace_owner_deployment_id.as_deref(),
+    );
+    push(
+        "workspace_seal_hash",
+        workspace.workspace_seal_hash.as_deref(),
+    );
+    fields
+}
+
 async fn resolve_created_agent_request_doc_id(
     node: &EmbeddedNode,
     mutation_response: &defra_node::QueryResponse,
@@ -138,6 +178,29 @@ pub(crate) async fn write_pending_agent_request_with_lineage_and_conversation_ti
     trigger_lineage: TriggerLineage,
     conversation_title: Option<&str>,
 ) -> Result<EnqueuedAgentRequest> {
+    write_pending_agent_request_with_lineage_workspace_and_conversation_title(
+        node,
+        agent_did,
+        behavior_id,
+        content,
+        execution_origin,
+        trigger_lineage,
+        conversation_title,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn write_pending_agent_request_with_lineage_workspace_and_conversation_title(
+    node: &EmbeddedNode,
+    agent_did: &str,
+    behavior_id: &str,
+    content: &str,
+    execution_origin: ExecutionOrigin,
+    trigger_lineage: TriggerLineage,
+    conversation_title: Option<&str>,
+    workspace_lineage: Option<&WorkspaceLineage>,
+) -> Result<EnqueuedAgentRequest> {
     if trigger_lineage.trigger_kind.as_deref() == Some("manual")
         && trigger_lineage.trigger_id.is_some()
     {
@@ -158,6 +221,7 @@ pub(crate) async fn write_pending_agent_request_with_lineage_and_conversation_ti
     let escaped_created_at = escape_graphql_string(&now);
     let execution_origin = execution_origin.as_str();
     let lineage_fields = trigger_lineage_graphql_fields(&trigger_lineage)?;
+    let workspace_fields = workspace_lineage_graphql_fields(workspace_lineage);
     let metadata_field = if prompt_selection.selected_skill_ids.is_empty() {
         String::new()
     } else {
@@ -190,7 +254,7 @@ pub(crate) async fn write_pending_agent_request_with_lineage_and_conversation_ti
                 status: "pending",
                 lifecycle_state: "pending",
                 backend_id: "",
-                execution_origin: "{execution_origin}",{lineage_fields}
+                execution_origin: "{execution_origin}",{lineage_fields}{workspace_fields}
                 failure_reason: "",
                 created_at: "{escaped_created_at}",
                 retry_count: 0,

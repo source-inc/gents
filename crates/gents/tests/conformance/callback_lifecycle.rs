@@ -1,3 +1,6 @@
+use gents::watcher::workspace_bound_request_claimable;
+use gents::workspace::{action_journal_prefix_legal, ActionJournalEntry, ActionJournalState};
+
 use crate::lean_vocab_test::lean_callback_cases;
 
 fn later_than_validated(state: &str) -> bool {
@@ -54,4 +57,32 @@ fn generated_callback_cases_match_lean_predicate() {
             case.name
         );
     }
+}
+
+#[test]
+fn runtime_journal_prefix_matches_lean_witnesses() {
+    let illegal = vec![
+        ActionJournalEntry::new(0, ActionJournalState::Validated),
+        ActionJournalEntry::new(1, ActionJournalState::Executing),
+    ];
+    assert!(!action_journal_prefix_legal(&illegal));
+    let legal = vec![
+        ActionJournalEntry::new(0, ActionJournalState::ResultDocsWritten),
+        ActionJournalEntry::new(1, ActionJournalState::Executing),
+    ];
+    assert!(action_journal_prefix_legal(&legal));
+}
+
+#[test]
+fn runtime_owner_routing_does_not_claim_on_replica() {
+    assert!(workspace_bound_request_claimable(
+        Some("deploy-owner"),
+        Some("ws-1"),
+        Some("deploy-owner")
+    ));
+    assert!(!workspace_bound_request_claimable(
+        Some("deploy-replica"),
+        Some("ws-1"),
+        Some("deploy-owner")
+    ));
 }

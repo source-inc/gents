@@ -139,8 +139,36 @@ pub trait Watcher: Send + Sync {
 pub struct DefraWatcher {
     node: Arc<EmbeddedNode>,
     agent_did: String,
+    local_deployment_id: Option<String>,
     subscription: events::Subscription,
     processed_request_ids: HashMap<String, Instant>,
+}
+
+/// Workspace-bound requests are claimable only on the owning HostDeployment.
+/// Unbound requests (no workspace_id / owner) keep today's behavior.
+pub fn workspace_bound_request_claimable(
+    local_deployment_id: Option<&str>,
+    workspace_id: Option<&str>,
+    workspace_owner_deployment_id: Option<&str>,
+) -> bool {
+    let workspace_id = workspace_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let owner = workspace_owner_deployment_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if workspace_id.is_none() && owner.is_none() {
+        return true;
+    }
+    match (
+        owner,
+        local_deployment_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+    ) {
+        (Some(owner), Some(local)) => owner == local,
+        _ => false,
+    }
 }
 
 impl DefraWatcher {
@@ -157,9 +185,26 @@ impl DefraWatcher {
         Self {
             node,
             agent_did: agent_did.to_string(),
+            local_deployment_id: None,
             subscription,
             processed_request_ids: HashMap::new(),
         }
+    }
+
+    pub fn with_local_deployment_id(mut self, deployment_id: impl Into<String>) -> Self {
+        let deployment_id = deployment_id.into();
+        if !deployment_id.trim().is_empty() {
+            self.local_deployment_id = Some(deployment_id);
+        }
+        self
+    }
+
+    fn request_is_locally_claimable(&self, request: &AgentRequest) -> bool {
+        workspace_bound_request_claimable(
+            self.local_deployment_id.as_deref(),
+            request.workspace_id.as_deref(),
+            request.workspace_owner_deployment_id.as_deref(),
+        )
     }
 }
 

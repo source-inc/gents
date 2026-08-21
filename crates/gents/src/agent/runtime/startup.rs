@@ -146,6 +146,9 @@ pub(in crate::agent) async fn run_agent(
         agent.default_behavior_id(),
     )
     .await;
+    let local_deployment_id = crate::callback::ensure_local_host_deployment(agent.node.as_ref())
+        .await
+        .context("ensure local HostDeployment")?;
     for (behavior_id, reason) in &agent.unavailable_behaviors {
         tracing::warn!(behavior_id = %behavior_id, reason = %reason, "behavior unavailable at startup");
     }
@@ -246,6 +249,7 @@ pub(in crate::agent) async fn run_agent(
     let (manual_source, manual_trigger_handle) =
         crate::trigger_engine::manual_source::ManualSource::new(trigger_engine_cancel.clone());
     let _ = agent.manual_trigger_handle.set(manual_trigger_handle);
+    let trigger_engine_deployment_id = local_deployment_id.clone();
     let trigger_engine_handle = tokio::spawn(async move {
         tokio::select! {
             _ = trigger_engine_cancel.cancelled() => return,
@@ -255,7 +259,8 @@ pub(in crate::agent) async fn run_agent(
             crate::trigger_engine::production_materializer::ProductionMaterializer::new(
                 trigger_engine_node.clone(),
                 trigger_engine_materializer_snapshot_rx,
-            ),
+            )
+            .with_local_deployment_id(trigger_engine_deployment_id),
         );
         let schedule_source: Box<dyn crate::trigger_engine::TriggerSource> =
             Box::new(crate::trigger_engine::schedule_source::ScheduleSource::new(
@@ -295,6 +300,31 @@ pub(in crate::agent) async fn run_agent(
             materializer,
         );
         engine.run(sources, trigger_engine_cancel).await;
+    });
+
+    let callback_node = agent.node.clone();
+    let callback_deployment_id = local_deployment_id.clone();
+    let callback_ceiling = agent
+        .document_runtime_context()
+        .and_then(|context| context.tool_ceiling.root())
+        .map(std::path::Path::to_path_buf);
+    let callback_cancel = cancel.child_token();
+    let callback_startup_barrier = startup_barrier.clone();
+    let callback_engine_handle = tokio::spawn(async move {
+        tokio::select! {
+            _ = callback_cancel.cancelled() => return,
+            _ = callback_startup_barrier.wait_ready() => {}
+        }
+        if let Err(error) = crate::callback::run_callback_engine(
+            callback_node,
+            callback_deployment_id,
+            callback_ceiling,
+            callback_cancel,
+        )
+        .await
+        {
+            tracing::error!(%error, "callback engine exited");
+        }
     });
 
     // DefraDB's event bus is live-only: updates published before a subscriber
@@ -519,6 +549,7 @@ pub(in crate::agent) async fn run_agent(
 
     let router_node = agent.node.clone();
     let router_agent_did = agent.agent_did().to_string();
+    let router_deployment_id = local_deployment_id.clone();
     let router_active_snapshot_rx = active_snapshot_rx.clone();
     let router_shutdown = shutdown.clone();
     let router_startup_demotions = startup_demotions.clone();
@@ -527,6 +558,7 @@ pub(in crate::agent) async fn run_agent(
             super::router::run_router(
                 router_node,
                 router_agent_did,
+                router_deployment_id,
                 router_active_snapshot_rx,
                 router_shutdown,
                 router_startup_demotions,
@@ -651,6 +683,7 @@ pub(in crate::agent) async fn run_agent(
 
     let _ = readiness_handle.await;
     let _ = trigger_engine_handle.await;
+    let _ = callback_engine_handle.await;
     lsp_pool.shutdown().await;
 
     if let Some(observer) = &agent.process_state_observer {
