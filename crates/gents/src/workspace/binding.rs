@@ -307,4 +307,91 @@ mod tests {
             "{err:#}"
         );
     }
+
+    fn sealed_integrate(request_id: &str, hash: &str) -> WorkspaceBindingDoc {
+        new_binding(
+            "ws-1",
+            request_id,
+            "doc-1",
+            WorkspaceAuthority::Integrate,
+            "dep-1",
+            Some(hash),
+        )
+    }
+
+    #[test]
+    fn integrate_denied_before_sealed() {
+        let err = admit_workspace_binding(
+            "ws-1",
+            "ready",
+            None,
+            &[],
+            sealed_integrate("req-int", ""),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not bindable"), "{err:#}");
+    }
+
+    #[test]
+    fn integrate_and_concurrent_read_only_after_seal() {
+        let first = admit_workspace_binding(
+            "ws-1",
+            "sealed",
+            Some("hash-1"),
+            &[],
+            sealed_ro("req-a", "hash-1"),
+            false,
+        )
+        .unwrap();
+        let AdmitBinding::Create { binding: a, .. } = first else {
+            panic!("expected create");
+        };
+        let second = admit_workspace_binding(
+            "ws-1",
+            "sealed",
+            Some("hash-1"),
+            std::slice::from_ref(&a),
+            sealed_ro("req-b", "hash-1"),
+            false,
+        )
+        .unwrap();
+        let AdmitBinding::Create { binding: b, .. } = second else {
+            panic!("expected concurrent create");
+        };
+        let integrate = admit_workspace_binding(
+            "ws-1",
+            "sealed",
+            Some("hash-1"),
+            &[a.clone(), b.clone()],
+            sealed_integrate("req-int", "hash-1"),
+            false,
+        )
+        .unwrap();
+        let AdmitBinding::Create { binding: i, .. } = integrate else {
+            panic!("expected integrate create");
+        };
+        assert!(a.is_active());
+        assert!(b.is_active());
+        assert!(i.is_active_integrate());
+        assert_eq!(i.seal_hash.as_deref(), Some("hash-1"));
+    }
+
+    #[test]
+    fn integrate_seal_hash_mismatch_is_denied() {
+        let err = admit_workspace_binding(
+            "ws-1",
+            "sealed",
+            Some("hash-1"),
+            &[],
+            sealed_integrate("req-int", "hash-other"),
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("does not match workspace seal_hash"),
+            "{err:#}"
+        );
+    }
 }

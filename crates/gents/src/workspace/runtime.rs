@@ -12,15 +12,19 @@ use crate::lifecycle::WorkspaceLineage;
 use crate::toolset::WorkspaceAuthority;
 use crate::watcher::AgentRequest;
 
-use super::action_plan::{emit_seal_workspace_plan, SealWorkspaceAction, CAP_SEAL_WORKSPACE};
+use super::action_plan::{
+    emit_integrate_workspace_plan, emit_seal_workspace_plan, IntegrateWorkspaceAction,
+    SealWorkspaceAction, CAP_INTEGRATE_WORKSPACE, CAP_SEAL_WORKSPACE,
+};
 use super::binding::{admit_workspace_binding, new_binding, release_binding, AdmitBinding};
 use super::documents::{
-    workspace_seal_docs_mutation, IsolatedWorkspaceDoc, MemoryWorkspaceDocuments,
-    WorkspaceBindingDoc, WorkspaceDocuments, WorkspacePlacementDoc, WorkspaceReceiptDoc,
-    LIFECYCLE_SEALED, RECEIPT_KIND_WRITER,
+    workspace_integrate_docs_mutation, workspace_seal_docs_mutation, IsolatedWorkspaceDoc,
+    MemoryWorkspaceDocuments, WorkspaceBindingDoc, WorkspaceDocuments, WorkspacePlacementDoc,
+    WorkspaceReceiptDoc, LIFECYCLE_SEALED, RECEIPT_KIND_WRITER,
 };
 use super::executor::{
-    execute_seal_workspace_plan, HostExecutorContext, RepositoryPlacementRef, SealWorkspaceOutcome,
+    execute_integrate_workspace_plan, execute_seal_workspace_plan, HostExecutorContext,
+    IntegrateWorkspaceOutcome, RepositoryPlacementRef, SealWorkspaceOutcome,
 };
 use super::overlay::{optional_id, IsolatedWorkspaceRecord};
 
@@ -195,6 +199,67 @@ pub async fn seal_on_writer_success(
     flush_seal_outcome(node, &docs, &outcome).await
 }
 
+/// Integrator request success: typed `integrate_workspace` (apply sealed diff
+/// to trunk). Never worker bash against the source checkout. No-op unless the
+/// request is Integrate-bound.
+pub async fn integrate_on_integrator_success(
+    node: &EmbeddedNode,
+    request: &AgentRequest,
+    operator_tool_root: Option<&Path>,
+) -> Result<()> {
+    let Some(workspace_id) = optional_id(request.workspace_id.as_deref()) else {
+        return Ok(());
+    };
+    let authority = match request.workspace_authority.as_deref().map(str::trim) {
+        Some(value) if !value.is_empty() => WorkspaceAuthority::parse(value)?,
+        _ => return Ok(()),
+    };
+    if !matches!(authority, WorkspaceAuthority::Integrate) {
+        return Ok(());
+    }
+
+    let mut docs = load_docs(node, workspace_id).await?;
+    let workspace = docs
+        .load_isolated_workspace(workspace_id)?
+        .ok_or_else(|| anyhow::anyhow!("isolated workspace {workspace_id} not found"))?;
+    let placement = docs
+        .load_placement(workspace_id)?
+        .ok_or_else(|| anyhow::anyhow!("workspace placement {workspace_id} not found"))?;
+    let repository = load_repository(
+        node,
+        &workspace.repository_id,
+        &workspace.owner_deployment_id,
+        Path::new(&placement.host_path),
+    )
+    .await?;
+
+    let plan = emit_integrate_workspace_plan(IntegrateWorkspaceAction {
+        workspace_id: workspace_id.to_string(),
+        produced_by_request_id: request.request_id.clone(),
+        produced_by_request_doc_id: request.doc_id.clone(),
+        mode: super::IntegrateMode::ApplyDiff,
+    });
+    let mut journal = Vec::new();
+    let mut capabilities = BTreeSet::new();
+    capabilities.insert(CAP_INTEGRATE_WORKSPACE.to_string());
+    let outcome = {
+        let mut ctx = HostExecutorContext {
+            deployment_id: workspace.owner_deployment_id.clone(),
+            repository,
+            ceiling: operator_tool_root,
+            capabilities,
+            writer_principal: workspace.writer_principal.clone(),
+            integrator_principal: workspace.integrator_principal.clone(),
+            caused_by_invocation_id: workspace.caused_by_invocation_id.clone(),
+            caused_by_correlation: workspace.caused_by_correlation.clone(),
+            documents: &mut docs,
+        };
+        execute_integrate_workspace_plan(&plan, &mut journal, &mut ctx)
+            .map_err(|err| anyhow::anyhow!("{err}"))?
+    };
+    flush_integrate_outcome(node, &docs, &outcome).await
+}
+
 /// Crash recovery: this writer already sealed (or left a Sealed workspace
 /// after a partial flush). Skip ReadWrite overlay/inference and only complete.
 pub async fn writer_request_already_sealed(
@@ -299,16 +364,9 @@ pub async fn release_writer_binding(node: &EmbeddedNode, request: &AgentRequest)
     let Some(workspace_id) = optional_id(request.workspace_id.as_deref()) else {
         return Ok(());
     };
-    let authority = match request.workspace_authority.as_deref().map(str::trim) {
-        Some(value) if !value.is_empty() => WorkspaceAuthority::parse(value)?,
-        _ => return Ok(()),
-    };
-    if !matches!(authority, WorkspaceAuthority::ReadWrite) {
-        return Ok(());
-    }
     let bindings = super::overlay::load_workspace_bindings_for(node, workspace_id).await?;
     for binding in bindings {
-        if binding.is_active_read_write() && binding.request_id == request.request_id {
+        if binding.is_active() && binding.request_id == request.request_id {
             super::overlay::persist_workspace_binding_doc(node, &release_binding(binding)).await?;
         }
     }
@@ -469,6 +527,29 @@ async fn flush_seal_outcome(
             format!(
                 "persist sealed workspace {} receipt {}",
                 outcome.workspace.workspace_id, outcome.receipt.receipt_id
+            )
+        })?;
+    Ok(())
+}
+
+async fn flush_integrate_outcome(
+    node: &EmbeddedNode,
+    docs: &MemoryWorkspaceDocuments,
+    outcome: &IntegrateWorkspaceOutcome,
+) -> Result<()> {
+    let bindings: Vec<WorkspaceBindingDoc> = docs
+        .bindings
+        .values()
+        .filter(|binding| binding.workspace_id == outcome.workspace.workspace_id)
+        .cloned()
+        .collect();
+    let mutation = workspace_integrate_docs_mutation(&bindings, &outcome.receipt);
+    graphql_mutation_with_transaction_retry(node, &mutation, "integrate workspace docs")
+        .await
+        .with_context(|| {
+            format!(
+                "persist integrator receipt {} for workspace {}",
+                outcome.receipt.receipt_id, outcome.workspace.workspace_id
             )
         })?;
     Ok(())

@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -220,6 +221,148 @@ const SEAL_FILE_NAME: &str = "gents-workspace-seal.json";
 struct RecordedSeal {
     seal_hash: String,
     base_sha: String,
+}
+
+pub(crate) struct IntegrateEffect {
+    pub head_sha: String,
+    pub changed_files: Vec<String>,
+    pub diff: String,
+}
+
+/// Apply the sealed worktree diff onto the source checkout. Never runs in the
+/// worker tree; never `git merge`/`cherry-pick` (those need a worker commit).
+pub(crate) fn apply_sealed_diff_to_trunk(
+    trunk: &Path,
+    worktree: &Path,
+    seal_hash: &str,
+) -> Result<IntegrateEffect> {
+    let trunk = fs::canonicalize(trunk)
+        .with_context(|| format!("canonicalizing trunk {}", trunk.display()))?;
+    let worktree = fs::canonicalize(worktree)
+        .with_context(|| format!("canonicalizing worktree {}", worktree.display()))?;
+    if trunk == worktree {
+        bail!("refusing to integrate: trunk/source checkout is the worker workspace");
+    }
+    let snapshot = capture_seal_snapshot(&worktree)?;
+    if snapshot.tree_hash != seal_hash {
+        bail!(
+            "live tree hash {} does not match workspace seal_hash {seal_hash}",
+            snapshot.tree_hash
+        );
+    }
+    if snapshot.diff.trim().is_empty() {
+        let head_sha = git_output(&trunk, &["rev-parse", "HEAD"])?;
+        return Ok(IntegrateEffect {
+            head_sha,
+            changed_files: snapshot.changed_files,
+            diff: snapshot.diff,
+        });
+    }
+    git_apply(&trunk, &snapshot.diff, true)
+        .with_context(|| format!("git apply --check on trunk {}", trunk.display()))?;
+    git_apply(&trunk, &snapshot.diff, false)
+        .with_context(|| format!("git apply on trunk {}", trunk.display()))?;
+    commit_integrator(&trunk, seal_hash)?;
+    let head_sha = git_output(&trunk, &["rev-parse", "HEAD"])?;
+    Ok(IntegrateEffect {
+        head_sha,
+        changed_files: snapshot.changed_files,
+        diff: snapshot.diff,
+    })
+}
+
+/// Remove the worker tree. Never deletes the source checkout. Idempotent when
+/// `dest` is already gone. Not called implicitly on request terminal.
+pub(crate) fn cleanup_workspace_tree(source: &Path, dest: &Path) -> Result<()> {
+    let source = if source.exists() {
+        fs::canonicalize(source)
+            .with_context(|| format!("canonicalizing source {}", source.display()))?
+    } else {
+        source.to_path_buf()
+    };
+    if !dest.exists() {
+        let _ = git_run(&source, &["worktree", "prune"]);
+        return Ok(());
+    }
+    let dest = fs::canonicalize(dest)
+        .with_context(|| format!("canonicalizing workspace dest {}", dest.display()))?;
+    if dest == source {
+        bail!("refusing to cleanup: destination is the source checkout");
+    }
+    let dest_str = dest.display().to_string();
+    let _ = git_run(&source, &["worktree", "remove", "--force", &dest_str]);
+    if dest.exists() {
+        if is_worktree_of(&source, &dest)? {
+            bail!("git worktree remove left {} in place", dest.display());
+        }
+        fs::remove_dir_all(&dest)
+            .with_context(|| format!("removing leftover workspace {}", dest.display()))?;
+        let _ = git_run(&source, &["worktree", "prune"]);
+    }
+    Ok(())
+}
+
+fn git_apply(cwd: &Path, diff: &str, check: bool) -> Result<()> {
+    let args: &[&str] = if check {
+        &["apply", "--check", "--whitespace=nowarn", "-"]
+    } else {
+        &["apply", "--index", "--whitespace=nowarn", "-"]
+    };
+    let mut cmd = git_command(cwd, args);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("spawning git apply in {}", cwd.display()))?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("git apply stdin closed"))?;
+        stdin.write_all(diff.as_bytes())?;
+        if !diff.ends_with('\n') {
+            stdin.write_all(b"\n")?;
+        }
+    }
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("waiting for git apply in {}", cwd.display()))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "git apply failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+fn commit_integrator(trunk: &Path, seal_hash: &str) -> Result<()> {
+    if cached_diff_empty(trunk)? {
+        return Ok(());
+    }
+    let message = format!("gents: integrate workspace seal {seal_hash}");
+    let mut cmd = git_command(trunk, &["commit", "-m", &message]);
+    cmd.env("GIT_AUTHOR_NAME", "gents-integrator");
+    cmd.env("GIT_AUTHOR_EMAIL", "gents-integrator@local");
+    cmd.env("GIT_COMMITTER_NAME", "gents-integrator");
+    cmd.env("GIT_COMMITTER_EMAIL", "gents-integrator@local");
+    git_run_inner(cmd, trunk, &["commit", "-m", &message])
+}
+
+fn cached_diff_empty(trunk: &Path) -> Result<bool> {
+    let output = git_command(trunk, &["diff", "--cached", "--quiet"])
+        .output()
+        .with_context(|| format!("git diff --cached --quiet in {}", trunk.display()))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(anyhow!(
+            "git diff --cached --quiet failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
 }
 
 pub(crate) fn write_seal_marker(dest: &Path, seal_hash: &str, base_sha: &str) -> Result<()> {

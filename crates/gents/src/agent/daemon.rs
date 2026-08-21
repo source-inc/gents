@@ -506,6 +506,36 @@ impl<M: CompletionModel + 'static> BehaviorDaemon<M> {
                     .await;
                     return;
                 }
+                if let Err(error) = crate::workspace::integrate_on_integrator_success(
+                    self.node.as_ref(),
+                    &request,
+                    self.operator_tool_root.as_deref(),
+                )
+                .await
+                {
+                    record_current_failure_class(&error);
+                    tracing::error!(
+                        request_id = %request.request_id,
+                        error = %error,
+                        "failed to integrate workspace after integrator success"
+                    );
+                    if let Err(release_error) =
+                        crate::workspace::release_writer_binding(self.node.as_ref(), &request).await
+                    {
+                        tracing::warn!(
+                            request_id = %request.request_id,
+                            error = %release_error,
+                            "failed to release workspace binding after integrate failure"
+                        );
+                    }
+                    finalize_request_failure(
+                        &mut lifecycle,
+                        &error.to_string(),
+                        &request.request_id,
+                    )
+                    .await;
+                    return;
+                }
                 if let Err(error) = lifecycle.complete().await {
                     record_current_failure_class(&error);
                     tracing::error!(

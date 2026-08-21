@@ -38,6 +38,20 @@ fn seal_caps() -> BTreeSet<String> {
         .collect()
 }
 
+fn integrate_caps() -> BTreeSet<String> {
+    [CAP_INTEGRATE_WORKSPACE]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn cleanup_caps() -> BTreeSet<String> {
+    [CAP_CLEANUP_WORKSPACE]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
 fn git(cwd: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
@@ -1003,6 +1017,343 @@ fn seal_workspace_plan_omits_host_path() {
         "workspace_id": "ws-1",
         "produced_by_request_id": "req-1",
         "produced_by_request_doc_id": "doc-1",
+        "host_path": "/tmp/evil"
+    }))
+    .is_err());
+}
+
+fn bind_integrate(
+    docs: &mut MemoryWorkspaceDocuments,
+    workspace_id: &str,
+    request_id: &str,
+    seal_hash: &str,
+) {
+    docs.write_binding(super::binding::new_binding(
+        workspace_id,
+        request_id,
+        &format!("{request_id}-doc"),
+        crate::toolset::WorkspaceAuthority::Integrate,
+        "deploy-1",
+        Some(seal_hash),
+    ))
+    .unwrap();
+}
+
+fn integrate_writer(
+    fx: &Fixture,
+    docs: &mut MemoryWorkspaceDocuments,
+    workspace_id: &str,
+    request_id: &str,
+) -> IntegrateWorkspaceOutcome {
+    let plan = emit_integrate_workspace_plan(IntegrateWorkspaceAction {
+        workspace_id: workspace_id.to_string(),
+        produced_by_request_id: request_id.to_string(),
+        produced_by_request_doc_id: format!("{request_id}-doc"),
+        mode: IntegrateMode::ApplyDiff,
+    });
+    let mut journal = Vec::new();
+    execute_integrate_workspace_plan(&plan, &mut journal, &mut fx.ctx(docs, integrate_caps()))
+        .expect("integrate")
+}
+
+fn cleanup_ws(
+    fx: &Fixture,
+    docs: &mut MemoryWorkspaceDocuments,
+    workspace_id: &str,
+) -> CleanupWorkspaceOutcome {
+    let plan = emit_cleanup_workspace_plan(CleanupWorkspaceAction {
+        workspace_id: workspace_id.to_string(),
+    });
+    let mut journal = Vec::new();
+    execute_cleanup_workspace_plan(&plan, &mut journal, &mut fx.ctx(docs, cleanup_caps()))
+        .expect("cleanup")
+}
+
+#[test]
+fn integrate_denied_before_sealed() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-ready", "unit-1", "topic-ready");
+    let plan = emit_create_workspace_plan(action);
+    let mut journal = Vec::new();
+    execute_create_workspace_plan(
+        &plan,
+        &mut journal,
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    bind_integrate(&mut docs, "ws-ready", "req-int", "not-sealed");
+    let err = execute_integrate_workspace_plan(
+        &emit_integrate_workspace_plan(IntegrateWorkspaceAction {
+            workspace_id: "ws-ready".into(),
+            produced_by_request_id: "req-int".into(),
+            produced_by_request_doc_id: "req-int-doc".into(),
+            mode: IntegrateMode::ApplyDiff,
+        }),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, integrate_caps()),
+    )
+    .expect_err("Ready workspace cannot integrate");
+    assert!(
+        err.to_string().contains("cannot be integrated")
+            || err.to_string().contains("require Sealed"),
+        "{err}"
+    );
+    assert!(
+        docs.load_receipts("ws-ready")
+            .unwrap()
+            .iter()
+            .all(|receipt| receipt.kind != "integrator"),
+        "no integrator receipt before Sealed"
+    );
+}
+
+#[test]
+fn integrate_applies_sealed_diff_to_trunk_not_via_worker_git_merge() {
+    let policy = git_worktree_diff_policy();
+    let merge_err = validate_command_policy("git", &["merge".into()], &policy).unwrap_err();
+    assert!(
+        merge_err.to_string().contains("gitMetadataWriteDenied")
+            || merge_err.to_string().contains("git_worktree_diff"),
+        "{merge_err}"
+    );
+
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-int", "unit-1", "topic-int");
+    let plan = emit_create_workspace_plan(action);
+    let mut journal = Vec::new();
+    let created = execute_create_workspace_plan(
+        &plan,
+        &mut journal,
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    assert_ne!(
+        dest, fx.repo,
+        "worker root must sit outside the source checkout"
+    );
+    fs::write(dest.join("patch.rs"), "fn patch() {}\n").unwrap();
+    assert!(
+        !fx.repo.join("patch.rs").exists(),
+        "writer edits stay off trunk until integrate"
+    );
+
+    let sealed = seal_writer(&fx, &mut docs, "ws-int", "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    bind_integrate(&mut docs, "ws-int", "req-int", &hash);
+
+    let first = super::binding::admit_workspace_binding(
+        "ws-int",
+        "sealed",
+        Some(&hash),
+        &docs.load_bindings("ws-int").unwrap(),
+        super::binding::new_binding(
+            "ws-int",
+            "req-review-a",
+            "doc-a",
+            crate::toolset::WorkspaceAuthority::ReadOnly,
+            "deploy-1",
+            Some(&hash),
+        ),
+        false,
+    )
+    .unwrap();
+    let super::binding::AdmitBinding::Create { binding: a, .. } = first else {
+        panic!("expected readonly create");
+    };
+    docs.write_binding(a.clone()).unwrap();
+    let second = super::binding::admit_workspace_binding(
+        "ws-int",
+        "sealed",
+        Some(&hash),
+        &docs.load_bindings("ws-int").unwrap(),
+        super::binding::new_binding(
+            "ws-int",
+            "req-review-b",
+            "doc-b",
+            crate::toolset::WorkspaceAuthority::ReadOnly,
+            "deploy-1",
+            Some(&hash),
+        ),
+        false,
+    )
+    .unwrap();
+    let super::binding::AdmitBinding::Create { binding: b, .. } = second else {
+        panic!("expected concurrent readonly");
+    };
+    docs.write_binding(b.clone()).unwrap();
+    assert!(a.is_active());
+    assert!(b.is_active());
+
+    let integrated = integrate_writer(&fx, &mut docs, "ws-int", "req-int");
+    let mutation = super::documents::workspace_integrate_docs_mutation(&[], &integrated.receipt);
+    assert!(mutation.contains("kind: \"integrator\""));
+    assert!(mutation.contains("upsert_WorkspaceReceipt"));
+    assert_eq!(integrated.receipt.kind, "integrator");
+    assert_eq!(integrated.receipt.produced_by_request_id, "req-int");
+    assert_eq!(integrated.receipt.seal_hash, hash);
+    assert!(integrated.receipt.head_sha.is_some());
+    assert_eq!(integrated.workspace.lifecycle_state, "sealed");
+    assert_eq!(
+        fs::read_to_string(fx.repo.join("patch.rs")).unwrap(),
+        "fn patch() {}\n"
+    );
+    assert!(
+        dest.join("patch.rs").is_file(),
+        "worker tree stays inspectable after integrate"
+    );
+    let log = git(&fx.repo, &["log", "-1", "--format=%s"]);
+    assert!(
+        log.contains("gents: integrate workspace"),
+        "host commit on trunk, not worker git merge: {log}"
+    );
+    assert!(
+        !log.to_ascii_lowercase().contains("merge"),
+        "integrate must not be a merge commit: {log}"
+    );
+    let merge_heads = git(&fx.repo, &["log", "-1", "--format=%P"]);
+    assert_eq!(
+        merge_heads.split_whitespace().count(),
+        1,
+        "trunk head must have a single parent (apply+commit), not a merge: {merge_heads}"
+    );
+}
+
+#[test]
+fn merge_to_trunk_mode_is_denied_for_git_worktree_diff() {
+    let action = IntegrateWorkspaceAction {
+        workspace_id: "ws-1".into(),
+        produced_by_request_id: "req-int".into(),
+        produced_by_request_doc_id: "doc".into(),
+        mode: IntegrateMode::MergeToTrunk,
+    };
+    let plan = emit_integrate_workspace_plan(action);
+    let err = plan
+        .validate_against(&integrate_caps())
+        .expect_err("merge_to_trunk is not v1");
+    assert!(
+        err.to_string().contains("apply_diff") || err.to_string().contains("not implemented"),
+        "{err:#}"
+    );
+}
+
+#[test]
+fn cleanup_is_explicit_and_leaves_disk_until_called() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-clean", "unit-1", "topic-clean");
+    let plan = emit_create_workspace_plan(action);
+    let mut journal = Vec::new();
+    let created = execute_create_workspace_plan(
+        &plan,
+        &mut journal,
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    fs::write(dest.join("patch.rs"), "fn patch() {}\n").unwrap();
+    assert!(dest.is_dir());
+
+    let sealed = seal_writer(&fx, &mut docs, "ws-clean", "req-writer");
+    assert!(dest.is_dir(), "seal must not remove the worker tree");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    bind_integrate(&mut docs, "ws-clean", "req-int", &hash);
+    integrate_writer(&fx, &mut docs, "ws-clean", "req-int");
+    assert!(
+        dest.is_dir(),
+        "integrate must not implicit-cleanup the worker tree"
+    );
+    assert!(fx.repo.join("patch.rs").is_file());
+
+    let cleaned = cleanup_ws(&fx, &mut docs, "ws-clean");
+    assert_eq!(cleaned.workspace.lifecycle_state, "cleaned");
+    assert!(
+        !dest.exists(),
+        "explicit cleanup_workspace removes the worker tree"
+    );
+    assert!(
+        fx.repo.join("README.md").is_file(),
+        "cleanup must not delete the source checkout"
+    );
+    assert!(fx.repo.join("patch.rs").is_file());
+    let mutation = super::documents::workspace_cleanup_docs_mutation(&cleaned.workspace, &[]);
+    assert!(mutation.contains("lifecycle_state: \"cleaned\""));
+    assert!(!mutation.contains("host_path"));
+}
+
+#[test]
+fn provision_failed_and_sealed_rejected_remain_until_cleanup() {
+    let fx = Fixture::new();
+    let dest = fx.parent().join("foreign-left");
+    fs::create_dir_all(&dest).unwrap();
+    fs::write(dest.join("keep-me.txt"), "untouched\n").unwrap();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("foreign-left", "unit-1", "topic-left");
+    let planned = workspace_host_path(
+        &fx.repo,
+        &action.workspace_id,
+        &action.branch,
+        Some(fx.parent()),
+    )
+    .unwrap();
+    fs::rename(&dest, &planned).unwrap();
+    fs::write(planned.join("keep-me.txt"), "untouched\n").unwrap();
+    let plan = emit_create_workspace_plan(action);
+    let err = execute_create_workspace_plan(
+        &plan,
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect_err("mismatch");
+    assert_eq!(
+        err.outcome()
+            .map(|outcome| outcome.workspace.lifecycle_state.as_str()),
+        Some("provisionFailed")
+    );
+    assert!(
+        planned.join("keep-me.txt").is_file(),
+        "ProvisionFailed leaves disk for inspection"
+    );
+
+    let cleaned = cleanup_ws(&fx, &mut docs, "foreign-left");
+    assert_eq!(cleaned.workspace.lifecycle_state, "provisionFailed");
+    assert!(
+        !planned.exists(),
+        "explicit cleanup removes ProvisionFailed leftovers"
+    );
+}
+
+#[test]
+fn integrate_and_cleanup_plans_omit_host_path() {
+    let integrate = emit_integrate_workspace_plan(IntegrateWorkspaceAction {
+        workspace_id: "ws-1".into(),
+        produced_by_request_id: "req-1".into(),
+        produced_by_request_doc_id: "doc-1".into(),
+        mode: IntegrateMode::ApplyDiff,
+    });
+    let json = serde_json::to_value(&integrate).unwrap();
+    assert_eq!(json["actions"][0]["type"], "integrate_workspace");
+    assert!(json["actions"][0].get("host_path").is_none());
+    assert!(serde_json::from_value::<HostAction>(serde_json::json!({
+        "type": "integrate_workspace",
+        "workspace_id": "ws-1",
+        "produced_by_request_id": "req-1",
+        "produced_by_request_doc_id": "doc-1",
+        "host_path": "/tmp/evil"
+    }))
+    .is_err());
+
+    let cleanup = emit_cleanup_workspace_plan(CleanupWorkspaceAction {
+        workspace_id: "ws-1".into(),
+    });
+    let json = serde_json::to_value(&cleanup).unwrap();
+    assert_eq!(json["actions"][0]["type"], "cleanup_workspace");
+    assert!(json["actions"][0].get("host_path").is_none());
+    assert!(serde_json::from_value::<HostAction>(serde_json::json!({
+        "type": "cleanup_workspace",
+        "workspace_id": "ws-1",
         "host_path": "/tmp/evil"
     }))
     .is_err());

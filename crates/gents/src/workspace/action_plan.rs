@@ -8,6 +8,8 @@ pub const CAP_CREATE_WORKSPACE: &str = "create_workspace";
 pub const CAP_OBSERVE_DIRTY_BASE: &str = "observe_dirty_base";
 pub const CAP_CLONE_ARTIFACTS: &str = "clone_artifacts";
 pub const CAP_SEAL_WORKSPACE: &str = "seal_workspace";
+pub const CAP_INTEGRATE_WORKSPACE: &str = "integrate_workspace";
+pub const CAP_CLEANUP_WORKSPACE: &str = "cleanup_workspace";
 pub(crate) const ACTION_PLAN_ABI: u32 = 1;
 pub const DEFAULT_MAKE_WORKTREE_ARTIFACTS: &[&str] = &["target/", "crates/gents/proofs/.lake"];
 
@@ -25,6 +27,10 @@ pub enum HostAction {
     CreateWorkspace(CreateWorkspaceAction),
     #[serde(rename = "seal_workspace")]
     SealWorkspace(SealWorkspaceAction),
+    #[serde(rename = "integrate_workspace")]
+    IntegrateWorkspace(IntegrateWorkspaceAction),
+    #[serde(rename = "cleanup_workspace")]
+    CleanupWorkspace(CleanupWorkspaceAction),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,13 +93,49 @@ fn default_adapter() -> WorkspaceAdapterKind {
     WorkspaceAdapterKind::MakeWorktree
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SealWorkspaceAction {
     pub workspace_id: String,
     pub produced_by_request_id: String,
     pub produced_by_request_doc_id: String,
+}
+
+/// How the host applies a sealed workspace onto trunk. v1 `git_worktree_diff`
+/// only implements `apply_diff` — workers have no commit to cherry-pick/merge.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegrateMode {
+    #[default]
+    ApplyDiff,
+    CherryPick,
+    MergeToTrunk,
+}
+
+impl IntegrateMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ApplyDiff => "apply_diff",
+            Self::CherryPick => "cherry_pick",
+            Self::MergeToTrunk => "merge_to_trunk",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrateWorkspaceAction {
+    pub workspace_id: String,
+    pub produced_by_request_id: String,
+    pub produced_by_request_doc_id: String,
+    #[serde(default)]
+    pub mode: IntegrateMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CleanupWorkspaceAction {
+    pub workspace_id: String,
 }
 
 /// Builtin ActionPlan emitter: structured fields → the same ABI WASM will use.
@@ -108,6 +150,40 @@ pub fn emit_seal_workspace_plan(action: SealWorkspaceAction) -> ActionPlan {
     ActionPlan {
         abi: ACTION_PLAN_ABI,
         actions: vec![HostAction::SealWorkspace(action)],
+    }
+}
+
+pub fn emit_integrate_workspace_plan(action: IntegrateWorkspaceAction) -> ActionPlan {
+    ActionPlan {
+        abi: ACTION_PLAN_ABI,
+        actions: vec![HostAction::IntegrateWorkspace(action)],
+    }
+}
+
+pub fn emit_cleanup_workspace_plan(action: CleanupWorkspaceAction) -> ActionPlan {
+    ActionPlan {
+        abi: ACTION_PLAN_ABI,
+        actions: vec![HostAction::CleanupWorkspace(action)],
+    }
+}
+
+impl HostAction {
+    pub(crate) fn type_name(&self) -> &'static str {
+        match self {
+            Self::CreateWorkspace(_) => "create_workspace",
+            Self::SealWorkspace(_) => "seal_workspace",
+            Self::IntegrateWorkspace(_) => "integrate_workspace",
+            Self::CleanupWorkspace(_) => "cleanup_workspace",
+        }
+    }
+
+    pub(crate) fn workspace_id(&self) -> &str {
+        match self {
+            Self::CreateWorkspace(action) => &action.workspace_id,
+            Self::SealWorkspace(action) => &action.workspace_id,
+            Self::IntegrateWorkspace(action) => &action.workspace_id,
+            Self::CleanupWorkspace(action) => &action.workspace_id,
+        }
     }
 }
 
@@ -230,6 +306,8 @@ impl HostAction {
         match self {
             Self::CreateWorkspace(action) => action.validate_against(capabilities),
             Self::SealWorkspace(action) => action.validate_against(capabilities),
+            Self::IntegrateWorkspace(action) => action.validate_against(capabilities),
+            Self::CleanupWorkspace(action) => action.validate_against(capabilities),
         }
     }
 }
@@ -289,7 +367,6 @@ impl CreateWorkspaceAction {
     }
 }
 
-
 impl SealWorkspaceAction {
     pub(crate) fn validate_against(&self, capabilities: &BTreeSet<String>) -> Result<()> {
         require_non_empty("workspace_id", &self.workspace_id)?;
@@ -299,6 +376,33 @@ impl SealWorkspaceAction {
             &self.produced_by_request_doc_id,
         )?;
         require_capability(capabilities, CAP_SEAL_WORKSPACE)?;
+        Ok(())
+    }
+}
+
+impl IntegrateWorkspaceAction {
+    pub(crate) fn validate_against(&self, capabilities: &BTreeSet<String>) -> Result<()> {
+        require_non_empty("workspace_id", &self.workspace_id)?;
+        require_non_empty("produced_by_request_id", &self.produced_by_request_id)?;
+        require_non_empty(
+            "produced_by_request_doc_id",
+            &self.produced_by_request_doc_id,
+        )?;
+        require_capability(capabilities, CAP_INTEGRATE_WORKSPACE)?;
+        if !matches!(self.mode, IntegrateMode::ApplyDiff) {
+            bail!(
+                "integrate mode {} is not implemented in v1 (git_worktree_diff uses apply_diff; cherry-pick/merge require isolated_clone)",
+                self.mode.as_str()
+            );
+        }
+        Ok(())
+    }
+}
+
+impl CleanupWorkspaceAction {
+    pub(crate) fn validate_against(&self, capabilities: &BTreeSet<String>) -> Result<()> {
+        require_non_empty("workspace_id", &self.workspace_id)?;
+        require_capability(capabilities, CAP_CLEANUP_WORKSPACE)?;
         Ok(())
     }
 }

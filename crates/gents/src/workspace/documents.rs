@@ -12,9 +12,12 @@ pub(crate) const ADAPTER_VERSION: &str = "gents-workspace-adapter/1";
 pub(crate) const LIFECYCLE_READY: &str = "ready";
 pub(crate) const LIFECYCLE_PROVISION_FAILED: &str = "provisionFailed";
 pub(crate) const LIFECYCLE_SEALED: &str = "sealed";
+pub(crate) const LIFECYCLE_CLEANING: &str = "cleaning";
+pub(crate) const LIFECYCLE_CLEANED: &str = "cleaned";
 pub(crate) const BINDING_ACTIVE: &str = "active";
 pub(crate) const BINDING_RELEASED: &str = "released";
 pub(crate) const RECEIPT_KIND_WRITER: &str = "writer";
+pub(crate) const RECEIPT_KIND_INTEGRATOR: &str = "integrator";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IsolatedWorkspaceDoc {
@@ -96,6 +99,10 @@ impl WorkspaceBindingDoc {
 
     pub fn is_active_read_write(&self) -> bool {
         self.is_active() && self.authority.trim() == "readWrite"
+    }
+
+    pub fn is_active_integrate(&self) -> bool {
+        self.is_active() && self.authority.trim() == "integrate"
     }
 }
 
@@ -616,6 +623,44 @@ pub(crate) fn writer_receipt_id(workspace_id: &str, request_id: &str) -> String 
     format!("receipt-writer-{workspace_id}-{request_id}")
 }
 
+pub(crate) fn integrator_receipt_id(workspace_id: &str, request_id: &str) -> String {
+    format!("receipt-integrator-{workspace_id}-{request_id}")
+}
+
 pub(crate) fn binding_id_for(workspace_id: &str, request_id: &str) -> String {
     format!("wb-{workspace_id}-{request_id}")
+}
+
+/// Integrator result docs: receipt plus any released Integrate bindings.
+/// Workspace stays Sealed; trunk mutation is not a workspace lifecycle change.
+pub fn workspace_integrate_docs_mutation(
+    bindings: &[WorkspaceBindingDoc],
+    receipt: &WorkspaceReceiptDoc,
+) -> String {
+    let mut fields = vec![workspace_receipt_upsert_field("receipt", receipt)];
+    for (index, binding) in bindings.iter().enumerate() {
+        fields.push(workspace_binding_upsert_field(
+            &format!("bind{index}"),
+            binding,
+        ));
+    }
+    format!("mutation {{\n{}\n}}", fields.join("\n"))
+}
+
+/// Explicit cleanup: IsolatedWorkspace lifecycle plus released bindings.
+/// Placement is left in place for audit; the host path is no longer a worktree.
+/// Compiled in tests until an operator/callback caller persists this mutation.
+#[cfg(test)]
+pub fn workspace_cleanup_docs_mutation(
+    workspace: &IsolatedWorkspaceDoc,
+    bindings: &[WorkspaceBindingDoc],
+) -> String {
+    let mut fields = vec![isolated_workspace_upsert_field("ws", workspace)];
+    for (index, binding) in bindings.iter().enumerate() {
+        fields.push(workspace_binding_upsert_field(
+            &format!("bind{index}"),
+            binding,
+        ));
+    }
+    format!("mutation {{\n{}\n}}", fields.join("\n"))
 }
