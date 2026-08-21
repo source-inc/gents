@@ -450,16 +450,19 @@ fn request_show_request_query(request_id: &str, schema: &RequestShowSchema) -> S
         "caused_by_trigger_kind",
         "caused_by_correlation",
         "caused_by_trigger_context",
-        "workspace_id",
-        "workspace_authority",
-        "workspace_owner_deployment_id",
-        "workspace_seal_hash",
         "subagent_depth",
     ];
     append_optional_fields(
         &mut fields,
         &schema.agent_request,
-        &["cancel_cause", "cancel_initiated_at"],
+        &[
+            "cancel_cause",
+            "cancel_initiated_at",
+            "workspace_id",
+            "workspace_authority",
+            "workspace_owner_deployment_id",
+            "workspace_seal_hash",
+        ],
     );
     let fields = fields.join("\n                ");
     format!(

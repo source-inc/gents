@@ -36,6 +36,10 @@ pub(super) async fn load_timeline_request_by_id(
                 caused_by_parent_request_doc_id
                 caused_by_parent_tool_call_id
                 caused_by_parent_tool_call_doc_id
+                workspace_id
+                workspace_authority
+                workspace_owner_deployment_id
+                workspace_seal_hash
                 execution_origin
             }}
         }}"#,
@@ -86,6 +90,10 @@ pub(super) async fn load_timeline_requests_for_session(
                 caused_by_parent_request_doc_id
                 caused_by_parent_tool_call_id
                 caused_by_parent_tool_call_doc_id
+                workspace_id
+                workspace_authority
+                workspace_owner_deployment_id
+                workspace_seal_hash
                 execution_origin
             }}
         }}"#,
@@ -129,6 +137,10 @@ pub(super) async fn load_timeline_child_requests(
                 caused_by_parent_request_doc_id
                 caused_by_parent_tool_call_id
                 caused_by_parent_tool_call_doc_id
+                workspace_id
+                workspace_authority
+                workspace_owner_deployment_id
+                workspace_seal_hash
                 execution_origin
             }}
         }}"#,

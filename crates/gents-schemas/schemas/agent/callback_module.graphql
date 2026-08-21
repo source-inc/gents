@@ -1,6 +1,7 @@
-# Desired-state WASM planner module. Bytes live as a string (content-addressed
-# `module_id` is the identity); resource limits deny execution, they do not
-# mint capabilities.
+# Desired-state WASM planner module. `wasm_bytes` is standard base64 of the
+# decoded module (GraphQL String cannot carry raw NUL/non-UTF-8). `module_id`
+# is content-addressed over (decoded bytes, canonical_args, abi_version).
+# Resource limits deny execution; they do not mint capabilities.
 type CallbackModule @branchable {
     module_id: String @index(unique: true)
     abi_version: Int

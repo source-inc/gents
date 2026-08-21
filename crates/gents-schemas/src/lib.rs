@@ -227,9 +227,10 @@ pub const ALL_COLLECTION_NAMES: &[&str] = &[
 /// Agent-domain collections the desktop bulk-syncs after pairing.
 ///
 /// This is a curated subset of the `@branchable` collections, not a mirror of
-/// the directive: `WorkspaceRoot`, `AgentNetwork`, `PeerEndpoint`, and
-/// `RenderedRequest` and `ProviderContextReduction` are branchable but
-/// deliberately not bulk-synced.
+/// the directive: `WorkspaceRoot`, `AgentNetwork`, `PeerEndpoint`,
+/// `RenderedRequest`, `ProviderContextReduction`, and Callback planner/journal
+/// rows (`CallbackModule`, `CallbackBinding`, `CallbackInvocation`) are
+/// branchable but deliberately not bulk-synced.
 pub const BRANCHABLE_COLLECTION_NAMES: &[&str] = &[
     AGENT_DIRECTORY_ENTRY_NAME,
     AGENT_MEMORY_NAME,
@@ -250,9 +251,6 @@ pub const BRANCHABLE_COLLECTION_NAMES: &[&str] = &[
     ISOLATED_WORKSPACE_NAME,
     WORKSPACE_BINDING_NAME,
     WORKSPACE_RECEIPT_NAME,
-    CALLBACK_MODULE_NAME,
-    CALLBACK_BINDING_NAME,
-    CALLBACK_INVOCATION_NAME,
     CALLBACK_RESULT_NAME,
 ];
 
@@ -375,8 +373,39 @@ mod tests {
                 "{name} must stay local-only: {declaration}"
             );
         }
-        assert!(!ISOLATED_WORKSPACE.contains("host_path"));
-        assert!(WORKSPACE_PLACEMENT.contains("host_path"));
+        for forbidden in [
+            "host_path:",
+            "remotes:",
+            "git_common_dir:",
+            "git-common-dir:",
+        ] {
+            assert!(
+                !ISOLATED_WORKSPACE.contains(forbidden),
+                "IsolatedWorkspace must not declare {forbidden}"
+            );
+        }
+        assert!(WORKSPACE_PLACEMENT.contains("host_path:"));
+        for name in [
+            ISOLATED_WORKSPACE_NAME,
+            WORKSPACE_BINDING_NAME,
+            WORKSPACE_RECEIPT_NAME,
+            CALLBACK_RESULT_NAME,
+        ] {
+            assert!(
+                BRANCHABLE_COLLECTION_NAMES.contains(&name),
+                "{name} should bulk-sync"
+            );
+        }
+        for name in [
+            CALLBACK_MODULE_NAME,
+            CALLBACK_BINDING_NAME,
+            CALLBACK_INVOCATION_NAME,
+        ] {
+            assert!(
+                !BRANCHABLE_COLLECTION_NAMES.contains(&name),
+                "{name} stays off desktop bulk-sync until a client consumes it"
+            );
+        }
         assert!(AGENT_REQUEST.contains("workspace_id: String @index @immutable"));
         assert!(AGENT_REQUEST.contains("workspace_authority: String @immutable"));
         assert!(AGENT_REQUEST.contains("workspace_owner_deployment_id: String @index @immutable"));
