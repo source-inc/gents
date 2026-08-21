@@ -173,6 +173,12 @@ pub(crate) struct LeanContractSnapshot {
     pub(crate) identity_permission_cases: Vec<LeanIdentityPermissionCase>,
     pub(crate) identity_contracts: Vec<LeanIdentityContract>,
     #[serde(default)]
+    pub(crate) workspace_cases: Vec<LeanWorkspaceCase>,
+    #[serde(default)]
+    pub(crate) workspace_binding_cases: Vec<LeanWorkspaceBindingCase>,
+    #[serde(default)]
+    pub(crate) callback_cases: Vec<LeanCallbackCase>,
+    #[serde(default)]
     pub(crate) event_delivery_transition_case_count: usize,
     #[serde(default)]
     pub(crate) event_delivery_transition_cases: Vec<LeanEventDeliveryTransitionCase>,
@@ -203,6 +209,52 @@ pub(crate) struct LeanStateMachineContract {
     /// to deserialize this field on machines that don't emit any.
     #[serde(default)]
     pub(crate) named_transitions: Vec<LeanNamedTransition>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct LeanWorkspaceCase {
+    pub(crate) name: String,
+    pub(crate) from: String,
+    pub(crate) to: String,
+    pub(crate) seal_hash: Option<String>,
+    pub(crate) legal: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct LeanWorkspaceBindingRef {
+    pub(crate) binding_id: String,
+    pub(crate) workspace_id: String,
+    pub(crate) request_id: String,
+    pub(crate) authority: String,
+    pub(crate) deployment_id: String,
+    pub(crate) seal_hash: Option<String>,
+    pub(crate) state: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct LeanWorkspaceBindingCase {
+    pub(crate) name: String,
+    pub(crate) workspace_id: String,
+    pub(crate) workspace_state: String,
+    pub(crate) workspace_seal_hash: Option<String>,
+    pub(crate) owner_deployment_id: String,
+    pub(crate) creation_policy: String,
+    pub(crate) existing: Vec<LeanWorkspaceBindingRef>,
+    pub(crate) candidate: LeanWorkspaceBindingRef,
+    pub(crate) git_metadata_write: bool,
+    pub(crate) behavior_command_mode: String,
+    pub(crate) legal: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct LeanCallbackCase {
+    pub(crate) name: String,
+    pub(crate) invocation_id: String,
+    pub(crate) owner_deployment_id: String,
+    pub(crate) state: String,
+    pub(crate) journal: Vec<String>,
+    pub(crate) result_emitted: bool,
+    pub(crate) legal: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -400,6 +452,18 @@ static LEAN_CONTRACT_SNAPSHOT: OnceLock<LeanContractSnapshot> = OnceLock::new();
 
 pub(crate) fn lean_contract_snapshot() -> &'static LeanContractSnapshot {
     LEAN_CONTRACT_SNAPSHOT.get_or_init(load_lean_contract_snapshot)
+}
+
+pub(crate) fn lean_workspace_cases() -> &'static [LeanWorkspaceCase] {
+    &lean_contract_snapshot().workspace_cases
+}
+
+pub(crate) fn lean_workspace_binding_cases() -> &'static [LeanWorkspaceBindingCase] {
+    &lean_contract_snapshot().workspace_binding_cases
+}
+
+pub(crate) fn lean_callback_cases() -> &'static [LeanCallbackCase] {
+    &lean_contract_snapshot().callback_cases
 }
 
 pub(crate) fn lean_vocabulary_contract(domain: &str) -> &'static LeanVocabularyContract {

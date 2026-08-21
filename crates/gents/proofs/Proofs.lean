@@ -33,6 +33,8 @@ import Proofs.BackendHealth
 import Proofs.P2PBackpressure
 import Proofs.StreamingResponse
 import Proofs.Background
+import Proofs.Workspace
+import Proofs.Callback
 import Proofs.Migration
 import Proofs.CodexShim
 import Proofs.Properties.Safety

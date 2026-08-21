@@ -249,6 +249,10 @@ def featureSurfaceRequirements : List FeatureSurfaceRequirement :=
     , required := [Surface.runtimeInternal, Surface.operatorCli, Surface.operatorUi]
     , deferred := []
     }
+  , { feature := "isolated-workspaces"
+    , required := [Surface.runtimeInternal]
+    , deferred := []
+    }
   ]
 
 def vocabularyCoverage : List CoverageEntry :=
@@ -1001,6 +1005,21 @@ def caseCoverage : List CoverageEntry :=
       "Request"
       "gents_desktop_bridge::tests::operations_interrupt::interrupt_request_cascade_returns_accepted_when_signature_matches")
       "interrupt-and-cancel" [Surface.operatorUi]
+  , tagged (consumerCoverage
+      "workspace_cases"
+      "WorkspaceCases"
+      "conformance::workspace_binding::generated_workspace_cases_match_lean_predicate")
+      "isolated-workspaces" [Surface.runtimeInternal]
+  , tagged (consumerCoverage
+      "workspace_binding_cases"
+      "WorkspaceBindingCases"
+      "conformance::workspace_binding::generated_workspace_binding_cases_match_lean_predicate")
+      "isolated-workspaces" [Surface.runtimeInternal]
+  , tagged (consumerCoverage
+      "callback_cases"
+      "CallbackCases"
+      "conformance::callback_lifecycle::generated_callback_cases_match_lean_predicate")
+      "isolated-workspaces" [Surface.runtimeInternal]
   ]
 
 def followUpHookCoverage : List CoverageEntry :=

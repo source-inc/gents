@@ -10,6 +10,8 @@ import Proofs.Conformance.Contracts.Json.BackgroundWork
 import Proofs.Conformance.Contracts.Json.DescendantGraph
 import Proofs.Conformance.Contracts.Json.ComposedInvariants
 import Proofs.Conformance.Contracts.Json.CodexShim
+import Proofs.Conformance.Contracts.Json.Workspace
+import Proofs.Conformance.Contracts.Json.Callback
 import Proofs.Conformance.Contracts.Json.SelfConfig
 import Proofs.Conformance.Contracts.Json.Goal
 import Proofs.Conformance.Contracts.Json.PromptAssembly
@@ -198,6 +200,12 @@ def snapshotJson : String :=
     ++ "\"cancel_propagation_cases\":"
       ++ jsonArray
         (cancelPropagationCases.map cancelPropagationCaseJson) ++ ","
+    ++ "\"workspace_cases\":"
+      ++ workspaceCasesJson ++ ","
+    ++ "\"workspace_binding_cases\":"
+      ++ workspaceBindingCasesJson ++ ","
+    ++ "\"callback_cases\":"
+      ++ callbackCasesJson ++ ","
     ++ "\"r6_background_theorem_witnesses\":"
       ++ jsonArray
         (r6BackgroundTheoremWitnesses.map backgroundTheoremWitnessJson) ++ ","
