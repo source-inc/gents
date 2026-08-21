@@ -5,6 +5,8 @@ mod filesystem;
 #[cfg(test)]
 pub(crate) use command::apply_workspace_authority;
 pub(crate) use command::parse_argv_prefixes;
+pub(super) use command::run_command;
+pub(crate) use command::validate_command_policy;
 pub(crate) use command::{
     admit_host_executable, default_lsp_network_mode, effective_command_policy,
     lsp_sandbox_for_effective, normalize_workspace_lifecycle_state, prepare_managed_command,
@@ -14,7 +16,6 @@ pub(crate) use command::{
 pub(super) use command::{
     build_shell_env_from_vars, select_sandbox_for_policy, validate_read_only_command,
 };
-pub(super) use command::{run_command, validate_command_policy};
 pub use command::{
     CommandConstraints, CommandExecutionMode, CommandExecutionPolicy, CommandNetworkMode,
     WorkspaceAuthority,

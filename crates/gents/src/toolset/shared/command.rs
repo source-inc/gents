@@ -223,6 +223,9 @@ pub struct CommandExecutionPolicy {
     pub network_mode: CommandNetworkMode,
     read_only_allowlist: Vec<String>,
     deny_all_argv: bool,
+    /// When set, WorkspaceWrite (and Unrestricted) still deny Git-metadata
+    /// writes. v1 `git_worktree_diff` linked worktrees share refs with trunk.
+    deny_git_metadata_writes: bool,
 }
 
 impl CommandExecutionPolicy {
@@ -234,6 +237,7 @@ impl CommandExecutionPolicy {
             network_mode: CommandNetworkMode::Inherit,
             read_only_allowlist: allowlist,
             deny_all_argv: false,
+            deny_git_metadata_writes: false,
         }
     }
 
@@ -249,6 +253,7 @@ impl CommandExecutionPolicy {
             network_mode: CommandNetworkMode::Inherit,
             read_only_allowlist: Vec::new(),
             deny_all_argv: false,
+            deny_git_metadata_writes: false,
         }
     }
 
@@ -289,6 +294,21 @@ impl CommandExecutionPolicy {
         self.network_mode = network_mode;
         self
     }
+
+    pub fn with_deny_git_metadata_writes(mut self, deny: bool) -> Self {
+        self.deny_git_metadata_writes = deny;
+        self
+    }
+
+    /// v1 `git_worktree_diff`: workers may edit files under WorkspaceWrite
+    /// but must not mutate shared Git metadata (`git add`/`commit`/…).
+    pub fn with_git_worktree_diff(self) -> Self {
+        self.with_deny_git_metadata_writes(true)
+    }
+
+    pub fn deny_git_metadata_writes(&self) -> bool {
+        self.deny_git_metadata_writes
+    }
 }
 
 /// Bash-independent spawn constraints projected from the effective policy meet.
@@ -313,6 +333,7 @@ impl CommandConstraints {
             network_mode: self.network_mode,
             read_only_allowlist: Vec::new(),
             deny_all_argv: self.deny_all_argv,
+            deny_git_metadata_writes: false,
         }
     }
 }
@@ -746,6 +767,8 @@ fn validate_command_policy_inner(
             allowed_prefix_matched,
             policy,
         )?;
+    } else if policy.deny_git_metadata_writes {
+        validate_git_worktree_diff_policy(command, args, policy)?;
     }
 
     Ok(())
@@ -1233,6 +1256,142 @@ fn validate_sudo_args(
             },
         )),
     }
+}
+
+fn validate_git_worktree_diff_policy(
+    command: &str,
+    args: &[String],
+    policy: &CommandExecutionPolicy,
+) -> std::result::Result<(), ToolError> {
+    let command_key = executable_name_lookup_key(command).unwrap_or_else(|| command.to_string());
+    if command_key == "git" {
+        return deny_git_metadata_write_args(args, policy);
+    }
+    if let Some(script) = shell_command_script(command, args) {
+        if let Some(subcommand) = git_metadata_write_in_script(script) {
+            return Err(git_metadata_write_denial(policy, &subcommand));
+        }
+    }
+    Ok(())
+}
+
+fn deny_git_metadata_write_args(
+    args: &[String],
+    policy: &CommandExecutionPolicy,
+) -> std::result::Result<(), ToolError> {
+    if let Some(argument) = args
+        .iter()
+        .map(String::as_str)
+        .find(|arg| git_global_option_requires_denial(arg))
+    {
+        return Err(git_metadata_write_denial(policy, argument));
+    }
+
+    let (subcommand_idx, subcommand) = find_git_subcommand(args).ok_or_else(|| {
+        policy_denial(
+            policy,
+            DenialReason::ReadOnlySubcommandRequired {
+                command: "git".to_string(),
+            },
+        )
+    })?;
+    let subcommand_args = &args[subcommand_idx + 1..];
+    validate_git_read_only_flags(subcommand_args, policy)?;
+
+    if git_read_subcommand_allowed_under_worktree_diff(subcommand) {
+        if subcommand == "branch" {
+            return validate_git_branch_args(subcommand_args, policy);
+        }
+        return Ok(());
+    }
+    Err(git_metadata_write_denial(policy, subcommand))
+}
+
+fn git_read_subcommand_allowed_under_worktree_diff(subcommand: &str) -> bool {
+    matches!(
+        subcommand,
+        "status" | "diff" | "show" | "log" | "ls-files" | "grep" | "rev-parse" | "branch"
+    )
+}
+
+fn git_metadata_write_denial(policy: &CommandExecutionPolicy, subcommand: &str) -> ToolError {
+    policy_denial(
+        policy,
+        DenialReason::GitMetadataWriteDenied {
+            command: "git".to_string(),
+            subcommand: subcommand.to_string(),
+        },
+    )
+}
+
+fn shell_command_script<'a>(command: &str, args: &'a [String]) -> Option<&'a str> {
+    let name = executable_name_lookup_key(command)?;
+    if !matches!(name.as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh") {
+        return None;
+    }
+    let mut expect_script = false;
+    let mut script = None;
+    for arg in args {
+        if expect_script {
+            return Some(arg.as_str());
+        }
+        if arg == "-c" || arg == "-lc" || arg == "-cl" {
+            expect_script = true;
+            continue;
+        }
+        if arg.starts_with('-') && !arg.starts_with("--") && arg.contains('c') {
+            expect_script = true;
+        }
+        script = Some(arg.as_str());
+    }
+    expect_script.then_some(script).flatten()
+}
+
+fn git_metadata_write_in_script(script: &str) -> Option<String> {
+    for segment in script.split(|ch| matches!(ch, ';' | '\n' | '|' | '&')) {
+        let words: Vec<String> = segment.split_whitespace().map(str::to_string).collect();
+        let Some(git_idx) = words.iter().position(|word| {
+            executable_name_lookup_key(word)
+                .as_deref()
+                .is_some_and(|name| name == "git")
+        }) else {
+            continue;
+        };
+        let git_args = &words[git_idx + 1..];
+        let Some((subcommand_idx, subcommand)) = find_git_subcommand(git_args) else {
+            continue;
+        };
+        if !git_read_subcommand_allowed_under_worktree_diff(subcommand) {
+            return Some(subcommand.to_string());
+        }
+        if subcommand == "branch"
+            && git_branch_args_write(git_args.get(subcommand_idx + 1..).unwrap_or(&[]))
+        {
+            return Some(subcommand.to_string());
+        }
+    }
+    None
+}
+
+fn git_branch_args_write(args: &[String]) -> bool {
+    if args.is_empty() {
+        return false;
+    }
+    args.iter().any(|arg| {
+        !matches!(
+            arg.as_str(),
+            "--list"
+                | "-l"
+                | "--show-current"
+                | "-a"
+                | "--all"
+                | "-r"
+                | "--remotes"
+                | "-v"
+                | "-vv"
+                | "--verbose"
+        ) && !arg.starts_with("--format=")
+    })
 }
 
 fn validate_git_args(
