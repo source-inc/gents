@@ -46,7 +46,8 @@ pub use executor::{
     RepositoryPlacementRef, SealWorkspaceOutcome,
 };
 pub use instructions::{
-    instruction_context_section, InstructionFile, InstructionManifest, DEFAULT_INSTRUCTION_PATHS,
+    instruction_body_for_request, instruction_context_section, live_instruction_context_section,
+    InstructionFile, InstructionManifest, DEFAULT_INSTRUCTION_PATHS,
 };
 pub use journal::{action_journal_prefix_legal, ActionJournalEntry, ActionJournalState};
 pub use runtime::cleanup_workspace;
