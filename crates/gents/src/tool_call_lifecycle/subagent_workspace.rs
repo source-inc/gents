@@ -1,25 +1,24 @@
 //! Resolve `spawn_subagent` workspace inherit / bind-id / provision.
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
-use anyhow::Result;
 use defra_node::EmbeddedNode;
-use serde::Deserialize;
 
 use crate::background_tools::SpawnWorkspaceArg;
 use crate::callback::{
     ensure_local_host_deployment, flush_workspace_docs, load_isolated_workspace,
-    load_repository_placement,
+    load_repository_placement, load_workspace_placement,
 };
-use crate::graphql::escape_graphql_string;
 use crate::lifecycle::WorkspaceLineage;
 use crate::tool_call_lifecycle::FailureClass;
 use crate::toolset::{normalize_workspace_lifecycle_state, WorkspaceAuthority};
 use crate::workspace::{
-    emit_create_workspace_plan, execute_create_workspace_plan, ActionJournalEntry,
-    CreateWorkspaceAction, CreateWorkspaceOutcome, CreationPolicy, HostExecuteError,
-    HostExecutorContext, IsolatedWorkspaceDoc, MemoryWorkspaceDocuments, WorkspaceAdapterKind,
-    WorkspaceDocuments, CAP_CREATE_WORKSPACE, CAP_OBSERVE_DIRTY_BASE,
+    emit_create_workspace_plan, execute_create_workspace_plan, load_enabled_workspace_roots,
+    require_under_ceiling, workspace_host_path, ActionJournalEntry, CreateWorkspaceAction,
+    CreateWorkspaceOutcome, CreationPolicy, HostExecuteError, HostExecutorContext,
+    IsolatedWorkspaceDoc, MemoryWorkspaceDocuments, WorkspaceAdapterKind, WorkspaceDocuments,
+    WorkspacePlacementDoc, CAP_CREATE_WORKSPACE, CAP_OBSERVE_DIRTY_BASE,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -46,13 +45,8 @@ impl ParentWorkspaceStamp {
         }
     }
 
-    fn lineage(&self) -> Option<WorkspaceLineage> {
-        lineage_from_bridge(
-            self.workspace_id.as_deref(),
-            self.workspace_authority.as_deref(),
-            self.workspace_owner_deployment_id.as_deref(),
-            self.workspace_seal_hash.as_deref(),
-        )
+    fn has_workspace_id(&self) -> bool {
+        nonempty(self.workspace_id.as_deref()).is_some()
     }
 
     fn authority(&self) -> Result<Option<WorkspaceAuthority>, SpawnWorkspaceError> {
@@ -85,6 +79,23 @@ impl SpawnWorkspaceError {
             message: message.into(),
         }
     }
+
+    pub(crate) fn payload(&self) -> String {
+        let failure_class = match self.class {
+            FailureClass::ArgumentInvalid => "invalid_tool_arguments",
+            _ => "service_unavailable",
+        };
+        serde_json::json!({
+            "ok": false,
+            "failure_class": failure_class,
+            "path": "/workspace",
+            "message": self.message,
+            "retryable": false,
+            "service_id": "subagent",
+            "tool_name": "spawn_subagent"
+        })
+        .to_string()
+    }
 }
 
 impl std::fmt::Display for SpawnWorkspaceError {
@@ -95,17 +106,20 @@ impl std::fmt::Display for SpawnWorkspaceError {
 
 impl std::error::Error for SpawnWorkspaceError {}
 
-pub(crate) fn lineage_from_bridge(
+/// Skip re-resolve only when the bridge already carries a complete stamp.
+pub(crate) fn complete_lineage_from_bridge(
     workspace_id: Option<&str>,
     workspace_authority: Option<&str>,
     workspace_owner_deployment_id: Option<&str>,
     workspace_seal_hash: Option<&str>,
 ) -> Option<WorkspaceLineage> {
     let workspace_id = nonempty(workspace_id)?;
+    let workspace_authority = nonempty(workspace_authority)?;
+    let workspace_owner_deployment_id = nonempty(workspace_owner_deployment_id)?;
     Some(WorkspaceLineage {
         workspace_id: Some(workspace_id.to_string()),
-        workspace_authority: nonempty(workspace_authority).map(str::to_string),
-        workspace_owner_deployment_id: nonempty(workspace_owner_deployment_id).map(str::to_string),
+        workspace_authority: Some(workspace_authority.to_string()),
+        workspace_owner_deployment_id: Some(workspace_owner_deployment_id.to_string()),
         workspace_seal_hash: nonempty(workspace_seal_hash).map(str::to_string),
     })
 }
@@ -131,6 +145,30 @@ pub(crate) fn merge_workspace_lineage(bridge: &mut serde_json::Value, lineage: &
     }
 }
 
+/// Re-validate a complete bridge stamp, or resolve inherit/bind/provision.
+pub(crate) async fn resolve_child_workspace(
+    node: &EmbeddedNode,
+    parent: &ParentWorkspaceStamp,
+    arg: Option<&SpawnWorkspaceArg>,
+    stamped: Option<WorkspaceLineage>,
+    writer_principal: &str,
+    caused_by_invocation_id: &str,
+    caused_by_correlation: &str,
+) -> Result<Option<WorkspaceLineage>, SpawnWorkspaceError> {
+    if let Some(lineage) = stamped {
+        return revalidate_stamped_lineage(node, lineage).await.map(Some);
+    }
+    resolve_spawn_workspace(
+        node,
+        parent,
+        arg,
+        writer_principal,
+        caused_by_invocation_id,
+        caused_by_correlation,
+    )
+    .await
+}
+
 /// Default inherit when the parent already has `workspace_id`.
 pub(crate) async fn resolve_spawn_workspace(
     node: &EmbeddedNode,
@@ -142,7 +180,7 @@ pub(crate) async fn resolve_spawn_workspace(
 ) -> Result<Option<WorkspaceLineage>, SpawnWorkspaceError> {
     match arg {
         None => {
-            if parent.lineage().is_some() {
+            if parent.has_workspace_id() {
                 inherit_workspace(node, parent).await.map(Some)
             } else {
                 Ok(None)
@@ -180,6 +218,8 @@ async fn inherit_workspace(
         )
     })?;
     let workspace = load_workspace(node, parent_id).await?;
+    require_parent_stamp_agrees(parent, &workspace)?;
+    require_local_workspace(node, &workspace).await?;
     let default_authority = default_authority_for_state(&workspace.lifecycle_state)?;
     stamp_from_workspace(&workspace, parent_authority.infimum(default_authority))
 }
@@ -190,16 +230,11 @@ async fn bind_workspace(
     workspace_id: &str,
     requested_authority: Option<&str>,
 ) -> Result<WorkspaceLineage, SpawnWorkspaceError> {
+    let workspace_id = nonempty(Some(workspace_id)).ok_or_else(|| {
+        SpawnWorkspaceError::invalid("workspace bind requires a non-empty IsolatedWorkspace id")
+    })?;
     let workspace = load_workspace(node, workspace_id).await?;
-    let local = ensure_local_host_deployment(node)
-        .await
-        .map_err(|error| SpawnWorkspaceError::unavailable(error.to_string()))?;
-    if workspace.owner_deployment_id.trim() != local.trim() {
-        return Err(SpawnWorkspaceError::unavailable(format!(
-            "workspace {workspace_id} is owned by deployment {}, not this host",
-            workspace.owner_deployment_id
-        )));
-    }
+    require_local_workspace(node, &workspace).await?;
     let default_authority = default_authority_for_state(&workspace.lifecycle_state)?;
     let requested = match requested_authority.map(str::trim).filter(|v| !v.is_empty()) {
         Some(value) => WorkspaceAuthority::parse(value)
@@ -228,14 +263,19 @@ async fn provision_workspace(
         )
     })?;
     let parent_workspace = load_workspace(node, parent_id).await?;
+    require_parent_stamp_agrees(parent, &parent_workspace)?;
+    require_local_workspace(node, &parent_workspace).await?;
     let local = ensure_local_host_deployment(node)
         .await
         .map_err(|error| SpawnWorkspaceError::unavailable(error.to_string()))?;
-    if parent_workspace.owner_deployment_id.trim() != local.trim() {
-        return Err(SpawnWorkspaceError::unavailable(
-            "workspace provision must run on the parent workspace owner deployment",
-        ));
+    let authority = provision_authority(parent)?;
+    if !authority.bindable_lifecycle_state("ready") {
+        return Err(SpawnWorkspaceError::invalid(format!(
+            "isolated workspace provision is not bindable for authority {}",
+            authority.as_str()
+        )));
     }
+
     let repository = load_repository_placement(node, &parent_workspace.repository_id, &local)
         .await
         .map_err(|error| SpawnWorkspaceError::unavailable(error.to_string()))?
@@ -246,14 +286,30 @@ async fn provision_workspace(
             ))
         })?;
 
-    let workspace_id = uuid::Uuid::new_v4().to_string();
-    let work_unit_id = uuid::Uuid::new_v4().to_string();
+    let workspace_id = spawn_provision_workspace_id(caused_by_invocation_id);
+    let work_unit_id = spawn_provision_work_unit_id(caused_by_invocation_id);
+    let branch = unique_child_branch(&parent_workspace.branch, &workspace_id);
+    let enabled_roots = load_enabled_workspace_roots(node)
+        .await
+        .map_err(|error| SpawnWorkspaceError::unavailable(error.to_string()))?;
+    let dest = workspace_host_path(&repository.host_path, &workspace_id, &branch, None)
+        .map_err(|error| SpawnWorkspaceError::unavailable(error.to_string()))?;
+    require_under_ceiling(&dest, None, &enabled_roots).map_err(|error| {
+        SpawnWorkspaceError::invalid(format!(
+            "provisioned workspace placement would escape operator ceiling: {error}"
+        ))
+    })?;
+    let executor_ceiling = enabled_roots
+        .iter()
+        .find(|root| dest.starts_with(root))
+        .cloned();
+
     let plan = emit_create_workspace_plan(CreateWorkspaceAction {
         workspace_id: workspace_id.clone(),
         work_unit_id,
         repository_id: parent_workspace.repository_id.clone(),
         base_sha: parent_workspace.base_sha.clone(),
-        branch: parent_workspace.branch.clone(),
+        branch,
         creation_policy,
         adapter: WorkspaceAdapterKind::GitWorktree,
         clone_artifacts: None,
@@ -264,12 +320,11 @@ async fn provision_workspace(
         .into_iter()
         .map(str::to_string)
         .collect();
-    let ceiling = repository.host_path.parent().map(ToOwned::to_owned);
     let execute_result = {
         let mut ctx = HostExecutorContext {
             deployment_id: local.clone(),
             repository,
-            ceiling: ceiling.as_deref(),
+            ceiling: executor_ceiling.as_deref(),
             capabilities,
             writer_principal: writer_principal.to_string(),
             integrator_principal: writer_principal.to_string(),
@@ -279,33 +334,29 @@ async fn provision_workspace(
         };
         execute_create_workspace_plan(&plan, &mut journal, &mut ctx)
     };
+    persist_provision_docs(node, &execute_result, &docs).await?;
+    let outcome = execute_result.map_err(|error| match error {
+        HostExecuteError::Denied { reason } => SpawnWorkspaceError::invalid(reason),
+        HostExecuteError::Failed { reason, .. } => SpawnWorkspaceError::unavailable(reason),
+    })?;
+    stamp_from_workspace(&outcome.workspace, authority)
+}
+
+async fn persist_provision_docs(
+    node: &EmbeddedNode,
+    execute_result: &Result<CreateWorkspaceOutcome, HostExecuteError>,
+    docs: &MemoryWorkspaceDocuments,
+) -> Result<(), SpawnWorkspaceError> {
     match execute_result {
-        Ok(outcome) => {
-            flush_outcome(node, &outcome).await?;
-            let authority = match parent.authority()? {
-                Some(parent_authority) => parent_authority.infimum(WorkspaceAuthority::ReadWrite),
-                None => WorkspaceAuthority::ReadWrite,
-            };
-            Ok(WorkspaceLineage {
-                workspace_id: Some(outcome.workspace.workspace_id),
-                workspace_authority: Some(authority.as_str().to_string()),
-                workspace_owner_deployment_id: Some(local),
-                workspace_seal_hash: None,
-            })
-        }
+        Ok(outcome) => flush_outcome(node, outcome).await,
         Err(error) => {
             if let Some(outcome) = error.outcome() {
-                let _ = flush_outcome(node, outcome).await;
-            } else if let Err(flush_error) = flush_workspace_docs(node, &docs).await {
-                tracing::warn!(
-                    %flush_error,
-                    "failed to persist partial workspace docs after provision error"
-                );
+                flush_outcome(node, outcome).await
+            } else {
+                flush_workspace_docs(node, docs)
+                    .await
+                    .map_err(|error| SpawnWorkspaceError::unavailable(error.to_string()))
             }
-            Err(match error {
-                HostExecuteError::Denied { reason } => SpawnWorkspaceError::invalid(reason),
-                HostExecuteError::Failed { reason, .. } => SpawnWorkspaceError::unavailable(reason),
-            })
         }
     }
 }
@@ -324,6 +375,34 @@ async fn flush_outcome(
     flush_workspace_docs(node, &written)
         .await
         .map_err(|error| SpawnWorkspaceError::unavailable(error.to_string()))
+}
+
+async fn revalidate_stamped_lineage(
+    node: &EmbeddedNode,
+    lineage: WorkspaceLineage,
+) -> Result<WorkspaceLineage, SpawnWorkspaceError> {
+    let workspace_id = nonempty(lineage.workspace_id.as_deref())
+        .ok_or_else(|| SpawnWorkspaceError::invalid("workspace stamp is missing workspace_id"))?;
+    let workspace = load_workspace(node, workspace_id).await?;
+    require_local_workspace(node, &workspace).await?;
+    let authority = nonempty(lineage.workspace_authority.as_deref())
+        .ok_or_else(|| {
+            SpawnWorkspaceError::invalid("workspace stamp is missing workspace_authority")
+        })
+        .and_then(|value| {
+            WorkspaceAuthority::parse(value)
+                .map_err(|error| SpawnWorkspaceError::invalid(error.to_string()))
+        })?;
+    stamp_from_workspace(&workspace, authority)
+}
+
+fn provision_authority(
+    parent: &ParentWorkspaceStamp,
+) -> Result<WorkspaceAuthority, SpawnWorkspaceError> {
+    Ok(match parent.authority()? {
+        Some(parent_authority) => parent_authority.infimum(WorkspaceAuthority::ReadWrite),
+        None => WorkspaceAuthority::ReadWrite,
+    })
 }
 
 fn stamp_from_workspace(
@@ -389,61 +468,113 @@ async fn load_workspace(
     }
 }
 
+fn require_parent_stamp_agrees(
+    parent: &ParentWorkspaceStamp,
+    workspace: &IsolatedWorkspaceDoc,
+) -> Result<(), SpawnWorkspaceError> {
+    if let Some(parent_owner) = nonempty(parent.workspace_owner_deployment_id.as_deref()) {
+        if parent_owner != workspace.owner_deployment_id.trim() {
+            return Err(SpawnWorkspaceError::invalid(format!(
+                "parent workspace_owner_deployment_id {parent_owner} does not match IsolatedWorkspace owner {}",
+                workspace.owner_deployment_id
+            )));
+        }
+    }
+    if let Some(parent_seal) = nonempty(parent.workspace_seal_hash.as_deref()) {
+        match nonempty(workspace.seal_hash.as_deref()) {
+            Some(workspace_seal) if workspace_seal == parent_seal => {}
+            Some(workspace_seal) => {
+                return Err(SpawnWorkspaceError::invalid(format!(
+                    "parent workspace_seal_hash {parent_seal} does not match IsolatedWorkspace seal_hash {workspace_seal}"
+                )));
+            }
+            None => {
+                return Err(SpawnWorkspaceError::invalid(format!(
+                    "parent workspace_seal_hash {parent_seal} does not match IsolatedWorkspace {} (missing seal_hash)",
+                    workspace.workspace_id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn require_local_workspace(
+    node: &EmbeddedNode,
+    workspace: &IsolatedWorkspaceDoc,
+) -> Result<WorkspacePlacementDoc, SpawnWorkspaceError> {
+    let local = ensure_local_host_deployment(node)
+        .await
+        .map_err(|error| SpawnWorkspaceError::unavailable(error.to_string()))?;
+    if workspace.owner_deployment_id.trim() != local.trim() {
+        return Err(SpawnWorkspaceError::unavailable(format!(
+            "workspace {} is owned by deployment {}, not this host",
+            workspace.workspace_id, workspace.owner_deployment_id
+        )));
+    }
+    let placement = load_workspace_placement(node, &workspace.workspace_id)
+        .await
+        .map_err(|error| SpawnWorkspaceError::unavailable(error.to_string()))?
+        .ok_or_else(|| {
+            SpawnWorkspaceError::unavailable(format!(
+                "workspace placement for {} not found on this host",
+                workspace.workspace_id
+            ))
+        })?;
+    if placement.deployment_id.trim() != local.trim() {
+        return Err(SpawnWorkspaceError::unavailable(format!(
+            "workspace placement for {} is owned by deployment {}, not this host",
+            workspace.workspace_id, placement.deployment_id
+        )));
+    }
+    let host_path = Path::new(placement.host_path.trim());
+    if !host_path.is_absolute() || !host_path.is_dir() {
+        return Err(SpawnWorkspaceError::unavailable(format!(
+            "workspace placement for {} is missing a local directory",
+            workspace.workspace_id
+        )));
+    }
+    Ok(placement)
+}
+
+pub(crate) fn spawn_provision_workspace_id(caused_by_invocation_id: &str) -> String {
+    format!(
+        "spawn-ws-{}",
+        sanitize_id(nonempty(Some(caused_by_invocation_id)).unwrap_or("unknown"))
+    )
+}
+
+fn spawn_provision_work_unit_id(caused_by_invocation_id: &str) -> String {
+    format!(
+        "spawn-unit-{}",
+        sanitize_id(nonempty(Some(caused_by_invocation_id)).unwrap_or("unknown"))
+    )
+}
+
+pub(crate) fn unique_child_branch(parent_branch: &str, workspace_id: &str) -> String {
+    let parent = sanitize_id(nonempty(Some(parent_branch)).unwrap_or("topic"));
+    let id = sanitize_id(workspace_id);
+    format!("{parent}-ws-{id}")
+}
+
+fn sanitize_id(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('-');
+        }
+    }
+    if out.is_empty() {
+        "workspace".to_string()
+    } else {
+        out
+    }
+}
+
 fn nonempty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct AgentRequestWorkspaceRow {
-    #[serde(default)]
-    workspace_id: Option<String>,
-    #[serde(default)]
-    workspace_authority: Option<String>,
-    #[serde(default)]
-    workspace_owner_deployment_id: Option<String>,
-    #[serde(default)]
-    workspace_seal_hash: Option<String>,
-}
-
-#[allow(dead_code)]
-pub(crate) async fn load_parent_workspace_stamp(
-    node: &EmbeddedNode,
-    parent_request_id: &str,
-) -> Result<ParentWorkspaceStamp> {
-    let escaped = escape_graphql_string(parent_request_id);
-    let query = format!(
-        r#"{{
-            AgentRequest(
-                filter: {{ request_id: {{ _eq: "{escaped}" }} }},
-                limit: 1
-            ) {{
-                workspace_id
-                workspace_authority
-                workspace_owner_deployment_id
-                workspace_seal_hash
-            }}
-        }}"#
-    );
-    let response = node.execute(&query).await;
-    if response.has_errors() {
-        anyhow::bail!(
-            "query parent workspace fields failed: {:?}",
-            response.errors
-        );
-    }
-    let row: Option<AgentRequestWorkspaceRow> =
-        crate::graphql::first_row(&response, "AgentRequest")?;
-    Ok(row
-        .map(|row| {
-            ParentWorkspaceStamp::from_fields(
-                row.workspace_id.as_deref(),
-                row.workspace_authority.as_deref(),
-                row.workspace_owner_deployment_id.as_deref(),
-                row.workspace_seal_hash.as_deref(),
-            )
-        })
-        .unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -499,5 +630,49 @@ mod tests {
             WorkspaceAuthority::Integrate.infimum(WorkspaceAuthority::ReadWrite),
             WorkspaceAuthority::Integrate
         );
+        assert!(!WorkspaceAuthority::Integrate.bindable_lifecycle_state("ready"));
+    }
+
+    #[test]
+    fn provision_ids_are_stable_per_tool_call() {
+        assert_eq!(
+            spawn_provision_workspace_id("internal-spawn-a"),
+            spawn_provision_workspace_id("internal-spawn-a")
+        );
+        assert_ne!(
+            spawn_provision_workspace_id("internal-spawn-a"),
+            spawn_provision_workspace_id("internal-spawn-b")
+        );
+    }
+
+    #[test]
+    fn unique_child_branch_does_not_reuse_parent() {
+        let branch = unique_child_branch("topic", "spawn-ws-child");
+        assert_ne!(branch, "topic");
+        assert!(branch.starts_with("topic-ws-"));
+        assert_ne!(
+            unique_child_branch("topic", "spawn-ws-a"),
+            unique_child_branch("topic", "spawn-ws-b")
+        );
+    }
+
+    #[test]
+    fn complete_lineage_requires_authority_and_owner() {
+        assert!(complete_lineage_from_bridge(Some("ws-1"), None, Some("deploy"), None).is_none());
+        assert!(complete_lineage_from_bridge(Some("ws-1"), Some("readOnly"), None, None).is_none());
+        let lineage = complete_lineage_from_bridge(
+            Some("ws-1"),
+            Some("readOnly"),
+            Some("deploy"),
+            Some("abc"),
+        )
+        .unwrap();
+        assert_eq!(lineage.workspace_id.as_deref(), Some("ws-1"));
+        assert_eq!(lineage.workspace_authority.as_deref(), Some("readOnly"));
+        assert_eq!(
+            lineage.workspace_owner_deployment_id.as_deref(),
+            Some("deploy")
+        );
+        assert_eq!(lineage.workspace_seal_hash.as_deref(), Some("abc"));
     }
 }

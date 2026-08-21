@@ -829,6 +829,25 @@ impl DefraSessionHook {
             "parent_subagent_depth": parent_context.subagent_depth,
         });
         if let Some(workspace) = resolved_workspace.as_ref() {
+            if target_host == SubagentTargetHost::Remote {
+                return self
+                    .fail_spawn_subagent_tool_call(
+                        session_id,
+                        request_id,
+                        parent_context.request_deadline_at,
+                        seq,
+                        internal_call_id,
+                        args,
+                        FailureClass::ServiceUnavailable,
+                        service_unavailable_payload(
+                            SPAWN_SUBAGENT_TOOL_NAME,
+                            "/workspace",
+                            "workspace-bound spawn cannot target a remote host until the child can be materialized on the workspace owner deployment",
+                            false,
+                        ),
+                    )
+                    .await;
+            }
             merge_workspace_lineage(&mut bridge_args, workspace);
         }
         let bridge_args = bridge_args.to_string();

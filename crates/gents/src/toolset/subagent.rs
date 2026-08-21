@@ -188,7 +188,39 @@ impl Tool for SpawnSubagentTool {
                         "description": "Use foreground to wait for the child result. Use background only when the schema exposes it."
                     },
                     "workspace": {
-                        "description": "inherit (default when the parent has workspace_id), {\"id\": \"<workspace_id>\"} to bind an existing Ready/Sealed workspace, or {\"provision\": {\"policy\": \"git_worktree_diff\"}} to create a child IsolatedWorkspace. Child authority cannot outrank the parent."
+                        "description": "inherit (default when the parent has workspace_id), {\"id\": \"<workspace_id>\"} to bind an existing Ready/Sealed workspace, or {\"provision\": {\"policy\": \"git_worktree_diff\"}} to create a child IsolatedWorkspace. Child authority cannot outrank the parent.",
+                        "oneOf": [
+                            { "type": "string", "enum": ["inherit"] },
+                            {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["id"],
+                                "properties": {
+                                    "id": { "type": "string", "minLength": 1 },
+                                    "authority": {
+                                        "type": "string",
+                                        "enum": ["readOnly", "readWrite", "integrate"]
+                                    }
+                                }
+                            },
+                            {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["provision"],
+                                "properties": {
+                                    "provision": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "properties": {
+                                            "policy": {
+                                                "type": "string",
+                                                "enum": ["git_worktree_diff"]
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        ]
                     }
                 },
                 "required": ["name", "prompt"]

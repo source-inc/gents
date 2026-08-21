@@ -21,7 +21,9 @@ use crate::session::execute_mutation_with_retry;
 
 use super::{
     subagent_request::create_subagent_request_with_request_id_and_workspace,
-    subagent_workspace::{lineage_from_bridge, resolve_spawn_workspace, ParentWorkspaceStamp},
+    subagent_workspace::{
+        complete_lineage_from_bridge, resolve_child_workspace, ParentWorkspaceStamp,
+    },
     AwaitMode, CancelCause, CancelPolicy, ChildTerminal, FailureClass, ToolCallState,
 };
 
@@ -909,36 +911,34 @@ async fn recover_orphan_subagent_children(node: &EmbeddedNode, agent_did: &str) 
             parent.workspace_owner_deployment_id.as_deref(),
             parent.workspace_seal_hash.as_deref(),
         );
-        let workspace = match lineage_from_bridge(
-            spawn_args.workspace_id.as_deref(),
-            spawn_args.workspace_authority.as_deref(),
-            spawn_args.workspace_owner_deployment_id.as_deref(),
-            spawn_args.workspace_seal_hash.as_deref(),
-        ) {
-            Some(lineage) => Some(lineage),
-            None => match resolve_spawn_workspace(
-                node,
-                &parent_workspace,
-                spawn_args.workspace.as_ref(),
-                &child_agent_did,
-                &row.tool_call_id,
-                &parent_request_id,
-            )
-            .await
-            {
-                Ok(lineage) => lineage,
-                Err(error) => {
-                    tracing::warn!(
-                        doc_id = %row.doc_id,
-                        request_id = %parent_request_id,
-                        tool_call_id = %row.tool_call_id,
-                        child_request_id = %child_request_id,
-                        error = %error,
-                        "cannot materialize orphan subagent child because workspace could not be resolved"
-                    );
-                    continue;
-                }
-            },
+        let workspace = match resolve_child_workspace(
+            node,
+            &parent_workspace,
+            spawn_args.workspace.as_ref(),
+            complete_lineage_from_bridge(
+                spawn_args.workspace_id.as_deref(),
+                spawn_args.workspace_authority.as_deref(),
+                spawn_args.workspace_owner_deployment_id.as_deref(),
+                spawn_args.workspace_seal_hash.as_deref(),
+            ),
+            &child_agent_did,
+            &row.tool_call_id,
+            &parent_request_id,
+        )
+        .await
+        {
+            Ok(lineage) => lineage,
+            Err(error) => {
+                tracing::warn!(
+                    doc_id = %row.doc_id,
+                    request_id = %parent_request_id,
+                    tool_call_id = %row.tool_call_id,
+                    child_request_id = %child_request_id,
+                    error = %error,
+                    "cannot materialize orphan subagent child because workspace could not be resolved"
+                );
+                continue;
+            }
         };
         if let Err(error) = create_subagent_request_with_request_id_and_workspace(
             node,

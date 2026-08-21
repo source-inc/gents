@@ -23,7 +23,8 @@ use crate::tool_call_lifecycle::subagent_request::{
     create_subagent_request_with_trusted_parent_request_id_and_workspace,
 };
 use crate::tool_call_lifecycle::subagent_workspace::{
-    lineage_from_bridge, resolve_spawn_workspace, ParentWorkspaceStamp,
+    complete_lineage_from_bridge, resolve_child_workspace, ParentWorkspaceStamp,
+    SpawnWorkspaceError,
 };
 use crate::tool_call_lifecycle::{
     AwaitMode, CancelPolicy, FailureClass, IllegalToolCallTransition, ToolCallState,
@@ -470,6 +471,22 @@ impl SubagentSource {
         .await
     }
 
+    async fn fail_workspace_tool_call(
+        &self,
+        row: &ToolCallRow,
+        error: SpawnWorkspaceError,
+    ) -> anyhow::Result<bool> {
+        fail_running_subagent_tool_call(
+            &self.node,
+            &row.doc_id,
+            row.started_at.as_deref(),
+            row.deadline_at.as_deref(),
+            &error.payload(),
+            error.class,
+        )
+        .await
+    }
+
     async fn build_intent_for_tool_call_doc(
         &mut self,
         doc_id: &str,
@@ -809,23 +826,33 @@ impl SubagentSource {
                 .as_ref()
                 .and_then(|row| row.workspace_seal_hash.as_deref()),
         );
-        let workspace = match lineage_from_bridge(
-            spawn_args.workspace_id.as_deref(),
-            spawn_args.workspace_authority.as_deref(),
-            spawn_args.workspace_owner_deployment_id.as_deref(),
-            spawn_args.workspace_seal_hash.as_deref(),
-        ) {
-            Some(lineage) => Some(lineage),
-            None => {
-                resolve_spawn_workspace(
-                    &self.node,
-                    &parent_workspace,
-                    spawn_args.workspace.as_ref(),
-                    &child_agent_did,
-                    &parent_tool_call_id,
-                    &parent_request_id,
-                )
-                .await?
+        let workspace = match resolve_child_workspace(
+            &self.node,
+            &parent_workspace,
+            spawn_args.workspace.as_ref(),
+            complete_lineage_from_bridge(
+                spawn_args.workspace_id.as_deref(),
+                spawn_args.workspace_authority.as_deref(),
+                spawn_args.workspace_owner_deployment_id.as_deref(),
+                spawn_args.workspace_seal_hash.as_deref(),
+            ),
+            &child_agent_did,
+            &parent_tool_call_id,
+            &parent_request_id,
+        )
+        .await
+        {
+            Ok(lineage) => lineage,
+            Err(error) => {
+                let failed = self.fail_workspace_tool_call(&row, error).await?;
+                self.processed_tool_calls.insert(processed_key);
+                tracing::warn!(
+                    parent_request_id = %parent_request_id,
+                    parent_tool_call_id = %parent_tool_call_id,
+                    failed_tool_call = failed,
+                    "subagent source rejected spawn because workspace could not be resolved"
+                );
+                return Ok(None);
             }
         };
         let request_id = if trusted_paired_peer {

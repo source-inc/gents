@@ -26,6 +26,7 @@ mod tests;
 
 pub(crate) use documents::{
     flush_workspace_docs, load_isolated_workspace, load_repository_placement,
+    load_workspace_placement,
 };
 pub(crate) use host::ensure_local_host_deployment;
 pub(crate) use run::recover_local_invocations;
