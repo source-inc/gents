@@ -134,6 +134,7 @@ pub fn validate_callback_module(
         ));
     }
     let wasm = decode_wasm_bytes(module.wasm_bytes.as_deref().unwrap_or(""))?;
+    require_wasm_binary(&wasm)?;
     let args = parse_canonical_args(module.canonical_args.as_deref())?;
     let expected = compute_module_id(&wasm, &args, abi)?;
     if expected != module.module_id.trim() {
@@ -177,15 +178,7 @@ pub fn invoke_wasm_planner(
     limits: &CallbackModuleLimits,
     input: &[u8],
 ) -> Result<Vec<u8>, String> {
-    if wasm.len() > MAX_WASM_BYTES {
-        return Err(format!(
-            "WASM module {} bytes exceeds max_wasm_bytes {MAX_WASM_BYTES}",
-            wasm.len()
-        ));
-    }
-    if wasm.get(..4) != Some(&b"\0asm"[..]) {
-        return Err("WASM planner requires a WebAssembly binary module".into());
-    }
+    require_wasm_binary(wasm)?;
     if input.len() > limits.max_input_bytes {
         return Err(format!(
             "WASM planner input {} bytes exceeds max_input_bytes {}",
@@ -307,6 +300,19 @@ fn planner_engine() -> Result<&'static Engine, String> {
     }
     let engine = Engine::new(&config).map_err(|error| format!("wasmtime engine: {error}"))?;
     Ok(ENGINE.get_or_init(|| engine))
+}
+
+pub(crate) fn require_wasm_binary(wasm: &[u8]) -> Result<(), String> {
+    if wasm.len() > MAX_WASM_BYTES {
+        return Err(format!(
+            "WASM module {} bytes exceeds max_wasm_bytes {MAX_WASM_BYTES}",
+            wasm.len()
+        ));
+    }
+    if wasm.get(..4) != Some(&b"\0asm"[..]) {
+        return Err("WASM planner requires a WebAssembly binary module".into());
+    }
+    Ok(())
 }
 
 fn bounded_u64(value: Option<i64>, field: &str, max: u64) -> Result<u64, String> {

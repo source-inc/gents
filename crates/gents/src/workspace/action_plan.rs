@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path};
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -285,9 +284,9 @@ fn require_capability(capabilities: &BTreeSet<String>, cap: &str) -> Result<()> 
     }
 }
 
-/// Platform-independent host-path shape: leading `/`, `drive:`, UNC, `file:`,
-/// `~`, or `..` components. Used so replicated ActionPlan JSON cannot carry
-/// host-shaped strings even when this process is not on Windows.
+/// Platform-independent host-path shape: leading `/` `\`, `~`, `file:`,
+/// single-letter drive (`C:`, `C:foo`, `C:\...`), or a `..` segment split on
+/// `/` or `\`. Does not use `Path` so Windows separators are visible on Unix.
 pub(crate) fn looks_like_host_path(text: &str) -> bool {
     let text = text.trim();
     if text.is_empty() {
@@ -302,31 +301,14 @@ pub(crate) fn looks_like_host_path(text: &str) -> bool {
     }
     let bytes = text.as_bytes();
     if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        if bytes.len() == 2 || bytes[2] == b'\\' || bytes[2] == b'/' {
-            return true;
-        }
+        return true;
     }
-    Path::new(text)
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
+    text.split(['/', '\\']).any(|segment| segment == "..")
 }
 
 fn assert_relative_artifact(path: &str) -> Result<()> {
-    let path = Path::new(path);
-    if path.is_absolute() || looks_like_host_path(&path.to_string_lossy()) {
-        bail!(
-            "clone artifact must be a relative path, got {}",
-            path.display()
-        );
-    }
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        bail!(
-            "clone artifact must not contain '..', got {}",
-            path.display()
-        );
+    if looks_like_host_path(path) {
+        bail!("clone artifact must be a relative path, got {path}");
     }
     Ok(())
 }

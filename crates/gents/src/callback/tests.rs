@@ -31,7 +31,7 @@ use super::run::{
 };
 use super::wasm::{
     compute_module_id, fixture_create_workspace_wasm, fixture_wasm_is_stub, invoke_wasm_planner,
-    plan_from_wasm_module, validate_callback_module, CallbackModuleLimits,
+    plan_from_wasm_module, validate_callback_module, CallbackModuleLimits, MAX_WASM_BYTES,
 };
 use super::{
     BUILTIN_CREATE_WORKSPACE, LIFECYCLE_DENIED, LIFECYCLE_FAILED, LIFECYCLE_PENDING,
@@ -812,6 +812,8 @@ fn host_path_in_plan_is_denied() {
         "file:///tmp/foo",
         "~/secret",
         "topic/../escape",
+        r"topic\..\escape",
+        "C:foo",
     ] {
         let raw = serde_json::to_string(&json!({
             "abi": 1,
@@ -859,6 +861,16 @@ fn wat_text_and_over_ceiling_limits_are_denied() {
     module.fuel_limit = Some(i64::MAX);
     let error = validate_callback_module(&module, &trusted("did:key:zTrusted")).unwrap_err();
     assert!(error.contains("host maximum"), "{error}");
+
+    let mut wat_module = module_doc(b"(module)", &json!({}), "did:key:zTrusted");
+    let error = validate_callback_module(&wat_module, &trusted("did:key:zTrusted")).unwrap_err();
+    assert!(error.contains("binary module"), "{error}");
+
+    let mut oversized = vec![0u8; MAX_WASM_BYTES + 1];
+    oversized[..4].copy_from_slice(b"\0asm");
+    wat_module = module_doc(&oversized, &json!({}), "did:key:zTrusted");
+    let error = validate_callback_module(&wat_module, &trusted("did:key:zTrusted")).unwrap_err();
+    assert!(error.contains("max_wasm_bytes"), "{error}");
 }
 
 #[test]
