@@ -251,10 +251,6 @@ pub(crate) fn prepare_integrate_commit(
     if trunk == worktree {
         bail!("refusing to integrate: trunk/source checkout is the worker workspace");
     }
-    if worktree.starts_with(&trunk) && worktree != trunk {
-        // linked worktree paths sit beside trunk, not inside it; still refuse
-        // applying onto a path that is the worker tree.
-    }
     if !is_worktree_of(&trunk, &worktree)? {
         bail!(
             "refusing to integrate: {} is not a worktree of the source checkout",
@@ -273,7 +269,7 @@ pub(crate) fn prepare_integrate_commit(
             head_sha: existing,
             changed_files: snapshot.changed_files,
             diff: snapshot.diff,
-            pending_head: false,
+            pending_head: true,
         });
     }
     let snapshot = capture_seal_snapshot(&worktree)?;
@@ -327,33 +323,80 @@ fn diff_is_empty(diff: &[u8]) -> bool {
 
 /// Point trunk `HEAD` at a commit created by [`prepare_integrate_commit`]
 /// without rewriting the default index (operator staged files stay put).
-/// Updates the worktree only for paths in that commit. Idempotent.
+///
+/// Path updates run even when `HEAD` already equals `<commit>` so a crash
+/// between `update-ref` and the last path still converges.
 pub(crate) fn advance_trunk_to_integrate_commit(trunk: &Path, commit: &str) -> Result<()> {
     let trunk = fs::canonicalize(trunk)
         .with_context(|| format!("canonicalizing trunk {}", trunk.display()))?;
     let head = git_output(&trunk, &["rev-parse", "HEAD"])?;
-    if head == commit {
-        return Ok(());
-    }
-    let files = git_output(
-        &trunk,
-        &["diff", "--name-only", "--find-renames", &head, commit],
-    )?;
-    git_run(&trunk, &["update-ref", "HEAD", commit]).with_context(|| {
-        format!(
-            "moving trunk HEAD at {} to integrate commit {commit}",
-            trunk.display()
-        )
-    })?;
-    for file in files.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        git_run(&trunk, &["checkout", commit, "--", file]).with_context(|| {
+    let name_status = if head == commit {
+        let subject = git_output(&trunk, &["log", "-1", "--format=%s", commit])?;
+        if !subject.starts_with("gents: integrate workspace seal ") {
+            return Ok(());
+        }
+        let parent = git_output(&trunk, &["rev-parse", &format!("{commit}^")])?;
+        git_output(
+            &trunk,
+            &["diff", "--name-status", "--no-renames", &parent, commit],
+        )?
+    } else {
+        git_output(
+            &trunk,
+            &["diff", "--name-status", "--no-renames", &head, commit],
+        )?
+    };
+    if head != commit {
+        git_run(&trunk, &["update-ref", "HEAD", commit]).with_context(|| {
             format!(
-                "checking out sealed path {file} onto trunk {}",
+                "moving trunk HEAD at {} to integrate commit {commit}",
                 trunk.display()
             )
         })?;
     }
+    apply_integrate_name_status(&trunk, commit, &name_status)
+}
+
+fn apply_integrate_name_status(trunk: &Path, commit: &str, name_status: &str) -> Result<()> {
+    for line in name_status
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Some((status, rest)) = line.split_once('\t') else {
+            bail!("unrecognized git name-status line: {line}");
+        };
+        let code = status.chars().next().unwrap_or('\0');
+        match code {
+            'A' | 'M' | 'T' => checkout_from_commit(trunk, commit, rest)?,
+            'D' => remove_from_trunk(trunk, rest)?,
+            'R' | 'C' => {
+                let Some((old, new)) = rest.split_once('\t') else {
+                    bail!("rename/copy name-status missing dest: {line}");
+                };
+                if code == 'R' {
+                    remove_from_trunk(trunk, old)?;
+                }
+                checkout_from_commit(trunk, commit, new)?;
+            }
+            _ => bail!("unsupported git name-status {status} in {line}"),
+        }
+    }
     Ok(())
+}
+
+fn checkout_from_commit(trunk: &Path, commit: &str, path: &str) -> Result<()> {
+    git_run(trunk, &["checkout", commit, "--", path]).with_context(|| {
+        format!(
+            "checking out sealed path {path} onto trunk {}",
+            trunk.display()
+        )
+    })
+}
+
+fn remove_from_trunk(trunk: &Path, path: &str) -> Result<()> {
+    git_run(trunk, &["rm", "-f", "--ignore-unmatch", "--", path])
+        .with_context(|| format!("removing sealed path {path} from trunk {}", trunk.display()))
 }
 
 pub(crate) fn observe_integrate_commit(trunk: &Path, seal_hash: &str) -> Result<Option<String>> {
@@ -374,27 +417,43 @@ pub(crate) fn commit_exists(repo: &Path, sha: &str) -> bool {
     git_ok(repo, &["cat-file", "-t", sha])
 }
 
-pub(crate) fn rev_parse_head(repo: &Path) -> Result<String> {
-    git_output(repo, &["rev-parse", "HEAD"])
-}
-
 fn refuse_overlapping_dirty_trunk(trunk: &Path, changed_files: &[String]) -> Result<()> {
     let porcelain = git_output(trunk, &["status", "--porcelain=v1"])?;
     if porcelain.trim().is_empty() {
         return Ok(());
     }
-    for line in porcelain.lines() {
-        let path = line.get(3..).unwrap_or("").trim();
-        if path.is_empty() {
-            continue;
-        }
-        if changed_files.iter().any(|file| file == path) {
-            bail!(
-                "refusing to integrate: trunk has uncommitted changes overlapping sealed path {path}"
-            );
+    for path in porcelain_paths(&porcelain) {
+        for part in path.split(" -> ") {
+            if changed_files.iter().any(|file| file == part) {
+                bail!(
+                    "refusing to integrate: trunk has uncommitted changes overlapping sealed path {part}"
+                );
+            }
         }
     }
     Ok(())
+}
+
+/// `git_output` trims the buffer, so an unstaged line ` M path` becomes `M path`.
+fn porcelain_paths(porcelain: &str) -> impl Iterator<Item = &str> {
+    porcelain.lines().filter_map(|line| {
+        let line = line.trim_end();
+        if line.is_empty() {
+            return None;
+        }
+        let path = if line.len() >= 3 && line.as_bytes()[2] == b' ' {
+            line[3..].trim()
+        } else if line.len() >= 2 && line.as_bytes()[1] == b' ' {
+            line[2..].trim()
+        } else {
+            return None;
+        };
+        if path.is_empty() {
+            None
+        } else {
+            Some(path)
+        }
+    })
 }
 
 fn commit_tree_from_isolated_index(trunk: &Path, diff: &[u8], seal_hash: &str) -> Result<String> {
@@ -481,16 +540,12 @@ pub(crate) fn cleanup_workspace_tree(
                 expected.display()
             );
         }
-    } else if dest != expected && PathBuf::from(dest) != expected {
-        // dest missing: still require the documented host-chosen path.
-        let dest_abs = dest.to_path_buf();
-        if dest_abs != expected {
-            tracing::info!(
-                dest = %dest.display(),
-                expected = %expected.display(),
-                "cleanup dest already absent"
-            );
-        }
+    } else if dest != expected {
+        bail!(
+            "cleanup dest {} does not match host-chosen path {}",
+            dest.display(),
+            expected.display()
+        );
     }
     if !expected.exists() {
         let _ = git_run(&source, &["worktree", "prune"]);

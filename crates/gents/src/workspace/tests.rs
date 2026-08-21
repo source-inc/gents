@@ -1472,6 +1472,215 @@ fn integrate_binary_file_round_trips() {
 }
 
 #[test]
+fn integrate_deletes_and_renames_update_trunk_worktree() {
+    let mut fx = Fixture::new();
+    fx.commit("gone.rs", "delete me\n");
+    fx.commit("old.rs", "rename me\n");
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-del", "unit-1", "topic-del");
+    let created = execute_create_workspace_plan(
+        &emit_create_workspace_plan(action),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    fs::remove_file(dest.join("gone.rs")).unwrap();
+    fs::rename(dest.join("old.rs"), dest.join("new.rs")).unwrap();
+    let sealed = seal_writer(&fx, &mut docs, "ws-del", "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    bind_integrate(&mut docs, "ws-del", "req-int", &hash);
+    integrate_writer(&fx, &mut docs, "ws-del", "req-int");
+
+    assert!(
+        !fx.repo.join("gone.rs").exists(),
+        "deleted file must leave the trunk worktree"
+    );
+    assert!(
+        git(&fx.repo, &["ls-files", "--", "gone.rs"]).is_empty(),
+        "deleted file must leave the default index"
+    );
+    assert!(
+        !fx.repo.join("old.rs").exists(),
+        "rename source must leave the trunk worktree"
+    );
+    assert!(
+        git(&fx.repo, &["ls-files", "--", "old.rs"]).is_empty(),
+        "rename source must leave the default index"
+    );
+    assert_eq!(
+        fs::read_to_string(fx.repo.join("new.rs")).unwrap(),
+        "rename me\n"
+    );
+    assert_eq!(git(&fx.repo, &["ls-files", "--", "new.rs"]), "new.rs");
+}
+
+#[test]
+fn integrate_overlapping_dirty_trunk_path_fails_closed() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-dirty", "unit-1", "topic-dirty");
+    let created = execute_create_workspace_plan(
+        &emit_create_workspace_plan(action),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    fs::write(dest.join("README.md"), "writer\n").unwrap();
+    let sealed = seal_writer(&fx, &mut docs, "ws-dirty", "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    bind_integrate(&mut docs, "ws-dirty", "req-int", &hash);
+    fs::write(fx.repo.join("README.md"), "operator wip\n").unwrap();
+    let base = git(&fx.repo, &["rev-parse", "HEAD"]);
+    let err = execute_integrate_workspace_plan(
+        &emit_integrate_workspace_plan(IntegrateWorkspaceAction {
+            workspace_id: "ws-dirty".into(),
+            produced_by_request_id: "req-int".into(),
+            produced_by_request_doc_id: "req-int-doc".into(),
+            mode: IntegrateMode::ApplyDiff,
+        }),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, integrate_caps()),
+    )
+    .expect_err("overlapping dirty trunk path must fail closed");
+    assert!(err.to_string().contains("overlapping"), "{err}");
+    assert_eq!(git(&fx.repo, &["rev-parse", "HEAD"]), base);
+    assert_eq!(
+        fs::read_to_string(fx.repo.join("README.md")).unwrap(),
+        "operator wip\n"
+    );
+}
+
+#[test]
+fn integrate_finalize_repairs_after_update_ref_crash() {
+    let mut fx = Fixture::new();
+    fx.commit("gone.rs", "delete me\n");
+    fx.commit("old.rs", "rename me\n");
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-crash-co", "unit-1", "topic-crash-co");
+    let created = execute_create_workspace_plan(
+        &emit_create_workspace_plan(action),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    fs::remove_file(dest.join("gone.rs")).unwrap();
+    fs::rename(dest.join("old.rs"), dest.join("new.rs")).unwrap();
+    fs::write(dest.join("patch.rs"), "fn patch() {}\n").unwrap();
+    let sealed = seal_writer(&fx, &mut docs, "ws-crash-co", "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    bind_integrate(&mut docs, "ws-crash-co", "req-int", &hash);
+
+    let first = execute_integrate_workspace_plan(
+        &emit_integrate_workspace_plan(IntegrateWorkspaceAction {
+            workspace_id: "ws-crash-co".into(),
+            produced_by_request_id: "req-int".into(),
+            produced_by_request_doc_id: "req-int-doc".into(),
+            mode: IntegrateMode::ApplyDiff,
+        }),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, integrate_caps()),
+    )
+    .expect("prepare integrate");
+    let commit = first
+        .pending_head_sha
+        .clone()
+        .expect("pending integrate commit");
+    git(&fx.repo, &["update-ref", "HEAD", &commit]);
+    git(&fx.repo, &["checkout", &commit, "--", "patch.rs"]);
+    assert!(
+        fx.repo.join("gone.rs").exists(),
+        "kill after update-ref must leave the deletion unapplied"
+    );
+    assert!(
+        fx.repo.join("old.rs").exists(),
+        "kill mid-checkout must leave the rename source"
+    );
+
+    let second = execute_integrate_workspace_plan(
+        &emit_integrate_workspace_plan(IntegrateWorkspaceAction {
+            workspace_id: "ws-crash-co".into(),
+            produced_by_request_id: "req-int".into(),
+            produced_by_request_doc_id: "req-int-doc".into(),
+            mode: IntegrateMode::ApplyDiff,
+        }),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, integrate_caps()),
+    )
+    .expect("restart after update-ref");
+    assert_eq!(
+        second.pending_head_sha.as_deref(),
+        Some(commit.as_str()),
+        "restart must still finalize when HEAD already equals the integrate commit; status={}",
+        git(&fx.repo, &["status", "--porcelain=v1"])
+    );
+    finalize_integrate_trunk(&fx.repo, second.pending_head_sha.as_deref()).unwrap();
+
+    assert_eq!(git(&fx.repo, &["rev-parse", "HEAD"]), commit);
+    assert!(
+        !fx.repo.join("gone.rs").exists(),
+        "restart must remove the deleted file from disk"
+    );
+    assert!(
+        git(&fx.repo, &["ls-files", "--", "gone.rs"]).is_empty(),
+        "restart must drop the deleted file from the default index"
+    );
+    assert!(!fx.repo.join("old.rs").exists());
+    assert!(git(&fx.repo, &["ls-files", "--", "old.rs"]).is_empty());
+    assert_eq!(
+        fs::read_to_string(fx.repo.join("new.rs")).unwrap(),
+        "rename me\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fx.repo.join("patch.rs")).unwrap(),
+        "fn patch() {}\n"
+    );
+}
+
+#[test]
+fn integrate_journal_marker_sanitizes_workspace_id() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let workspace_id = "ws/../../escape";
+    let action = fx.action(workspace_id, "unit-1", "topic-escape");
+    let created = execute_create_workspace_plan(
+        &emit_create_workspace_plan(action),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    fs::write(dest.join("patch.rs"), "fn patch() {}\n").unwrap();
+    let sealed = seal_writer(&fx, &mut docs, workspace_id, "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    bind_integrate(&mut docs, workspace_id, "req-int", &hash);
+    execute_integrate_workspace_plan(
+        &emit_integrate_workspace_plan(IntegrateWorkspaceAction {
+            workspace_id: workspace_id.into(),
+            produced_by_request_id: "req-int".into(),
+            produced_by_request_doc_id: "req-int-doc".into(),
+            mode: IntegrateMode::ApplyDiff,
+        }),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, integrate_caps()),
+    )
+    .expect("integrate");
+    let git_dir = PathBuf::from(git(&fx.repo, &["rev-parse", "--absolute-git-dir"]));
+    let marker = git_dir.join("gents-integrate-ws-------escape.json");
+    assert!(
+        marker.is_file(),
+        "journal marker must stay under .git/: {}",
+        marker.display()
+    );
+    assert!(
+        !fx.repo.join("escape.json").exists(),
+        "raw workspace_id must not escape .git/"
+    );
+}
+
+#[test]
 fn cleanup_refuses_ready_and_active_bindings() {
     let fx = Fixture::new();
     let mut docs = MemoryWorkspaceDocuments::default();
@@ -1525,6 +1734,7 @@ fn cleanup_refuses_ready_and_active_bindings() {
     assert!(dest.is_dir());
 }
 
+#[test]
 fn integrate_and_cleanup_plans_omit_host_path() {
     let integrate = emit_integrate_workspace_plan(IntegrateWorkspaceAction {
         workspace_id: "ws-1".into(),

@@ -12,8 +12,8 @@ use super::adapter::{
     absolute_git_dir, advance_trunk_to_integrate_commit, artifacts_complete,
     capture_instruction_manifest, capture_seal_snapshot, cleanup_workspace_tree, clone_artifacts,
     commit_exists, observe_dirty_base, observe_effect, observed_tree_hash,
-    prepare_integrate_commit, provision, resolve_base_sha, rev_parse_head, write_identity,
-    write_seal_marker, ObservedEffect,
+    prepare_integrate_commit, provision, resolve_base_sha, write_identity, write_seal_marker,
+    ObservedEffect,
 };
 use super::binding::release_binding;
 use super::documents::{
@@ -912,10 +912,10 @@ fn integrate_workspace_action(
             ));
         }
         journal::advance(journal, 0, ActionJournalState::EffectObserved);
-        let pending = existing.head_sha.clone().filter(|sha| {
-            rev_parse_head(&trunk).ok().as_deref() != Some(sha.as_str())
-                && commit_exists(&trunk, sha)
-        });
+        let pending = existing
+            .head_sha
+            .clone()
+            .filter(|sha| commit_exists(&trunk, sha));
         persist_integrate_journal(
             journal,
             &trunk,
@@ -950,12 +950,11 @@ fn integrate_workspace_action(
     let effect = if let Some(sha) = completing {
         let snapshot = capture_seal_snapshot(&dest_canon)
             .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
-        let pending_head = rev_parse_head(&trunk).ok().as_deref() != Some(sha.as_str());
         super::adapter::IntegrateEffect {
             head_sha: sha,
             changed_files: snapshot.changed_files,
             diff: snapshot.diff,
-            pending_head,
+            pending_head: true,
         }
     } else {
         prepare_integrate_commit(&trunk, &dest_canon, &seal_hash, &workspace.base_sha).map_err(
@@ -1104,7 +1103,10 @@ struct IntegrateJournalMarker {
 
 fn integrate_marker_path(trunk: &Path, workspace_id: &str) -> Option<PathBuf> {
     let git_dir = absolute_git_dir(trunk).ok()?;
-    Some(git_dir.join(format!("gents-integrate-{workspace_id}.json")))
+    Some(git_dir.join(format!(
+        "gents-integrate-{}.json",
+        sanitize_fs(workspace_id)
+    )))
 }
 
 fn load_integrate_marker(trunk: &Path, workspace_id: &str) -> Option<IntegrateJournalMarker> {
