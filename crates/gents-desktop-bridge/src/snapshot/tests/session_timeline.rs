@@ -148,6 +148,35 @@ fn background_notification_is_control_by_message_key_with_honest_request_binding
 }
 
 #[test]
+fn versioned_background_wake_never_projects_as_a_user_turn() {
+    let mut rows = make_streaming_store_with_response_content("").to_rows();
+    rows.responses.clear();
+    rows.requests[0].content =
+        Some(gents::background_completion::BACKGROUND_COMPLETION_WAKE_PROMPT.to_string());
+    rows.requests[0].status = Some("completed".to_string());
+    rows.requests[0].lifecycle_state = Some("completed".to_string());
+    rows.requests[0].execution_origin = Some("scheduled".to_string());
+    rows.requests[0].metadata = Some(
+        r#"{"queue":{"source":"background_completion","policy":"coalesce","key":"background_completion:sess-1","queued_after_request_id":"parent-1"},"background_completion_wake_version":1}"#
+            .to_string(),
+    );
+    rows.messages[0].content = Some(user_message_json(
+        gents::background_completion::BACKGROUND_COMPLETION_WAKE_PROMPT,
+    ));
+
+    let store = ClientStore::from_rows(rows);
+    let snapshot = build_session_snapshot_from_store(&store, "sess-1", Some("req-1"))
+        .expect("session snapshot");
+
+    assert!(snapshot.messages[0].runtime_control);
+    assert!(snapshot.pending_turn.is_none());
+    assert!(snapshot.timeline_items.iter().all(|item| !matches!(
+        item,
+        RenderedTimelineItem::UserMessage { .. } | RenderedTimelineItem::PendingUserTurn { .. }
+    )));
+}
+
+#[test]
 fn session_snapshot_deduplicates_persisted_rows_from_multiple_sources() {
     let mut rows = make_streaming_store_with_response_content("").to_rows();
     rows.responses.clear();

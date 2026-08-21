@@ -325,12 +325,14 @@ impl ClientCore {
             return Ok(None);
         }
 
-        let mut patch = load_chat_patch(self.node.as_ref(), request_id).await?;
+        let patch = load_chat_patch(self.node.as_ref(), request_id).await?;
         let rows = patch.row_count();
         if rows == 0 {
             return Ok(None);
         }
-        patch.stamp_source_agent_did(agent_did);
+        // This patch came from the embedded replica, just like the observer's
+        // baseline snapshot. Keep its source untagged so both paths address a
+        // durable document by the same identity.
         let signature = chat_patch_signature(&patch);
         let cache_key = format!("local\0{agent_did}\0{request_id}");
         {

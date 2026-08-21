@@ -537,6 +537,9 @@ fn build_pending_turn(
             && row.session_id.as_deref() == Some(session_id)
             && agent_did.is_none_or(|agent_did| request_matches_agent(row, agent_did, false))
     })?;
+    if gents::lifecycle::is_background_completion_request(request.metadata.as_deref()) {
+        return None;
+    }
 
     let lifecycle_state = normalize_optional(request.lifecycle_state.as_deref());
     let content = normalize_optional(request.content.as_deref())?;
