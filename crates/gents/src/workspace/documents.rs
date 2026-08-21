@@ -134,7 +134,9 @@ pub(crate) fn new_isolated_workspace(
     }
 }
 
-pub fn isolated_workspace_create_mutation(doc: &IsolatedWorkspaceDoc) -> String {
+/// Upsert IsolatedWorkspace. Identity fields are add-only; retries may only
+/// update mutable `lifecycle_state` / `seal_hash`.
+pub fn isolated_workspace_upsert_mutation(doc: &IsolatedWorkspaceDoc) -> String {
     let seal_hash = match doc
         .seal_hash
         .as_deref()
@@ -146,23 +148,30 @@ pub fn isolated_workspace_create_mutation(doc: &IsolatedWorkspaceDoc) -> String 
     };
     format!(
         r#"mutation {{
-            create_IsolatedWorkspace(input: {{
-                workspace_id: "{workspace_id}",
-                work_unit_id: "{work_unit_id}",
-                repository_id: "{repository_id}",
-                base_sha: "{base_sha}",
-                branch: "{branch}",
-                creation_policy: "{creation_policy}",
-                adapter: "{adapter}",
-                owner_deployment_id: "{owner_deployment_id}",
-                writer_principal: "{writer_principal}",
-                integrator_principal: "{integrator_principal}",
-                instruction_manifest: "{instruction_manifest}",
-                seal_hash: {seal_hash},
-                lifecycle_state: "{lifecycle_state}",
-                caused_by_invocation_id: "{caused_by_invocation_id}",
-                caused_by_correlation: "{caused_by_correlation}"
-            }}) {{ _docID }}
+            upsert_IsolatedWorkspace(
+                filter: {{ workspace_id: {{ _eq: "{workspace_id}" }} }},
+                add: {{
+                    workspace_id: "{workspace_id}",
+                    work_unit_id: "{work_unit_id}",
+                    repository_id: "{repository_id}",
+                    base_sha: "{base_sha}",
+                    branch: "{branch}",
+                    creation_policy: "{creation_policy}",
+                    adapter: "{adapter}",
+                    owner_deployment_id: "{owner_deployment_id}",
+                    writer_principal: "{writer_principal}",
+                    integrator_principal: "{integrator_principal}",
+                    instruction_manifest: "{instruction_manifest}",
+                    seal_hash: {seal_hash},
+                    lifecycle_state: "{lifecycle_state}",
+                    caused_by_invocation_id: "{caused_by_invocation_id}",
+                    caused_by_correlation: "{caused_by_correlation}"
+                }},
+                update: {{
+                    lifecycle_state: "{lifecycle_state}",
+                    seal_hash: {seal_hash}
+                }}
+            ) {{ _docID }}
         }}"#,
         workspace_id = escape_graphql_string(&doc.workspace_id),
         work_unit_id = escape_graphql_string(&doc.work_unit_id),

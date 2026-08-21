@@ -174,6 +174,7 @@ fn surface_from_view(view: &View) -> ToolPolicySurface {
                 &view.bash_read_only_kind,
                 &view.bash_read_only_keys,
             ),
+            deny_git_metadata_writes: false,
         },
         meta: view.meta,
         defra_query: view.defra_query,

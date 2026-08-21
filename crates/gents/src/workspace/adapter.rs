@@ -10,7 +10,7 @@ use super::documents::ProvisioningObservation;
 use super::LogicalWorkspaceIdentity;
 
 const IDENTITY_FILE_NAME: &str = "gents-workspace-identity.json";
-const DIRTY_BASE_SUMMARY_LIMIT: usize = 2048;
+pub(crate) const DIRTY_BASE_SUMMARY_LIMIT: usize = 2048;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ObservedEffect {
@@ -57,12 +57,23 @@ impl From<&LogicalWorkspaceIdentity> for RecordedIdentity {
 pub(crate) fn observe_dirty_base(source: &Path) -> Result<DirtyBase> {
     let porcelain = git_output(source, &["status", "--porcelain=v1"])?;
     let dirty = !porcelain.trim().is_empty();
-    let summary = if porcelain.len() > DIRTY_BASE_SUMMARY_LIMIT {
-        porcelain[..DIRTY_BASE_SUMMARY_LIMIT].to_string()
-    } else {
-        porcelain
-    };
-    Ok(DirtyBase { dirty, summary })
+    Ok(DirtyBase {
+        dirty,
+        summary: bound_dirty_base_summary(&porcelain),
+    })
+}
+
+/// Truncate porcelain at a UTF-8 char boundary so a multibyte filename
+/// cannot panic CreateWorkspace before EffectObserved.
+pub(crate) fn bound_dirty_base_summary(porcelain: &str) -> String {
+    if porcelain.len() <= DIRTY_BASE_SUMMARY_LIMIT {
+        return porcelain.to_string();
+    }
+    let mut end = DIRTY_BASE_SUMMARY_LIMIT;
+    while end > 0 && !porcelain.is_char_boundary(end) {
+        end -= 1;
+    }
+    porcelain[..end].to_string()
 }
 
 pub(crate) fn observe_effect(
@@ -82,7 +93,7 @@ pub(crate) fn observe_effect(
     };
     observation.worktree_registered = is_worktree_of(source, dest)?;
     observation.identity_recorded = identity_path(dest).ok().is_some_and(|path| path.is_file());
-    observation.artifacts_cloned = artifacts.iter().any(|rel| dest.join(rel).exists());
+    observation.artifacts_cloned = artifacts_complete(source, dest, artifacts);
 
     match match_existing(source, dest, identity, resolved_base) {
         Ok(tree_hash) => Ok(ObservedEffect::Match {
@@ -114,8 +125,9 @@ pub(crate) fn provision(
         artifacts_cloned: false,
     };
     if action.adapter.clones_artifacts() {
+        clone_artifacts(source, dest, &action.effective_clone_artifacts())?;
         observation.artifacts_cloned =
-            clone_artifacts(source, dest, &action.effective_clone_artifacts())?;
+            artifacts_complete(source, dest, &action.effective_clone_artifacts());
     }
     Ok(observation)
 }
@@ -246,8 +258,8 @@ fn add_worktree(source: &Path, dest: &Path, branch: &str, base_sha: &str) -> Res
     Ok(())
 }
 
-fn clone_artifacts(source: &Path, dest: &Path, artifacts: &[String]) -> Result<bool> {
-    let mut cloned_any = false;
+/// Resume-safe: copies missing dest dirs, leaves existing dest dirs in place.
+pub(crate) fn clone_artifacts(source: &Path, dest: &Path, artifacts: &[String]) -> Result<()> {
     for relative in artifacts {
         let rel = relative.trim_end_matches('/');
         let src_dir = source.join(rel);
@@ -260,7 +272,6 @@ fn clone_artifacts(source: &Path, dest: &Path, artifacts: &[String]) -> Result<b
         }
         let dst_dir = dest.join(rel);
         if dst_dir.exists() {
-            cloned_any = true;
             continue;
         }
         if let Some(parent) = dst_dir.parent() {
@@ -272,9 +283,15 @@ fn clone_artifacts(source: &Path, dest: &Path, artifacts: &[String]) -> Result<b
             let _ = fs::remove_dir_all(dst_dir.join("debug").join("incremental"));
             let _ = fs::remove_dir_all(dst_dir.join("release").join("incremental"));
         }
-        cloned_any = true;
     }
-    Ok(cloned_any)
+    Ok(())
+}
+
+pub(crate) fn artifacts_complete(source: &Path, dest: &Path, artifacts: &[String]) -> bool {
+    artifacts.iter().all(|relative| {
+        let rel = relative.trim_end_matches('/');
+        !source.join(rel).is_dir() || dest.join(rel).exists()
+    })
 }
 
 fn clone_dir(src: &Path, dst: &Path, label: &str) -> Result<()> {

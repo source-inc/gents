@@ -5,8 +5,12 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-use crate::toolset::{validate_command_policy, CommandExecutionMode, CommandExecutionPolicy};
+use crate::toolset::{
+    validate_command_policy, CommandConstraints, CommandExecutionMode, CommandExecutionPolicy,
+    CommandNetworkMode,
+};
 
+use super::adapter::{bound_dirty_base_summary, DIRTY_BASE_SUMMARY_LIMIT};
 use super::*;
 
 fn capabilities() -> BTreeSet<String> {
@@ -158,6 +162,22 @@ fn builtin_emitter_omits_absolute_destination() {
         "host_path": "/tmp/evil"
     }))
     .is_err());
+    assert!(
+        serde_json::from_value::<ActionPlan>(serde_json::json!({
+            "abi": 1,
+            "actions": [{
+                "type": "create_workspace",
+                "workspace_id": "ws-1",
+                "work_unit_id": "unit-1",
+                "repository_id": "repo-1",
+                "base_sha": "abc",
+                "branch": "topic"
+            }],
+            "host_path": "/tmp/evil"
+        }))
+        .is_err(),
+        "destination on the plan root must be Denied, not dropped"
+    );
 }
 
 #[test]
@@ -179,8 +199,10 @@ fn isolated_workspace_mutation_has_no_host_path() {
         caused_by_invocation_id: "inv-1".into(),
         caused_by_correlation: "corr-1".into(),
     };
-    let mutation = isolated_workspace_create_mutation(&doc);
+    let mutation = isolated_workspace_upsert_mutation(&doc);
     assert!(!mutation.contains("host_path"));
+    assert!(mutation.contains("upsert_IsolatedWorkspace"));
+    assert!(!mutation.contains("create_IsolatedWorkspace"));
     assert!(mutation.contains("seal_hash: null"));
     let placement = WorkspacePlacementDoc {
         workspace_id: "ws-1".into(),
@@ -489,6 +511,132 @@ fn git_worktree_diff_denies_metadata_writes_allows_reads() {
         CommandExecutionPolicy::write_capable().with_mode(CommandExecutionMode::WorkspaceWrite);
     validate_command_policy("git", &[String::from("commit")], &unrestricted)
         .expect("without git_worktree_diff, WorkspaceWrite still allows git commit at argv layer");
+
+    for script in [
+        "git --exec-path=/tmp/evil status",
+        "git --git-dir=/tmp/evil status",
+        "git --work-tree=/tmp/evil diff",
+    ] {
+        let err = validate_command_policy("/bin/sh", &["-lc".into(), script.into()], &policy)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("gitMetadataWriteDenied")
+                || err.to_string().contains("git_worktree_diff")
+                || err.to_string().contains("exec-path")
+                || err.to_string().contains("git-dir")
+                || err.to_string().contains("work-tree"),
+            "script {script:?} should be denied, got {err}"
+        );
+    }
+
+    let constraints = CommandConstraints {
+        allowed_argv_prefixes: Vec::new(),
+        forbidden_argv_prefixes: Vec::new(),
+        network_mode: CommandNetworkMode::Inherit,
+        execution_mode: CommandExecutionMode::WorkspaceWrite,
+        sandbox: CommandExecutionMode::WorkspaceWrite,
+        deny_all_argv: false,
+        deny_git_metadata_writes: true,
+    };
+    assert!(constraints.to_spawn_policy().deny_git_metadata_writes());
+}
+
+#[test]
+fn dirty_base_summary_truncates_on_char_boundary() {
+    let cjk = "文".repeat(700);
+    assert!(cjk.len() > DIRTY_BASE_SUMMARY_LIMIT);
+    assert!(!cjk.is_char_boundary(DIRTY_BASE_SUMMARY_LIMIT));
+    let summary = bound_dirty_base_summary(&cjk);
+    assert!(summary.len() <= DIRTY_BASE_SUMMARY_LIMIT);
+    assert!(cjk.is_char_boundary(summary.len()));
+}
+
+#[test]
+fn dirty_base_observation_survives_multibyte_porcelain() {
+    let fx = Fixture::new();
+    let name = "文".repeat(80);
+    for i in 0..16 {
+        fs::write(fx.repo.join(format!("{name}-{i}")), "x").unwrap();
+    }
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-cjk", "unit-1", "topic-cjk");
+    let plan = emit_create_workspace_plan(action);
+    let mut journal = Vec::new();
+    let outcome = execute_create_workspace_plan(
+        &plan,
+        &mut journal,
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("multibyte dirty porcelain must not panic");
+    assert!(outcome.placement.dirty_base);
+    assert!(outcome.placement.dirty_base_summary.len() <= DIRTY_BASE_SUMMARY_LIMIT);
+}
+
+#[test]
+fn make_worktree_resumes_missing_artifact_dirs_on_match() {
+    let fx = Fixture::new();
+    fs::create_dir_all(fx.repo.join("target")).unwrap();
+    fs::write(fx.repo.join("target").join("cache.bin"), "warm").unwrap();
+    fs::create_dir_all(fx.repo.join("crates/gents/proofs/.lake")).unwrap();
+    fs::write(
+        fx.repo.join("crates/gents/proofs/.lake").join("pkg"),
+        "mathlib",
+    )
+    .unwrap();
+
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let mut make = fx.action("ws-resume", "unit-1", "topic-resume");
+    make.adapter = WorkspaceAdapterKind::MakeWorktree;
+    let plan = emit_create_workspace_plan(make);
+    let mut journal = Vec::new();
+    let first =
+        execute_create_workspace_plan(&plan, &mut journal, &mut fx.ctx(&mut docs, capabilities()))
+            .expect("make_worktree");
+    let dest = PathBuf::from(&first.placement.host_path);
+    fs::remove_dir_all(dest.join("crates/gents/proofs/.lake")).unwrap();
+    assert!(!dest.join("crates/gents/proofs/.lake").exists());
+
+    let mut journal = Vec::new();
+    execute_create_workspace_plan(&plan, &mut journal, &mut fx.ctx(&mut docs, capabilities()))
+        .expect("resume clone");
+    assert_eq!(
+        fs::read_to_string(dest.join("crates/gents/proofs/.lake").join("pkg")).unwrap(),
+        "mathlib"
+    );
+    assert_eq!(
+        fs::read_to_string(dest.join("target").join("cache.bin")).unwrap(),
+        "warm"
+    );
+}
+
+#[test]
+fn provision_failed_is_terminal_and_does_not_become_ready() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-failed", "unit-1", "topic-failed");
+    let plan = emit_create_workspace_plan(action);
+    let mut journal = Vec::new();
+    execute_create_workspace_plan(
+        &plan,
+        &mut journal,
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    docs.workspaces
+        .get_mut("ws-failed")
+        .expect("row")
+        .lifecycle_state = "provisionFailed".to_string();
+
+    let mut journal = Vec::new();
+    let err = execute_create_workspace_plan(
+        &plan,
+        &mut journal,
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect_err("provisionFailed must not become ready");
+    assert!(err.to_string().contains("provisionFailed"), "{err}");
+    let stored = docs.load_isolated_workspace("ws-failed").unwrap().unwrap();
+    assert_eq!(stored.lifecycle_state, "provisionFailed");
 }
 
 trait IsolatedWorkspaceDocExt {

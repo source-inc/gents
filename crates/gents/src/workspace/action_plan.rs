@@ -11,6 +11,7 @@ pub(crate) const ACTION_PLAN_ABI: u32 = 1;
 pub const DEFAULT_MAKE_WORKTREE_ARTIFACTS: &[&str] = &["target/", "crates/gents/proofs/.lake"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ActionPlan {
     pub abi: u32,
     pub actions: Vec<HostAction>,

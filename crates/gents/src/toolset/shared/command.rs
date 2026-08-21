@@ -322,6 +322,7 @@ pub struct CommandConstraints {
     /// Seatbelt vs none. Never `ReadOnly`. Hashed into the LSP config digest.
     pub sandbox: CommandExecutionMode,
     pub deny_all_argv: bool,
+    pub deny_git_metadata_writes: bool,
 }
 
 impl CommandConstraints {
@@ -333,7 +334,7 @@ impl CommandConstraints {
             network_mode: self.network_mode,
             read_only_allowlist: Vec::new(),
             deny_all_argv: self.deny_all_argv,
-            deny_git_metadata_writes: false,
+            deny_git_metadata_writes: self.deny_git_metadata_writes,
         }
     }
 }
@@ -1268,8 +1269,8 @@ fn validate_git_worktree_diff_policy(
         return deny_git_metadata_write_args(args, policy);
     }
     if let Some(script) = shell_command_script(command, args) {
-        if let Some(subcommand) = git_metadata_write_in_script(script) {
-            return Err(git_metadata_write_denial(policy, &subcommand));
+        for git_args in git_invocations_in_script(script) {
+            deny_git_metadata_write_args(&git_args, policy)?;
         }
     }
     Ok(())
@@ -1347,7 +1348,8 @@ fn shell_command_script<'a>(command: &str, args: &'a [String]) -> Option<&'a str
     expect_script.then_some(script).flatten()
 }
 
-fn git_metadata_write_in_script(script: &str) -> Option<String> {
+fn git_invocations_in_script(script: &str) -> Vec<Vec<String>> {
+    let mut invocations = Vec::new();
     for segment in script.split(|ch| matches!(ch, ';' | '\n' | '|' | '&')) {
         let words: Vec<String> = segment.split_whitespace().map(str::to_string).collect();
         let Some(git_idx) = words.iter().position(|word| {
@@ -1357,41 +1359,9 @@ fn git_metadata_write_in_script(script: &str) -> Option<String> {
         }) else {
             continue;
         };
-        let git_args = &words[git_idx + 1..];
-        let Some((subcommand_idx, subcommand)) = find_git_subcommand(git_args) else {
-            continue;
-        };
-        if !git_read_subcommand_allowed_under_worktree_diff(subcommand) {
-            return Some(subcommand.to_string());
-        }
-        if subcommand == "branch"
-            && git_branch_args_write(git_args.get(subcommand_idx + 1..).unwrap_or(&[]))
-        {
-            return Some(subcommand.to_string());
-        }
+        invocations.push(words[git_idx + 1..].to_vec());
     }
-    None
-}
-
-fn git_branch_args_write(args: &[String]) -> bool {
-    if args.is_empty() {
-        return false;
-    }
-    args.iter().any(|arg| {
-        !matches!(
-            arg.as_str(),
-            "--list"
-                | "-l"
-                | "--show-current"
-                | "-a"
-                | "--all"
-                | "-r"
-                | "--remotes"
-                | "-v"
-                | "-vv"
-                | "--verbose"
-        ) && !arg.starts_with("--format=")
-    })
+    invocations
 }
 
 fn validate_git_args(

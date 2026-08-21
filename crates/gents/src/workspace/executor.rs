@@ -5,8 +5,8 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use super::action_plan::{ActionPlan, CreateWorkspaceAction, HostAction};
 use super::adapter::{
-    observe_dirty_base, observe_effect, observed_tree_hash, provision, resolve_base_sha,
-    write_identity, ObservedEffect,
+    artifacts_complete, clone_artifacts, observe_dirty_base, observe_effect, observed_tree_hash,
+    provision, resolve_base_sha, write_identity, ObservedEffect,
 };
 use super::documents::{
     new_isolated_workspace, IsolatedWorkspaceDoc, ProvisioningObservation, WorkspaceDocuments,
@@ -296,11 +296,40 @@ fn create_workspace_action(
             ));
         }
         ObservedEffect::Match {
-            observation,
+            mut observation,
             tree_hash,
             dirty_base,
         } => {
             let _ = write_identity(&dest, &identity);
+            if action.adapter.clones_artifacts() {
+                if let Err(err) = clone_artifacts(&source, &dest, &artifacts) {
+                    journal::advance(journal, 0, ActionJournalState::EffectObserved);
+                    let outcome = persist_docs(
+                        action,
+                        &identity,
+                        ctx,
+                        &dest,
+                        observation,
+                        tree_hash,
+                        &dirty_base,
+                        LIFECYCLE_PROVISION_FAILED,
+                    )
+                    .map_err(|persist_err| {
+                        HostExecuteError::failed(
+                            format!("{err}; also failed writing result docs: {persist_err}"),
+                            false,
+                            None,
+                        )
+                    })?;
+                    journal::advance(journal, 0, ActionJournalState::ResultDocsWritten);
+                    return Err(HostExecuteError::failed(
+                        err.to_string(),
+                        false,
+                        Some(outcome),
+                    ));
+                }
+                observation.artifacts_cloned = artifacts_complete(&source, &dest, &artifacts);
+            }
             (observation, tree_hash, dirty_base)
         }
         ObservedEffect::Mismatch {
@@ -364,6 +393,15 @@ fn persist_docs(
         if existing.lifecycle_state == LIFECYCLE_READY && lifecycle_state != LIFECYCLE_READY {
             bail!(
                 "refusing to overwrite Ready IsolatedWorkspace {}",
+                identity.workspace_id
+            );
+        }
+        // provisioning → ready | provisionFailed only. ProvisionFailed is terminal.
+        if existing.lifecycle_state == LIFECYCLE_PROVISION_FAILED
+            && lifecycle_state != LIFECYCLE_PROVISION_FAILED
+        {
+            bail!(
+                "IsolatedWorkspace {} is provisionFailed; refusing {lifecycle_state} without cleanup",
                 identity.workspace_id
             );
         }

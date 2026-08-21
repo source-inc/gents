@@ -6,7 +6,7 @@
 //! replicated [`IsolatedWorkspaceDoc`] plus a local [`WorkspacePlacementDoc`].
 
 mod action_plan;
-mod adapter;
+pub(crate) mod adapter;
 mod documents;
 mod executor;
 mod journal;
@@ -18,7 +18,7 @@ pub use action_plan::{
     DEFAULT_MAKE_WORKTREE_ARTIFACTS,
 };
 pub use documents::{
-    isolated_workspace_create_mutation, workspace_placement_upsert_mutation, IsolatedWorkspaceDoc,
+    isolated_workspace_upsert_mutation, workspace_placement_upsert_mutation, IsolatedWorkspaceDoc,
     MemoryWorkspaceDocuments, ProvisioningObservation, WorkspaceDocuments, WorkspacePlacementDoc,
 };
 pub use executor::{
