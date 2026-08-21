@@ -38,6 +38,20 @@ const BINDING_FIELDS: &str = r#"
     enabled
 "#;
 
+const MODULE_FIELDS: &str = r#"
+    module_id
+    abi_version
+    wasm_bytes
+    canonical_args
+    signer_did
+    provenance
+    enabled
+    fuel_limit
+    memory_pages
+    max_input_bytes
+    max_output_bytes
+"#;
+
 const INVOCATION_FIELDS: &str = r#"
     invocation_id
     owner_deployment_id
@@ -117,6 +131,31 @@ pub struct CallbackBindingDoc {
     pub owner_deployment_id: String,
     #[serde(default)]
     pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallbackModuleDoc {
+    pub module_id: String,
+    #[serde(default)]
+    pub abi_version: Option<i64>,
+    #[serde(default)]
+    pub wasm_bytes: Option<String>,
+    #[serde(default)]
+    pub canonical_args: Option<String>,
+    #[serde(default)]
+    pub signer_did: Option<String>,
+    #[serde(default)]
+    pub provenance: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub fuel_limit: Option<i64>,
+    #[serde(default)]
+    pub memory_pages: Option<i64>,
+    #[serde(default)]
+    pub max_input_bytes: Option<i64>,
+    #[serde(default)]
+    pub max_output_bytes: Option<i64>,
 }
 
 impl CallbackBindingDoc {
@@ -266,15 +305,16 @@ pub fn validate_callback_binding(binding: &CallbackBindingDoc) -> Result<()> {
             "CallbackBinding {} needs builtin_emitter or module_id",
             binding.binding_id
         ),
-        (None, Some(_)) => anyhow::bail!(
-            "CallbackBinding {} WASM planner is not implemented",
+        (Some(_), Some(_)) => anyhow::bail!(
+            "CallbackBinding {} module_id and builtin_emitter are mutually exclusive",
             binding.binding_id
         ),
-        (Some(name), _) if name != BUILTIN_CREATE_WORKSPACE => anyhow::bail!(
+        (None, Some(_)) => Ok(()),
+        (Some(name), None) if name != BUILTIN_CREATE_WORKSPACE => anyhow::bail!(
             "CallbackBinding {} unknown builtin_emitter `{name}`",
             binding.binding_id
         ),
-        (Some(_), _) => Ok(()),
+        (Some(_), None) => Ok(()),
     }
 }
 
@@ -361,6 +401,55 @@ pub async fn list_enabled_bindings(node: &EmbeddedNode) -> Result<Vec<CallbackBi
     }
     out.sort_by(|left, right| left.binding_id.cmp(&right.binding_id));
     Ok(out)
+}
+
+pub async fn load_callback_module(
+    node: &EmbeddedNode,
+    module_id: &str,
+) -> Result<Option<CallbackModuleDoc>> {
+    let query = format!(
+        r#"{{
+            CallbackModule(
+                filter: {{ module_id: {{ _eq: "{id}" }} }},
+                limit: 1
+            ) {{ {MODULE_FIELDS} }}
+        }}"#,
+        id = escape_graphql_string(module_id),
+    );
+    let response = node.execute(&query).await;
+    if response.has_errors() {
+        anyhow::bail!(
+            "query CallbackModule {module_id} failed: {:?}",
+            response.errors
+        );
+    }
+    first_row(&response, "CallbackModule")
+}
+
+pub async fn load_trusted_callback_signers(node: &EmbeddedNode) -> Result<BTreeSet<String>> {
+    let query = r#"{
+        AgentPrincipal(filter: { enabled: { _eq: true } }) {
+            agent_did
+        }
+    }"#;
+    let response = node.execute(query).await;
+    if response.has_errors() {
+        anyhow::bail!(
+            "query trusted AgentPrincipal signers failed: {:?}",
+            response.errors
+        );
+    }
+    let rows: Vec<Value> = rows(&response, "AgentPrincipal")?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            row.get("agent_did")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|did| !did.is_empty())
+                .map(str::to_string)
+        })
+        .collect())
 }
 
 pub async fn load_binding(

@@ -10,21 +10,27 @@ use tempfile::TempDir;
 use crate::ensure_runtime_schemas;
 use crate::watcher::workspace_bound_request_claimable;
 use crate::workspace::{
-    action_journal_prefix_legal, emit_create_workspace_plan, execute_create_workspace_plan,
-    ActionJournalEntry, ActionJournalState, CreateWorkspaceAction, CreationPolicy,
-    HostExecutorContext, MemoryWorkspaceDocuments, RepositoryPlacementRef, WorkspaceAdapterKind,
-    WorkspaceDocuments, CAP_CREATE_WORKSPACE, CAP_OBSERVE_DIRTY_BASE,
+    action_journal_prefix_legal, action_plan_canonical_json, emit_create_workspace_plan,
+    execute_create_workspace_plan, parse_action_plan_json, ActionJournalEntry, ActionJournalState,
+    CreateWorkspaceAction, CreationPolicy, HostAction, HostExecutorContext,
+    MemoryWorkspaceDocuments, RepositoryPlacementRef, WorkspaceAdapterKind, WorkspaceDocuments,
+    CAP_CLONE_ARTIFACTS, CAP_CREATE_WORKSPACE, CAP_OBSERVE_DIRTY_BASE,
 };
 
 use super::claim::invocation_is_claimable;
 use super::documents::{
     strip_secret_fields, succeeded_missing_result, succeeded_repair_cutoff,
-    validate_callback_binding, CallbackBindingDoc, CallbackInvocationDoc, SUCCEEDED_REPAIR_LIMIT,
-    SUCCEEDED_REPAIR_WINDOW,
+    validate_callback_binding, CallbackBindingDoc, CallbackInvocationDoc, CallbackModuleDoc,
+    SUCCEEDED_REPAIR_LIMIT, SUCCEEDED_REPAIR_WINDOW,
 };
 use super::host::ensure_local_host_deployment;
 use super::run::{
-    can_emit_callback_result, can_start_executing, emit_plan_from_source, resolve_action_plan,
+    can_emit_callback_result, can_start_executing, emit_plan_from_source, plan_from_binding,
+    resolve_action_plan,
+};
+use super::wasm::{
+    compute_module_id, fixture_create_workspace_wasm, fixture_wasm_is_stub, invoke_wasm_planner,
+    plan_from_wasm_module, validate_callback_module, CallbackModuleLimits,
 };
 use super::{BUILTIN_CREATE_WORKSPACE, LIFECYCLE_PENDING, LIFECYCLE_RUNNING, LIFECYCLE_SUCCEEDED};
 
@@ -239,12 +245,19 @@ fn succeeded_without_result_repair_is_windowed_and_batched() {
 }
 
 #[test]
-fn apply_rejects_wasm_only_bindings() {
+fn apply_accepts_wasm_only_bindings() {
     let mut wasm = binding();
     wasm.builtin_emitter = None;
     wasm.module_id = Some("mod-1".into());
-    let error = validate_callback_binding(&wasm).unwrap_err().to_string();
-    assert!(error.contains("WASM planner is not implemented"), "{error}");
+    validate_callback_binding(&wasm).expect("wasm-only binding");
+}
+
+#[test]
+fn apply_rejects_builtin_and_module_together() {
+    let mut both = binding();
+    both.module_id = Some("mod-1".into());
+    let error = validate_callback_binding(&both).unwrap_err().to_string();
+    assert!(error.contains("mutually exclusive"), "{error}");
 }
 
 #[test]
@@ -529,4 +542,285 @@ async fn first_seen_source_create_materializes_owner_invocation() {
         .unwrap_or_default();
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0]["owner_deployment_id"], deployment_id);
+}
+
+fn wasm_bytes_for_id() -> Vec<u8> {
+    b"\0asm\x01\x00\x00\x00hello-planner".to_vec()
+}
+
+fn module_doc(wasm: &[u8], args: &serde_json::Value, signer: &str) -> CallbackModuleDoc {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    let module_id = compute_module_id(wasm, args, 1).unwrap();
+    CallbackModuleDoc {
+        module_id,
+        abi_version: Some(1),
+        wasm_bytes: Some(STANDARD.encode(wasm)),
+        canonical_args: Some(serde_json::to_string(args).unwrap()),
+        signer_did: Some(signer.into()),
+        provenance: Some("fixture_create_workspace".into()),
+        enabled: Some(true),
+        fuel_limit: Some(50_000_000),
+        memory_pages: Some(256),
+        max_input_bytes: Some(1_000_000),
+        max_output_bytes: Some(1_000_000),
+    }
+}
+
+fn trusted(signer: &str) -> BTreeSet<String> {
+    [signer.to_string()].into_iter().collect()
+}
+
+fn wat_returns_json(json: &str) -> String {
+    let escaped = json.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 0) "{escaped}")
+  (func (export "alloc") (param i32) (result i32) (i32.const 2048))
+  (func (export "output_ptr") (result i32) (i32.const 0))
+  (func (export "plan") (param i32 i32) (result i32)
+    (i32.const {len}))
+)"#,
+        len = json.len()
+    )
+}
+
+fn tight_limits(fuel: u64, pages: u32, max_in: usize, max_out: usize) -> CallbackModuleLimits {
+    CallbackModuleLimits {
+        fuel_limit: fuel,
+        memory_pages: pages,
+        max_input_bytes: max_in,
+        max_output_bytes: max_out,
+    }
+}
+
+#[test]
+fn module_id_is_stable_across_host_paths_and_arg_key_order() {
+    let wasm = wasm_bytes_for_id();
+    let root = TempDir::new().unwrap();
+    let path_a = root.path().join("one").join("module.wasm");
+    let path_b = root.path().join("other-host").join("copy.wasm");
+    fs::create_dir_all(path_a.parent().unwrap()).unwrap();
+    fs::create_dir_all(path_b.parent().unwrap()).unwrap();
+    fs::write(&path_a, &wasm).unwrap();
+    fs::write(&path_b, &wasm).unwrap();
+
+    let id_a = compute_module_id(&fs::read(&path_a).unwrap(), &json!({"b": 1, "a": 2}), 1).unwrap();
+    let id_b = compute_module_id(&fs::read(&path_b).unwrap(), &json!({"a": 2, "b": 1}), 1).unwrap();
+    assert_eq!(id_a, id_b);
+    assert!(id_a.starts_with("sha256:"));
+    assert_ne!(
+        compute_module_id(path_a.to_string_lossy().as_bytes(), &json!({}), 1).unwrap(),
+        id_a,
+        "module_id must hash decoded bytes, not the host path"
+    );
+}
+
+#[test]
+fn signer_policy_fail_closes_when_missing_or_untrusted() {
+    let wasm = wasm_bytes_for_id();
+    let mut module = module_doc(&wasm, &json!({}), "did:key:zTrusted");
+    let empty = BTreeSet::new();
+    let error = validate_callback_module(&module, &empty).unwrap_err();
+    assert!(error.contains("no trusted principals"), "{error}");
+
+    module.signer_did = None;
+    let error = validate_callback_module(&module, &trusted("did:key:zTrusted")).unwrap_err();
+    assert!(error.contains("signer_did is missing"), "{error}");
+
+    module.signer_did = Some("did:key:zTrusted".into());
+    module.provenance = None;
+    let error = validate_callback_module(&module, &trusted("did:key:zTrusted")).unwrap_err();
+    assert!(error.contains("provenance is missing"), "{error}");
+
+    module.provenance = Some("fixture".into());
+    module.signer_did = Some("did:key:zStranger".into());
+    let error = validate_callback_module(&module, &trusted("did:key:zTrusted")).unwrap_err();
+    assert!(error.contains("not a trusted principal"), "{error}");
+
+    module.signer_did = Some("did:key:zTrusted".into());
+    validate_callback_module(&module, &trusted("did:key:zTrusted")).expect("trusted signer");
+}
+
+#[test]
+fn fuel_exhaustion_denies_without_a_plan() {
+    let wat = r#"(module
+  (memory (export "memory") 1)
+  (func (export "alloc") (param i32) (result i32) (i32.const 0))
+  (func (export "output_ptr") (result i32) (i32.const 0))
+  (func (export "plan") (param i32 i32) (result i32)
+    (loop $spin (br $spin))
+    unreachable)
+)"#;
+    let error =
+        invoke_wasm_planner(wat.as_bytes(), &tight_limits(1, 1, 64, 64), b"{}").unwrap_err();
+    assert!(
+        error.to_lowercase().contains("fuel") || error.to_lowercase().contains("denied"),
+        "{error}"
+    );
+}
+
+#[test]
+fn memory_limit_denies_at_instantiate() {
+    let wat = r#"(module
+  (memory (export "memory") 8)
+  (func (export "alloc") (param i32) (result i32) (i32.const 0))
+  (func (export "output_ptr") (result i32) (i32.const 0))
+  (func (export "plan") (param i32 i32) (result i32) (i32.const 0))
+)"#;
+    let error =
+        invoke_wasm_planner(wat.as_bytes(), &tight_limits(10_000, 1, 64, 64), b"{}").unwrap_err();
+    assert!(error.to_lowercase().contains("denied"), "{error}");
+}
+
+#[test]
+fn input_and_output_byte_limits_deny() {
+    let wat = wat_returns_json(&"x".repeat(32));
+    let error = invoke_wasm_planner(
+        wat.as_bytes(),
+        &tight_limits(10_000_000, 1, 4, 1024),
+        b"0123456789",
+    )
+    .unwrap_err();
+    assert!(error.contains("max_input_bytes"), "{error}");
+
+    let error = invoke_wasm_planner(wat.as_bytes(), &tight_limits(10_000_000, 1, 1024, 8), b"{}")
+        .unwrap_err();
+    assert!(error.contains("max_output_bytes"), "{error}");
+}
+
+#[test]
+fn unknown_action_type_denies_the_entire_plan() {
+    let wat = wat_returns_json(r#"{"abi":1,"actions":[{"type":"not_a_real_action"}]}"#);
+    let output = invoke_wasm_planner(
+        wat.as_bytes(),
+        &tight_limits(10_000_000, 1, 1024, 1024),
+        b"{}",
+    )
+    .expect("guest returned bytes");
+    let error = parse_action_plan_json(std::str::from_utf8(&output).unwrap()).unwrap_err();
+    assert!(error.contains("unknown ActionPlan action type"), "{error}");
+}
+
+#[test]
+fn host_path_in_plan_is_denied() {
+    let error = parse_action_plan_json(
+        r#"{"abi":1,"actions":[{"type":"create_workspace","workspace_id":"ws","work_unit_id":"u","repository_id":"r","base_sha":"s","branch":"/tmp/evil"}]}"#,
+    )
+    .unwrap_err();
+    assert!(error.contains("host path"), "{error}");
+}
+
+#[test]
+fn capability_miss_denies_create_workspace_plan() {
+    let wasm = fixture_create_workspace_wasm();
+    if fixture_wasm_is_stub(wasm) {
+        return;
+    }
+    let source = json!({
+        "work_unit_id": "unit-1",
+        "repository_id": "repo-1",
+        "base_sha": "abc",
+        "branch": "topic",
+        "workspace_id": "ws-1"
+    });
+    let module = module_doc(wasm, &json!({}), "did:key:zTrusted");
+    validate_callback_module(&module, &trusted("did:key:zTrusted")).unwrap();
+    let caps: BTreeSet<String> = [CAP_CREATE_WORKSPACE, CAP_OBSERVE_DIRTY_BASE]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let plan = plan_from_wasm_module(&module, &source, &caps).expect("plan");
+    let missing = BTreeSet::from([CAP_OBSERVE_DIRTY_BASE.to_string()]);
+    let error = plan.validate_against(&missing).unwrap_err().to_string();
+    assert!(
+        error.contains("missing capability create_workspace"),
+        "{error}"
+    );
+}
+
+#[test]
+fn fixture_wasm_emits_valid_create_workspace_plan() {
+    let wasm = fixture_create_workspace_wasm();
+    if fixture_wasm_is_stub(wasm) {
+        return;
+    }
+    let source = json!({
+        "work_unit_id": "unit-1",
+        "repository_id": "repo-1",
+        "base_sha": "abc",
+        "branch": "topic",
+        "workspace_id": "ws-1",
+        "api_token": "should-be-stripped"
+    });
+    let module = module_doc(
+        wasm,
+        &json!({"adapter": "git_worktree"}),
+        "did:key:zTrusted",
+    );
+    validate_callback_module(&module, &trusted("did:key:zTrusted")).unwrap();
+    let caps: BTreeSet<String> = [CAP_CREATE_WORKSPACE, CAP_OBSERVE_DIRTY_BASE]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let stripped = strip_secret_fields(source);
+    let plan = plan_from_wasm_module(&module, &stripped, &caps).expect("fixture plan");
+    let canonical = action_plan_canonical_json(&plan).expect("canonical");
+    assert!(!canonical.contains("host_path"), "{canonical}");
+    assert!(!canonical.contains("/tmp"), "{canonical}");
+    assert!(!canonical.contains("api_token"), "{canonical}");
+    assert_eq!(canonical, action_plan_canonical_json(&plan).unwrap());
+    assert!(canonical.contains("\"abi\":1"));
+    assert!(canonical.contains("\"adapter\":\"git_worktree\""));
+    match &plan.actions[0] {
+        HostAction::CreateWorkspace(action) => {
+            assert_eq!(action.workspace_id, "ws-1");
+            assert_eq!(action.work_unit_id, "unit-1");
+            assert_eq!(action.adapter.as_str(), "git_worktree");
+        }
+    }
+    plan.validate_against(&caps).expect("capabilities");
+
+    let mut wasm_binding = binding();
+    wasm_binding.builtin_emitter = None;
+    wasm_binding.module_id = Some(module.module_id.clone());
+    wasm_binding.capability_set = Some(format!(
+        r#"["{CAP_CREATE_WORKSPACE}","{CAP_OBSERVE_DIRTY_BASE}"]"#
+    ));
+    let via_binding = plan_from_binding(&wasm_binding, &stripped, Some(&module)).expect("wired");
+    assert_eq!(via_binding, plan);
+
+    let clone_caps: BTreeSet<String> = [
+        CAP_CREATE_WORKSPACE,
+        CAP_OBSERVE_DIRTY_BASE,
+        CAP_CLONE_ARTIFACTS,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    let builtin_binding = binding();
+    let builtin = emit_plan_from_source(&builtin_binding, &stripped).expect("builtin");
+    builtin.validate_against(&clone_caps).expect("builtin caps");
+}
+
+#[test]
+fn canonical_action_plan_sorts_object_keys() {
+    let plan = emit_plan_from_source(
+        &binding(),
+        &json!({
+            "work_unit_id": "unit-1",
+            "repository_id": "repo-1",
+            "base_sha": "abc",
+            "branch": "topic",
+            "workspace_id": "ws-1"
+        }),
+    )
+    .unwrap();
+    let canonical = action_plan_canonical_json(&plan).unwrap();
+    let abi = canonical.find("\"abi\"").unwrap();
+    let actions = canonical.find("\"actions\"").unwrap();
+    assert!(abi < actions, "{canonical}");
+    let parsed = parse_action_plan_json(&canonical).unwrap();
+    assert_eq!(parsed, plan);
 }

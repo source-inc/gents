@@ -1,0 +1,19 @@
+[package]
+name = "gents-callback-fixture-create-workspace"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fixture WASM planner: source document + args → create_workspace ActionPlan"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# `wasm-entry` gates the no-WASI host ABI (alloc/plan/output_ptr). Default-on
+# for wasm32 builds; disable when testing the rlib on the host.
+[features]
+default = ["wasm-entry"]
+wasm-entry = []
+
+[dependencies]
+serde_json = "1.0"

@@ -256,7 +256,9 @@ jobs:
 
       - name: Build the WASM lens target
         if: matrix.suite == 'support'
-        run: cargo build -p gents-lens-fixture-add-label --target wasm32-unknown-unknown
+        run: |
+          cargo build -p gents-lens-fixture-add-label --target wasm32-unknown-unknown
+          cargo build -p gents-callback-fixture-create-workspace --target wasm32-unknown-unknown
 
       # Every workspace package whose tests are not run by the runtime, cli, or
       # desktop steps below. The package-coverage guard above only proves each
@@ -270,6 +272,7 @@ jobs:
           cargo test --no-fail-fast \
             -p gents-migration \
             -p gents-lens-fixture-add-label \
+            -p gents-callback-fixture-create-workspace \
             -p gents-protocol \
             -p gents-schemas \
             -p gents-codex-protocol \
