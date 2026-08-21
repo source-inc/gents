@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -407,6 +408,7 @@ pub struct DefraSessionHook {
     background_tool_registry: BackgroundToolRegistry,
     background_executions: BackgroundExecutionRegistry,
     background_live_outputs: BackgroundLiveOutputState,
+    operator_tool_root: Option<PathBuf>,
 }
 
 enum PolicyDecision {
@@ -451,6 +453,7 @@ impl DefraSessionHook {
             background_tool_registry: BackgroundToolRegistry::default(),
             background_executions,
             background_live_outputs,
+            operator_tool_root: None,
         }
     }
 
@@ -494,6 +497,7 @@ impl DefraSessionHook {
             background_tool_registry: BackgroundToolRegistry::default(),
             background_executions,
             background_live_outputs,
+            operator_tool_root: None,
         })
     }
 
@@ -509,6 +513,15 @@ impl DefraSessionHook {
         self.background_live_outputs = registry.live_outputs.clone();
         self.background_executions = registry;
         self
+    }
+
+    pub fn with_operator_tool_root(mut self, root: Option<PathBuf>) -> Self {
+        self.operator_tool_root = root;
+        self
+    }
+
+    pub fn set_operator_tool_root(&mut self, root: Option<PathBuf>) {
+        self.operator_tool_root = root;
     }
 
     pub fn stats(&self) -> HookStats {

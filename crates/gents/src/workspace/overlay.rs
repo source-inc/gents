@@ -2,6 +2,7 @@
 //! request-scoped tool root, and fail closed when the authority cannot run.
 
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use anyhow::{anyhow, bail, Context, Result};
 use defra_node::EmbeddedNode;
@@ -20,6 +21,22 @@ use super::documents::{
     workspace_binding_upsert_mutation, workspace_bindings_upsert_mutation, WorkspaceBindingDoc,
     BINDING_ACTIVE,
 };
+
+static PROCESS_OPERATOR_TOOL_ROOT: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+/// Process `--tool-root` used by spawn provision, callback, and overlay.
+pub(crate) fn install_process_operator_tool_root(root: Option<PathBuf>) {
+    *PROCESS_OPERATOR_TOOL_ROOT
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = root;
+}
+
+pub(crate) fn process_operator_tool_root() -> Option<PathBuf> {
+    PROCESS_OPERATOR_TOOL_ROOT
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IsolatedWorkspaceRecord {

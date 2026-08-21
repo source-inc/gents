@@ -45,8 +45,12 @@ impl ParentWorkspaceStamp {
         }
     }
 
-    fn has_workspace_id(&self) -> bool {
+    pub(crate) fn has_workspace_id(&self) -> bool {
         nonempty(self.workspace_id.as_deref()).is_some()
+    }
+
+    pub(crate) fn spawn_is_workspace_bound(&self, arg: Option<&SpawnWorkspaceArg>) -> bool {
+        self.has_workspace_id() || arg.is_some()
     }
 
     fn authority(&self) -> Result<Option<WorkspaceAuthority>, SpawnWorkspaceError> {
@@ -154,6 +158,7 @@ pub(crate) async fn resolve_child_workspace(
     writer_principal: &str,
     caused_by_invocation_id: &str,
     caused_by_correlation: &str,
+    operator_tool_root: Option<&Path>,
 ) -> Result<Option<WorkspaceLineage>, SpawnWorkspaceError> {
     if let Some(lineage) = stamped {
         return revalidate_stamped_lineage(node, lineage).await.map(Some);
@@ -165,6 +170,7 @@ pub(crate) async fn resolve_child_workspace(
         writer_principal,
         caused_by_invocation_id,
         caused_by_correlation,
+        operator_tool_root,
     )
     .await
 }
@@ -177,6 +183,7 @@ pub(crate) async fn resolve_spawn_workspace(
     writer_principal: &str,
     caused_by_invocation_id: &str,
     caused_by_correlation: &str,
+    operator_tool_root: Option<&Path>,
 ) -> Result<Option<WorkspaceLineage>, SpawnWorkspaceError> {
     match arg {
         None => {
@@ -199,6 +206,7 @@ pub(crate) async fn resolve_spawn_workspace(
             writer_principal,
             caused_by_invocation_id,
             caused_by_correlation,
+            operator_tool_root,
         )
         .await
         .map(Some),
@@ -255,6 +263,7 @@ async fn provision_workspace(
     writer_principal: &str,
     caused_by_invocation_id: &str,
     caused_by_correlation: &str,
+    operator_tool_root: Option<&Path>,
 ) -> Result<WorkspaceLineage, SpawnWorkspaceError> {
     let creation_policy = parse_creation_policy(policy)?;
     let parent_id = nonempty(parent.workspace_id.as_deref()).ok_or_else(|| {
@@ -292,17 +301,27 @@ async fn provision_workspace(
     let enabled_roots = load_enabled_workspace_roots(node)
         .await
         .map_err(|error| SpawnWorkspaceError::unavailable(error.to_string()))?;
-    let dest = workspace_host_path(&repository.host_path, &workspace_id, &branch, None)
-        .map_err(|error| SpawnWorkspaceError::unavailable(error.to_string()))?;
-    require_under_ceiling(&dest, None, &enabled_roots).map_err(|error| {
+    let operator = operator_tool_root
+        .map(Path::to_path_buf)
+        .or_else(crate::workspace::process_operator_tool_root);
+    let dest = workspace_host_path(
+        &repository.host_path,
+        &workspace_id,
+        &branch,
+        operator.as_deref(),
+    )
+    .map_err(|error| SpawnWorkspaceError::invalid(error.to_string()))?;
+    require_under_ceiling(&dest, operator.as_deref(), &enabled_roots).map_err(|error| {
         SpawnWorkspaceError::invalid(format!(
             "provisioned workspace placement would escape operator ceiling: {error}"
         ))
     })?;
-    let executor_ceiling = enabled_roots
-        .iter()
-        .find(|root| dest.starts_with(root))
-        .cloned();
+    let executor_ceiling = operator.clone().or_else(|| {
+        enabled_roots
+            .iter()
+            .find(|root| dest.starts_with(root))
+            .cloned()
+    });
 
     let plan = emit_create_workspace_plan(CreateWorkspaceAction {
         workspace_id: workspace_id.clone(),
@@ -654,6 +673,18 @@ mod tests {
             unique_child_branch("topic", "spawn-ws-a"),
             unique_child_branch("topic", "spawn-ws-b")
         );
+    }
+
+    #[test]
+    fn spawn_is_workspace_bound_when_parent_or_arg_is_set() {
+        let unbound = ParentWorkspaceStamp::default();
+        assert!(!unbound.spawn_is_workspace_bound(None));
+        assert!(unbound.spawn_is_workspace_bound(Some(&SpawnWorkspaceArg::Inherit)));
+        assert!(
+            unbound.spawn_is_workspace_bound(Some(&SpawnWorkspaceArg::Provision { policy: None }))
+        );
+        let bound = ParentWorkspaceStamp::from_fields(Some("ws-1"), None, None, None);
+        assert!(bound.spawn_is_workspace_bound(None));
     }
 
     #[test]

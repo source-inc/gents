@@ -826,6 +826,7 @@ impl SubagentSource {
                 .as_ref()
                 .and_then(|row| row.workspace_seal_hash.as_deref()),
         );
+        let operator_tool_root = crate::workspace::process_operator_tool_root();
         let workspace = match resolve_child_workspace(
             &self.node,
             &parent_workspace,
@@ -839,6 +840,7 @@ impl SubagentSource {
             &child_agent_did,
             &parent_tool_call_id,
             &parent_request_id,
+            operator_tool_root.as_deref(),
         )
         .await
         {

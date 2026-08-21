@@ -771,6 +771,27 @@ impl DefraSessionHook {
             parent_context.workspace_owner_deployment_id.as_deref(),
             parent_context.workspace_seal_hash.as_deref(),
         );
+        if target_host == SubagentTargetHost::Remote
+            && parent_workspace.spawn_is_workspace_bound(parsed.workspace.as_ref())
+        {
+            return self
+                .fail_spawn_subagent_tool_call(
+                    session_id,
+                    request_id,
+                    parent_context.request_deadline_at,
+                    seq,
+                    internal_call_id,
+                    args,
+                    FailureClass::ServiceUnavailable,
+                    service_unavailable_payload(
+                        SPAWN_SUBAGENT_TOOL_NAME,
+                        "/workspace",
+                        "workspace-bound spawn cannot target a remote host until the child can be materialized on the workspace owner deployment",
+                        false,
+                    ),
+                )
+                .await;
+        }
         let resolved_workspace = match resolve_spawn_workspace(
             &self.node,
             &parent_workspace,
@@ -778,6 +799,7 @@ impl DefraSessionHook {
             &self.agent_did,
             internal_call_id,
             &request_id,
+            self.operator_tool_root.as_deref(),
         )
         .await
         {
@@ -829,25 +851,6 @@ impl DefraSessionHook {
             "parent_subagent_depth": parent_context.subagent_depth,
         });
         if let Some(workspace) = resolved_workspace.as_ref() {
-            if target_host == SubagentTargetHost::Remote {
-                return self
-                    .fail_spawn_subagent_tool_call(
-                        session_id,
-                        request_id,
-                        parent_context.request_deadline_at,
-                        seq,
-                        internal_call_id,
-                        args,
-                        FailureClass::ServiceUnavailable,
-                        service_unavailable_payload(
-                            SPAWN_SUBAGENT_TOOL_NAME,
-                            "/workspace",
-                            "workspace-bound spawn cannot target a remote host until the child can be materialized on the workspace owner deployment",
-                            false,
-                        ),
-                    )
-                    .await;
-            }
             merge_workspace_lineage(&mut bridge_args, workspace);
         }
         let bridge_args = bridge_args.to_string();

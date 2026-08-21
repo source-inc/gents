@@ -22,8 +22,11 @@ struct ChildWorkspaceRow {
 #[derive(Debug, Deserialize)]
 struct IsolatedWorkspaceRow {
     workspace_id: String,
+    #[serde(default)]
     lifecycle_state: Option<String>,
+    #[serde(default)]
     repository_id: Option<String>,
+    #[serde(default)]
     branch: Option<String>,
 }
 
@@ -256,11 +259,11 @@ async fn fetch_workspace_placement(
     first_row(&node.execute(&query).await, "WorkspacePlacement")
 }
 
-async fn spawn_background_child(
+async fn spawn_background_child_result(
     fixture: &SpawnFixture,
     tool_call_id: &str,
     workspace: Option<Value>,
-) -> ChildWorkspaceRow {
+) -> Value {
     let mut args = json!({
         "name": CHILD_BEHAVIOR_ID,
         "prompt": "workspace child prompt",
@@ -274,7 +277,15 @@ async fn spawn_background_child(
         .hook
         .on_tool_call("spawn_subagent", None, tool_call_id, &args)
         .await;
-    let result = skip_reason_json(action);
+    skip_reason_json(action)
+}
+
+async fn spawn_background_child(
+    fixture: &SpawnFixture,
+    tool_call_id: &str,
+    workspace: Option<Value>,
+) -> ChildWorkspaceRow {
+    let result = spawn_background_child_result(fixture, tool_call_id, workspace).await;
     assert_eq!(result["ok"], true, "{result}");
     let child = wait_for_child_request_for_tool(fixture.db.node.as_ref(), tool_call_id).await;
     fetch_child_workspace(fixture.db.node.as_ref(), &child.request_id).await
@@ -670,6 +681,96 @@ async fn spawn_subagent_provision_creates_isolated_workspace() {
                     .into_owned()
             ),
         "git worktree list missing second dest {second_dest:?}: {listed}"
+    );
+    let _keep = root;
+}
+
+#[tokio::test]
+async fn spawn_subagent_provision_fails_closed_when_dest_escapes_operator_tool_root() {
+    let parent_workspace_id = "ws-provision-ceiling";
+    let owner = "deploy-provision-ceiling";
+    let (root, repo, sha) = init_git_repo();
+    let parent_ws = root.path().join("parent-ws");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "topic",
+            "--",
+            &parent_ws.to_string_lossy(),
+            &sha,
+        ],
+    );
+    let extra = parent_workspace_fields(parent_workspace_id, owner, "readWrite");
+    let mut fixture = setup_spawn_fixture_with_parent_fields(
+        "spawn_ws_provision_ceiling",
+        vec![CHILD_BEHAVIOR_ID],
+        0,
+        true,
+        true,
+        chrono::Utc::now() + chrono::Duration::minutes(5),
+        &extra,
+    )
+    .await;
+    seed_local_workspace(
+        fixture.db.node.as_ref(),
+        parent_workspace_id,
+        owner,
+        "ready",
+        None,
+        "repo-provision-ceiling",
+        &sha,
+        "topic",
+        &parent_ws,
+    )
+    .await;
+    seed_repository_placement(
+        fixture.db.node.as_ref(),
+        "repo-provision-ceiling",
+        owner,
+        &repo,
+    )
+    .await;
+    seed_workspace_root(
+        fixture.db.node.as_ref(),
+        &std::fs::canonicalize(root.path()).unwrap(),
+    )
+    .await;
+    fixture
+        .hook
+        .set_operator_tool_root(Some(std::fs::canonicalize(&repo).unwrap()));
+
+    let tool_call_id = "internal-spawn-provision-ceiling";
+    let result = spawn_background_child_result(
+        &fixture,
+        tool_call_id,
+        Some(json!({ "provision": { "policy": "git_worktree_diff" } })),
+    )
+    .await;
+    assert_eq!(result["ok"], false, "{result}");
+    let message = result["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("ceiling") || message.contains("escapes") || message.contains("tool root"),
+        "expected operator ceiling denial, got {result}"
+    );
+
+    let workspace_id = format!("spawn-ws-{tool_call_id}");
+    let escaped = escape_graphql_string(&workspace_id);
+    let query = format!(
+        r#"{{
+            IsolatedWorkspace(
+                filter: {{ workspace_id: {{ _eq: "{escaped}" }} }},
+                limit: 1
+            ) {{ workspace_id }}
+        }}"#
+    );
+    let created: Option<IsolatedWorkspaceRow> =
+        first_optional_row(&fixture.db.node.execute(&query).await, "IsolatedWorkspace");
+    assert!(
+        created.is_none(),
+        "provision must not persist IsolatedWorkspace after operator-ceiling denial: {created:?}"
     );
     let _keep = root;
 }

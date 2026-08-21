@@ -911,6 +911,7 @@ async fn recover_orphan_subagent_children(node: &EmbeddedNode, agent_did: &str) 
             parent.workspace_owner_deployment_id.as_deref(),
             parent.workspace_seal_hash.as_deref(),
         );
+        let operator_tool_root = crate::workspace::process_operator_tool_root();
         let workspace = match resolve_child_workspace(
             node,
             &parent_workspace,
@@ -924,6 +925,7 @@ async fn recover_orphan_subagent_children(node: &EmbeddedNode, agent_did: &str) 
             &child_agent_did,
             &row.tool_call_id,
             &parent_request_id,
+            operator_tool_root.as_deref(),
         )
         .await
         {

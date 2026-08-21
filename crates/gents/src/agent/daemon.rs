@@ -125,6 +125,7 @@ impl<M: CompletionModel + 'static> BehaviorDaemon<M> {
     }
 
     pub(super) fn with_operator_tool_root(mut self, root: Option<PathBuf>) -> Self {
+        crate::workspace::install_process_operator_tool_root(root.clone());
         self.operator_tool_root = root;
         self
     }
