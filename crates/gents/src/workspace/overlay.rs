@@ -228,14 +228,18 @@ pub(crate) fn bind_workspace_overlay(
                 "placement observed_tree_hash {observed} does not match workspace seal_hash {workspace_hash}"
             );
         }
-        if let Some(live) = input
+        let live = input
             .live_tree_hash
             .map(str::trim)
             .filter(|value| !value.is_empty())
-        {
-            if live != workspace_hash {
-                bail!("live tree hash {live} does not match workspace seal_hash {workspace_hash}");
-            }
+            .ok_or_else(|| {
+                anyhow!(
+                    "sealed workspace {} requires live tree hash",
+                    input.workspace_id
+                )
+            })?;
+        if live != workspace_hash {
+            bail!("live tree hash {live} does not match workspace seal_hash {workspace_hash}");
         }
     }
 
@@ -362,7 +366,13 @@ async fn ensure_request_binding(
             .or(optional_id(workspace.seal_hash.as_deref())),
     );
     let release_previous = matches!(authority, WorkspaceAuthority::ReadWrite)
-        && previous_read_write_is_stale(node, &existing, &request.request_id).await?;
+        && previous_read_write_is_stale(
+            node,
+            &workspace.workspace_id,
+            &existing,
+            &request.request_id,
+        )
+        .await?;
     match admit_workspace_binding(
         &workspace.workspace_id,
         &workspace.lifecycle_state,
@@ -381,18 +391,36 @@ async fn ensure_request_binding(
     }
 }
 
-async fn previous_read_write_is_stale(
+pub(super) async fn previous_read_write_is_stale(
     node: &EmbeddedNode,
+    workspace_id: &str,
     existing: &[WorkspaceBindingDoc],
     request_id: &str,
 ) -> Result<bool> {
-    let Some(active) = existing
+    let others: Vec<_> = existing
         .iter()
-        .find(|binding| binding.is_active_read_write() && binding.request_id != request_id)
-    else {
+        .filter(|binding| binding.is_active_read_write() && binding.request_id != request_id)
+        .collect();
+    if others.len() > 1 {
+        anyhow::bail!(
+            "multiple Active ReadWrite bindings exist for workspace {workspace_id}; failing closed"
+        );
+    }
+    let Some(active) = others.into_iter().next() else {
         return Ok(false);
     };
     Ok(!request_is_live(node, &active.request_id).await?)
+}
+
+fn request_lifecycle_is_live(lifecycle_state: Option<&str>, status: Option<&str>) -> bool {
+    let state = optional_id(lifecycle_state).or_else(|| optional_id(status));
+    let Some(state) = state else {
+        return false;
+    };
+    !matches!(
+        state,
+        "completed" | "failed" | "dead" | "interrupted" | "superseded" | "error"
+    )
 }
 
 async fn request_is_live(node: &EmbeddedNode, request_id: &str) -> Result<bool> {
@@ -410,8 +438,10 @@ async fn request_is_live(node: &EmbeddedNode, request_id: &str) -> Result<bool> 
     let Some(row) = first_row::<RequestLivenessRow>(&response, "AgentRequest")? else {
         return Ok(false);
     };
-    let state = optional_id(row.lifecycle_state.as_deref()).unwrap_or("");
-    Ok(matches!(state, "pending" | "claimed" | "processing"))
+    Ok(request_lifecycle_is_live(
+        row.lifecycle_state.as_deref(),
+        row.status.as_deref(),
+    ))
 }
 
 pub(super) async fn load_workspace_bindings_for(
@@ -483,6 +513,7 @@ pub(super) async fn persist_workspace_binding_doc(
 #[derive(Deserialize)]
 struct RequestLivenessRow {
     lifecycle_state: Option<String>,
+    status: Option<String>,
 }
 
 #[derive(Deserialize)]

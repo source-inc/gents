@@ -160,7 +160,6 @@ impl MaterializerHandle for ProductionMaterializer {
         Box::pin(async move {
             let (behavior_name, behavior_did, _deadline_secs, _backend_id) = resolved?;
             let mut workspace = WorkspaceLineage::from_trigger_context(trigger_context.as_deref())?;
-            crate::workspace::stamp_workspace_lineage(node.as_ref(), &mut workspace).await?;
             workspace.require_authority_if_workspace_id()?;
             if workspace.is_bound()
                 && !workspace_bound_request_claimable(
@@ -176,6 +175,7 @@ impl MaterializerHandle for ProductionMaterializer {
                 }
                 .into());
             }
+            crate::workspace::stamp_workspace_lineage(node.as_ref(), &mut workspace).await?;
             let lineage = TriggerLineage {
                 trigger_id: trigger_id.clone(),
                 trigger_kind: Some(trigger_kind_str),
@@ -197,6 +197,14 @@ impl MaterializerHandle for ProductionMaterializer {
                     workspace_ref,
                 )
                 .await?;
+            crate::workspace::materialize_workspace_binding(
+                node.as_ref(),
+                &enqueued.request_id,
+                &enqueued.doc_id,
+                &workspace,
+                local_deployment_id.as_deref(),
+            )
+            .await?;
             tracing::info!(
                 task_id = %task_id,
                 trigger_id = ?trigger_id,

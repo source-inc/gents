@@ -348,6 +348,200 @@ pub fn workspace_binding_upsert_mutation(doc: &WorkspaceBindingDoc) -> String {
     )
 }
 
+/// One GraphQL mutation for the seal recovery unit: workspace, placement,
+/// writer receipt, and any binding releases.
+pub fn workspace_seal_docs_mutation(
+    workspace: &IsolatedWorkspaceDoc,
+    placement: &WorkspacePlacementDoc,
+    bindings: &[WorkspaceBindingDoc],
+    receipt: &WorkspaceReceiptDoc,
+    updated_at: &str,
+) -> String {
+    let mut fields = vec![
+        isolated_workspace_upsert_field("ws", workspace),
+        workspace_placement_upsert_field("place", placement, updated_at),
+        workspace_receipt_upsert_field("receipt", receipt),
+    ];
+    for (index, binding) in bindings.iter().enumerate() {
+        fields.push(workspace_binding_upsert_field(
+            &format!("bind{index}"),
+            binding,
+        ));
+    }
+    format!("mutation {{\n{}\n}}", fields.join("\n"))
+}
+
+fn isolated_workspace_upsert_field(alias: &str, doc: &IsolatedWorkspaceDoc) -> String {
+    let seal_hash = match doc
+        .seal_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        Some(value) => format!(r#""{}""#, escape_graphql_string(value)),
+        None => "null".to_string(),
+    };
+    format!(
+        r#"{alias}: upsert_IsolatedWorkspace(
+                filter: {{ workspace_id: {{ _eq: "{workspace_id}" }} }},
+                add: {{
+                    workspace_id: "{workspace_id}",
+                    work_unit_id: "{work_unit_id}",
+                    repository_id: "{repository_id}",
+                    base_sha: "{base_sha}",
+                    branch: "{branch}",
+                    creation_policy: "{creation_policy}",
+                    adapter: "{adapter}",
+                    owner_deployment_id: "{owner_deployment_id}",
+                    writer_principal: "{writer_principal}",
+                    integrator_principal: "{integrator_principal}",
+                    instruction_manifest: "{instruction_manifest}",
+                    seal_hash: {seal_hash},
+                    lifecycle_state: "{lifecycle_state}",
+                    caused_by_invocation_id: "{caused_by_invocation_id}",
+                    caused_by_correlation: "{caused_by_correlation}"
+                }},
+                update: {{
+                    lifecycle_state: "{lifecycle_state}",
+                    seal_hash: {seal_hash}
+                }}
+            ) {{ _docID }}"#,
+        workspace_id = escape_graphql_string(&doc.workspace_id),
+        work_unit_id = escape_graphql_string(&doc.work_unit_id),
+        repository_id = escape_graphql_string(&doc.repository_id),
+        base_sha = escape_graphql_string(&doc.base_sha),
+        branch = escape_graphql_string(&doc.branch),
+        creation_policy = escape_graphql_string(&doc.creation_policy),
+        adapter = escape_graphql_string(&doc.adapter),
+        owner_deployment_id = escape_graphql_string(&doc.owner_deployment_id),
+        writer_principal = escape_graphql_string(&doc.writer_principal),
+        integrator_principal = escape_graphql_string(&doc.integrator_principal),
+        instruction_manifest = escape_graphql_string(&doc.instruction_manifest),
+        lifecycle_state = escape_graphql_string(&doc.lifecycle_state),
+        caused_by_invocation_id = escape_graphql_string(&doc.caused_by_invocation_id),
+        caused_by_correlation = escape_graphql_string(&doc.caused_by_correlation),
+    )
+}
+
+fn workspace_placement_upsert_field(
+    alias: &str,
+    doc: &WorkspacePlacementDoc,
+    updated_at: &str,
+) -> String {
+    let dirty_base = if doc.dirty_base { "true" } else { "false" };
+    let updated_at = escape_graphql_string(updated_at);
+    format!(
+        r#"{alias}: upsert_WorkspacePlacement(
+                filter: {{ workspace_id: {{ _eq: "{workspace_id}" }} }},
+                add: {{
+                    workspace_id: "{workspace_id}",
+                    deployment_id: "{deployment_id}",
+                    host_path: "{host_path}",
+                    repository_placement_id: "{repository_placement_id}",
+                    adapter: "{adapter}",
+                    adapter_version: "{adapter_version}",
+                    dirty_base: {dirty_base},
+                    dirty_base_summary: "{dirty_base_summary}",
+                    provisioning_state: "{provisioning_state}",
+                    observed_tree_hash: "{observed_tree_hash}",
+                    updated_at: "{updated_at}"
+                }},
+                update: {{
+                    host_path: "{host_path}",
+                    adapter: "{adapter}",
+                    adapter_version: "{adapter_version}",
+                    dirty_base: {dirty_base},
+                    dirty_base_summary: "{dirty_base_summary}",
+                    provisioning_state: "{provisioning_state}",
+                    observed_tree_hash: "{observed_tree_hash}",
+                    updated_at: "{updated_at}"
+                }}
+            ) {{ _docID }}"#,
+        workspace_id = escape_graphql_string(&doc.workspace_id),
+        deployment_id = escape_graphql_string(&doc.deployment_id),
+        host_path = escape_graphql_string(&doc.host_path),
+        repository_placement_id = escape_graphql_string(&doc.repository_placement_id),
+        adapter = escape_graphql_string(&doc.adapter),
+        adapter_version = escape_graphql_string(&doc.adapter_version),
+        dirty_base_summary = escape_graphql_string(&doc.dirty_base_summary),
+        provisioning_state = escape_graphql_string(&doc.provisioning_state),
+        observed_tree_hash = escape_graphql_string(&doc.observed_tree_hash),
+    )
+}
+
+fn workspace_binding_upsert_field(alias: &str, doc: &WorkspaceBindingDoc) -> String {
+    let seal_hash = graphql_nullable_string(doc.seal_hash.as_deref());
+    format!(
+        r#"{alias}: upsert_WorkspaceBinding(
+                filter: {{ binding_id: {{ _eq: "{binding_id}" }} }},
+                add: {{
+                    binding_id: "{binding_id}",
+                    workspace_id: "{workspace_id}",
+                    request_id: "{request_id}",
+                    request_doc_id: "{request_doc_id}",
+                    authority: "{authority}",
+                    deployment_id: "{deployment_id}",
+                    seal_hash: {seal_hash},
+                    lifecycle_state: "{lifecycle_state}"
+                }},
+                update: {{
+                    lifecycle_state: "{lifecycle_state}"
+                }}
+            ) {{ _docID }}"#,
+        binding_id = escape_graphql_string(&doc.binding_id),
+        workspace_id = escape_graphql_string(&doc.workspace_id),
+        request_id = escape_graphql_string(&doc.request_id),
+        request_doc_id = escape_graphql_string(&doc.request_doc_id),
+        authority = escape_graphql_string(&doc.authority),
+        deployment_id = escape_graphql_string(&doc.deployment_id),
+        lifecycle_state = escape_graphql_string(&doc.lifecycle_state),
+    )
+}
+
+fn workspace_receipt_upsert_field(alias: &str, doc: &WorkspaceReceiptDoc) -> String {
+    format!(
+        r#"{alias}: upsert_WorkspaceReceipt(
+                filter: {{ receipt_id: {{ _eq: "{receipt_id}" }} }},
+                add: {{
+                    receipt_id: "{receipt_id}",
+                    workspace_id: "{workspace_id}",
+                    produced_by_request_id: "{produced_by_request_id}",
+                    produced_by_request_doc_id: "{produced_by_request_doc_id}",
+                    kind: "{kind}",
+                    base_sha: "{base_sha}",
+                    seal_hash: "{seal_hash}",
+                    head_sha: {head_sha},
+                    changed_files: {changed_files},
+                    diff_artifact: {diff_artifact},
+                    checks_run: {checks_run},
+                    unresolved_conflicts: {unresolved_conflicts},
+                    integration_instructions: {integration_instructions}
+                }},
+                update: {{
+                    head_sha: {head_sha},
+                    changed_files: {changed_files},
+                    diff_artifact: {diff_artifact},
+                    checks_run: {checks_run},
+                    unresolved_conflicts: {unresolved_conflicts},
+                    integration_instructions: {integration_instructions}
+                }}
+            ) {{ _docID }}"#,
+        receipt_id = escape_graphql_string(&doc.receipt_id),
+        workspace_id = escape_graphql_string(&doc.workspace_id),
+        produced_by_request_id = escape_graphql_string(&doc.produced_by_request_id),
+        produced_by_request_doc_id = escape_graphql_string(&doc.produced_by_request_doc_id),
+        kind = escape_graphql_string(&doc.kind),
+        base_sha = escape_graphql_string(&doc.base_sha),
+        seal_hash = escape_graphql_string(&doc.seal_hash),
+        head_sha = graphql_nullable_string(doc.head_sha.as_deref()),
+        changed_files = graphql_nullable_string(doc.changed_files.as_deref()),
+        diff_artifact = graphql_nullable_string(doc.diff_artifact.as_deref()),
+        checks_run = graphql_nullable_string(doc.checks_run.as_deref()),
+        unresolved_conflicts = graphql_nullable_string(doc.unresolved_conflicts.as_deref()),
+        integration_instructions = graphql_nullable_string(doc.integration_instructions.as_deref()),
+    )
+}
+
 pub fn workspace_receipt_create_mutation(doc: &WorkspaceReceiptDoc) -> String {
     format!(
         r#"mutation {{

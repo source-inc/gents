@@ -182,29 +182,36 @@ pub(crate) fn capture_seal_snapshot(dest: &Path) -> Result<SealSnapshot> {
 }
 
 /// Read instruction files from `base_sha` blobs. Never reads the live worktree.
+/// Missing paths are omitted; any other `git show` failure fails closed.
 pub(crate) fn capture_instruction_manifest(repo: &Path, base_sha: &str) -> Result<String> {
     let mut files = Vec::new();
     for path in DEFAULT_INSTRUCTION_PATHS {
-        match git_show_blob(repo, base_sha, path) {
-            Ok(bytes) => files.push(InstructionFile::from_bytes(path, &bytes)),
-            Err(_) => continue,
+        match git_show_blob(repo, base_sha, path)? {
+            Some(bytes) => files.push(InstructionFile::from_bytes(path, &bytes)),
+            None => continue,
         }
     }
     Ok(InstructionManifest::new(base_sha, files).to_json_string())
 }
 
-fn git_show_blob(repo: &Path, base_sha: &str, path: &str) -> Result<Vec<u8>> {
+fn git_show_blob(repo: &Path, base_sha: &str, path: &str) -> Result<Option<Vec<u8>>> {
     let spec = format!("{base_sha}:{path}");
     let output = git_command(repo, &["show", &spec])
         .output()
         .with_context(|| format!("git show {spec} in {}", repo.display()))?;
-    if !output.status.success() {
-        bail!(
-            "git show {spec} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    if output.status.success() {
+        return Ok(Some(output.stdout));
     }
-    Ok(output.stdout)
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if git_blob_missing(&stderr) {
+        return Ok(None);
+    }
+    bail!("git show {spec} failed: {}", stderr.trim())
+}
+
+fn git_blob_missing(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("does not exist") || lower.contains("exists on disk, but not in")
 }
 
 const SEAL_FILE_NAME: &str = "gents-workspace-seal.json";
@@ -224,21 +231,6 @@ pub(crate) fn write_seal_marker(dest: &Path, seal_hash: &str, base_sha: &str) ->
     let json = serde_json::to_vec_pretty(&recorded).context("serializing workspace seal")?;
     fs::write(&path, json).with_context(|| format!("writing workspace seal {}", path.display()))?;
     Ok(())
-}
-
-pub(crate) fn read_seal_marker(dest: &Path) -> Result<Option<String>> {
-    let path = match seal_marker_path(dest) {
-        Ok(path) => path,
-        Err(_) => return Ok(None),
-    };
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let bytes =
-        fs::read(&path).with_context(|| format!("reading workspace seal {}", path.display()))?;
-    let recorded: RecordedSeal = serde_json::from_slice(&bytes)
-        .with_context(|| format!("parsing workspace seal {}", path.display()))?;
-    Ok(Some(recorded.seal_hash))
 }
 
 fn seal_marker_path(dest: &Path) -> Result<PathBuf> {

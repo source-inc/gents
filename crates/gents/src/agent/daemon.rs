@@ -410,6 +410,54 @@ impl<M: CompletionModel + 'static> BehaviorDaemon<M> {
             return;
         }
 
+        match crate::workspace::writer_request_already_sealed(self.node.as_ref(), &request).await {
+            Ok(true) => {
+                record_current_request_outcome("completed");
+                if let Err(error) = crate::workspace::seal_on_writer_success(
+                    self.node.as_ref(),
+                    &request,
+                    self.operator_tool_root.as_deref(),
+                )
+                .await
+                {
+                    record_current_failure_class(&error);
+                    tracing::error!(
+                        request_id = %request.request_id,
+                        error = %error,
+                        "failed to repair workspace seal after writer success"
+                    );
+                    finalize_request_failure(
+                        &mut lifecycle,
+                        &error.to_string(),
+                        &request.request_id,
+                    )
+                    .await;
+                    return;
+                }
+                if let Err(error) = lifecycle.complete().await {
+                    record_current_failure_class(&error);
+                    tracing::error!(
+                        request_id = %request.request_id,
+                        error = %error,
+                        "failed to persist completed request after bounded retries; durable repair remains pending"
+                    );
+                }
+                return;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                record_current_failure_class(&error);
+                tracing::error!(
+                    request_id = %request.request_id,
+                    error = %error,
+                    "failed to inspect writer workspace seal state"
+                );
+                finalize_request_failure(&mut lifecycle, &error.to_string(), &request.request_id)
+                    .await;
+                return;
+            }
+        }
+
         let (interrupt_tx, interrupt_rx) =
             tokio::sync::watch::channel::<Option<crate::interrupt::InterruptIntent>>(None);
         let observer = crate::interrupt::spawn_request_interrupt_observer(

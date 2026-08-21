@@ -6,8 +6,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use super::action_plan::{ActionPlan, CreateWorkspaceAction, HostAction, SealWorkspaceAction};
 use super::adapter::{
     artifacts_complete, capture_instruction_manifest, capture_seal_snapshot, clone_artifacts,
-    observe_dirty_base, observe_effect, observed_tree_hash, provision, read_seal_marker,
-    resolve_base_sha, write_identity, write_seal_marker, ObservedEffect,
+    observe_dirty_base, observe_effect, observed_tree_hash, provision, resolve_base_sha,
+    write_identity, write_seal_marker, ObservedEffect,
 };
 use super::binding::release_binding;
 use super::documents::{
@@ -15,8 +15,9 @@ use super::documents::{
     WorkspaceDocuments, WorkspacePlacementDoc, WorkspaceReceiptDoc, ADAPTER_VERSION,
     LIFECYCLE_PROVISION_FAILED, LIFECYCLE_READY, LIFECYCLE_SEALED, RECEIPT_KIND_WRITER,
 };
-use super::instructions::{is_empty_manifest, InstructionManifest};
+use super::instructions::is_empty_manifest;
 use super::journal::{self, ActionJournalEntry, ActionJournalState};
+use crate::toolset::normalize_workspace_lifecycle_state;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogicalWorkspaceIdentity {
@@ -399,14 +400,15 @@ fn persist_docs(
                 identity.workspace_id
             );
         }
-        if existing.lifecycle_state == LIFECYCLE_READY && lifecycle_state != LIFECYCLE_READY {
+        let existing_state = normalize_workspace_lifecycle_state(&existing.lifecycle_state);
+        if existing_state == Some(LIFECYCLE_READY) && lifecycle_state != LIFECYCLE_READY {
             bail!(
                 "refusing to overwrite Ready IsolatedWorkspace {}",
                 identity.workspace_id
             );
         }
         // provisioning → ready | provisionFailed only. ProvisionFailed is terminal.
-        if existing.lifecycle_state == LIFECYCLE_PROVISION_FAILED
+        if existing_state == Some(LIFECYCLE_PROVISION_FAILED)
             && lifecycle_state != LIFECYCLE_PROVISION_FAILED
         {
             bail!(
@@ -414,7 +416,7 @@ fn persist_docs(
                 identity.workspace_id
             );
         }
-        if existing.lifecycle_state == LIFECYCLE_SEALED {
+        if existing_state == Some(LIFECYCLE_SEALED) {
             bail!(
                 "IsolatedWorkspace {} is sealed; refusing {lifecycle_state} without cleanup",
                 identity.workspace_id
@@ -427,7 +429,7 @@ fn persist_docs(
         &identity.workspace_id,
         &ctx.repository.host_path,
         &identity.base_sha,
-    );
+    )?;
     let workspace = new_isolated_workspace(
         identity,
         action.creation_policy,
@@ -557,7 +559,8 @@ fn seal_workspace_action(
         .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
     let seal_hash = snapshot.tree_hash.clone();
 
-    if workspace.lifecycle_state == LIFECYCLE_SEALED {
+    let lifecycle = normalize_workspace_lifecycle_state(&workspace.lifecycle_state);
+    if lifecycle == Some(LIFECYCLE_SEALED) {
         let existing = workspace.seal_hash.as_deref().unwrap_or_default();
         if existing != seal_hash {
             return Err(HostExecuteError::failed(
@@ -570,33 +573,22 @@ fn seal_workspace_action(
             ));
         }
         journal::advance(journal, 0, ActionJournalState::EffectObserved);
+        placement.observed_tree_hash = seal_hash;
         let outcome = persist_seal_docs(action, workspace, placement, &snapshot, ctx.documents)
             .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
         journal::advance(journal, 0, ActionJournalState::ResultDocsWritten);
         return Ok(outcome);
     }
 
-    if workspace.lifecycle_state != LIFECYCLE_READY {
+    if lifecycle != Some(LIFECYCLE_READY) {
         return Err(HostExecuteError::denied(format!(
             "workspace {} in state {} cannot be sealed",
             action.workspace_id, workspace.lifecycle_state
         )));
     }
 
-    if is_empty_manifest(&workspace.instruction_manifest) {
-        let captured = capture_instruction_manifest(&dest, &workspace.base_sha)
-            .or_else(|_| {
-                capture_instruction_manifest(&ctx.repository.host_path, &workspace.base_sha)
-            })
-            .unwrap_or_else(|_| {
-                InstructionManifest::new(&workspace.base_sha, Vec::new()).to_json_string()
-            });
-        workspace.instruction_manifest = captured;
-    }
-
     write_seal_marker(&dest, &seal_hash, &workspace.base_sha)
         .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
-    let _ = read_seal_marker(&dest);
 
     journal::advance(journal, 0, ActionJournalState::EffectObserved);
     workspace.seal_hash = Some(seal_hash.clone());
@@ -700,14 +692,13 @@ fn instruction_manifest_for_persist(
     workspace_id: &str,
     source: &Path,
     base_sha: &str,
-) -> String {
-    if let Ok(Some(existing)) = documents.load_isolated_workspace(workspace_id) {
+) -> Result<String> {
+    if let Some(existing) = documents.load_isolated_workspace(workspace_id)? {
         if !is_empty_manifest(&existing.instruction_manifest) {
-            return existing.instruction_manifest;
+            return Ok(existing.instruction_manifest);
         }
     }
     capture_instruction_manifest(source, base_sha)
-        .unwrap_or_else(|_| InstructionManifest::new(base_sha, Vec::new()).to_json_string())
 }
 
 fn changed_files_json(files: &[String]) -> Option<String> {

@@ -185,6 +185,7 @@ fn read_only_binds_ready_and_sealed() {
         &placed,
         WorkspaceBindInput {
             seal_hash: Some("hash-1"),
+            live_tree_hash: Some("hash-1"),
             ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
         },
     )
@@ -212,6 +213,7 @@ fn integrate_only_binds_sealed_with_matching_hash() {
         &placed,
         WorkspaceBindInput {
             seal_hash: Some("hash-1"),
+            live_tree_hash: Some("hash-1"),
             ..bind_input(WorkspaceAuthority::Integrate, Some(&operator), &[], false)
         },
     )
@@ -262,6 +264,30 @@ fn sealed_mismatch_and_missing_hash_fail_closed() {
 }
 
 #[test]
+fn sealed_requires_live_tree_hash() {
+    let (_guard, operator, placement_path) = temp_tree();
+    let mut workspace = ready_workspace();
+    workspace.lifecycle_state = "sealed".into();
+    workspace.seal_hash = Some("hash-1".into());
+    let mut placed = placement(&placement_path);
+    placed.observed_tree_hash = Some("hash-1".into());
+    let error = bind_workspace_overlay(
+        &workspace,
+        &placed,
+        WorkspaceBindInput {
+            seal_hash: Some("hash-1"),
+            live_tree_hash: None,
+            ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("requires live tree hash"),
+        "{error:#}"
+    );
+}
+
+#[test]
 fn live_tree_hash_drift_fails_closed() {
     let (_guard, operator, placement_path) = temp_tree();
     let mut workspace = ready_workspace();
@@ -297,6 +323,23 @@ fn live_tree_hash_drift_fails_closed() {
             .contains("live tree hash drifted does not match"),
         "{error:#}"
     );
+}
+
+#[test]
+fn request_lifecycle_treats_input_required_live_and_terminals_not_live() {
+    assert!(super::request_lifecycle_is_live(Some("processing"), None));
+    assert!(super::request_lifecycle_is_live(
+        Some("inputRequired"),
+        None
+    ));
+    assert!(super::request_lifecycle_is_live(None, Some("claimed")));
+    assert!(!super::request_lifecycle_is_live(Some("completed"), None));
+    assert!(!super::request_lifecycle_is_live(Some("failed"), None));
+    assert!(!super::request_lifecycle_is_live(Some("dead"), None));
+    assert!(!super::request_lifecycle_is_live(Some("interrupted"), None));
+    assert!(!super::request_lifecycle_is_live(Some("superseded"), None));
+    assert!(!super::request_lifecycle_is_live(None, Some("error")));
+    assert!(!super::request_lifecycle_is_live(None, None));
 }
 
 #[test]

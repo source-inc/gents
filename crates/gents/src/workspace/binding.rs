@@ -71,17 +71,27 @@ pub fn admit_workspace_binding(
             })
             .cloned()
             .collect();
+        let others: Vec<_> = active
+            .iter()
+            .filter(|binding| binding.request_id != candidate.request_id)
+            .cloned()
+            .collect();
+        if others.len() > 1 {
+            bail!(
+                "multiple Active ReadWrite bindings exist for workspace {workspace_id}; failing closed"
+            );
+        }
         if let Some(existing_active) = active
             .iter()
             .find(|binding| binding.request_id == candidate.request_id)
         {
             return Ok(AdmitBinding::Reuse(existing_active.clone()));
         }
-        if !active.is_empty() && !release_previous_read_write {
+        if !others.is_empty() && !release_previous_read_write {
             bail!("unique Active ReadWrite binding already exists for workspace {workspace_id}");
         }
         let release = if release_previous_read_write {
-            active
+            others
                 .into_iter()
                 .map(|mut binding| {
                     binding.lifecycle_state = BINDING_RELEASED.to_string();
@@ -180,6 +190,39 @@ mod tests {
                 .unwrap_err();
         assert!(
             err.to_string().contains("unique Active ReadWrite"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn two_active_read_write_fail_closed_even_on_retry() {
+        let first = ready_rw("req-1");
+        let second = ready_rw("req-2");
+        let err = admit_workspace_binding(
+            "ws-1",
+            "ready",
+            None,
+            &[first, second],
+            ready_rw("req-3"),
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("multiple Active ReadWrite"),
+            "{err:#}"
+        );
+
+        let err = admit_workspace_binding(
+            "ws-1",
+            "ready",
+            None,
+            &[ready_rw("req-1"), ready_rw("req-2"), ready_rw("req-3")],
+            ready_rw("req-1"),
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("multiple Active ReadWrite"),
             "{err:#}"
         );
     }

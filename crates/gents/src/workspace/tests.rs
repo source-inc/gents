@@ -892,7 +892,7 @@ fn seal_drift_fails_closed() {
             operator_tool_root: Some(fx.parent()),
             enabled_workspace_roots: &[],
             workspace_write_sandbox_enforced: false,
-            live_tree_hash: None,
+            live_tree_hash: Some(&hash),
         },
     )
     .unwrap_err();
@@ -948,6 +948,44 @@ fn frozen_agents_md_is_used_instead_of_live_writer_tree() {
         .expect("AGENTS.md still frozen");
     assert!(sealed_agents.text.contains("frozen-base-instructions"));
     assert!(!sealed_agents.text.contains("live-writer-instructions"));
+}
+
+#[test]
+fn already_sealed_repairs_placement_hash_and_receipt() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-repair", "unit-1", "topic-repair");
+    let plan = emit_create_workspace_plan(action);
+    let mut journal = Vec::new();
+    let created = execute_create_workspace_plan(
+        &plan,
+        &mut journal,
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    fs::write(dest.join("patch.rs"), "fn patch() {}\n").unwrap();
+    let sealed = seal_writer(&fx, &mut docs, "ws-repair", "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    docs.placements
+        .get_mut("ws-repair")
+        .unwrap()
+        .observed_tree_hash = created.placement.observed_tree_hash.clone();
+    docs.receipts.clear();
+
+    let repaired = seal_writer(&fx, &mut docs, "ws-repair", "req-writer");
+    assert_eq!(repaired.workspace.lifecycle_state, "sealed");
+    assert_eq!(repaired.placement.observed_tree_hash, hash);
+    assert_eq!(repaired.receipt.produced_by_request_id, "req-writer");
+    assert_eq!(repaired.receipt.seal_hash, hash);
+}
+
+#[test]
+fn instruction_manifest_fails_closed_on_git_show_error() {
+    let fx = Fixture::new();
+    let err = super::adapter::capture_instruction_manifest(&fx.repo, "not-a-commit")
+        .expect_err("invalid base_sha must not become empty files");
+    assert!(err.to_string().contains("git show"), "{err:#}");
 }
 
 #[test]

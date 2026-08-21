@@ -41,7 +41,10 @@ pub use instructions::{
     instruction_context_section, InstructionFile, InstructionManifest, DEFAULT_INSTRUCTION_PATHS,
 };
 pub use journal::{action_journal_prefix_legal, ActionJournalEntry, ActionJournalState};
-pub(crate) use runtime::{release_writer_binding, seal_on_writer_success, stamp_workspace_lineage};
+pub(crate) use runtime::{
+    materialize_workspace_binding, release_writer_binding, seal_on_writer_success,
+    stamp_workspace_lineage, writer_request_already_sealed,
+};
 
 pub(crate) use overlay::{
     request_workspace_cwd, resolve_request_workspace_overlay, workspace_authority_file_mode,

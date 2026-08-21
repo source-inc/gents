@@ -87,10 +87,20 @@ fn render_request_context_message(
         }
         _ => None,
     };
+    Ok(assemble_request_context_message(
+        template_body,
+        frozen_instruction_manifest,
+    ))
+}
+
+fn assemble_request_context_message(
+    template_body: Option<String>,
+    frozen_instruction_manifest: Option<&str>,
+) -> Option<Message> {
     let instruction_body =
         frozen_instruction_manifest.and_then(crate::workspace::instruction_context_section);
     match (template_body, instruction_body) {
-        (None, None) => Ok(None),
+        (None, None) => None,
         (template, instructions) => {
             let mut body = String::new();
             if let Some(template) = template {
@@ -102,9 +112,7 @@ fn render_request_context_message(
                 }
                 body.push_str(&instructions);
             }
-            Ok(Some(Message::user(format!(
-                "<context>\n{body}\n</context>"
-            ))))
+            Some(Message::user(format!("<context>\n{body}\n</context>")))
         }
     }
 }
@@ -757,8 +765,9 @@ fn durable_reduction_summary(
 #[cfg(test)]
 mod tests {
     use super::{
-        await_with_request_deadline, durable_reduction_summary, ensure_request_deadline_open,
-        request_deadline_remaining, terminal_response_has_visible_output, BehaviorDaemon,
+        assemble_request_context_message, await_with_request_deadline, durable_reduction_summary,
+        ensure_request_deadline_open, request_deadline_remaining,
+        terminal_response_has_visible_output, BehaviorDaemon,
     };
     use crate::agent::completion_retry::CompletionRetryProfileFields;
     use crate::agent::runtime::StartupBarrier;
@@ -984,6 +993,23 @@ mod tests {
             workspace_owner_deployment_id: None,
             workspace_seal_hash: None,
         }
+    }
+
+    #[test]
+    fn render_request_context_message_uses_frozen_agents_not_live_tree() {
+        let manifest = crate::workspace::InstructionManifest::new(
+            "abc",
+            vec![crate::workspace::InstructionFile::from_bytes(
+                "AGENTS.md",
+                b"frozen-base-instructions\n",
+            )],
+        );
+        let message = assemble_request_context_message(None, Some(&manifest.to_json_string()))
+            .expect("context");
+        let encoded = serde_json::to_string(&message).expect("serialize");
+        assert!(encoded.contains("frozen-base-instructions"));
+        assert!(!encoded.contains("live-writer-instructions"));
+        assert!(encoded.contains("<context>"));
     }
 
     #[test]
