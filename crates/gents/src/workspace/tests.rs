@@ -1070,6 +1070,58 @@ fn integrate_writer(
     outcome
 }
 
+#[test]
+fn integrate_does_not_rewind_trunk_after_later_operator_commit() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-rewind", "unit-1", "topic-rewind");
+    let created = execute_create_workspace_plan(
+        &emit_create_workspace_plan(action),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    fs::write(dest.join("patch.rs"), "fn patch() {}\n").unwrap();
+    let sealed = seal_writer(&fx, &mut docs, "ws-rewind", "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    bind_integrate(&mut docs, "ws-rewind", "req-int", &hash);
+    integrate_writer(&fx, &mut docs, "ws-rewind", "req-int");
+
+    fs::write(fx.repo.join("later.txt"), "operator\n").unwrap();
+    git(&fx.repo, &["add", "later.txt"]);
+    git(&fx.repo, &["commit", "-m", "later"]);
+    let operator = git(&fx.repo, &["rev-parse", "HEAD"]);
+
+    bind_integrate(&mut docs, "ws-rewind", "req-int-2", &hash);
+    let second = execute_integrate_workspace_plan(
+        &emit_integrate_workspace_plan(IntegrateWorkspaceAction {
+            workspace_id: "ws-rewind".into(),
+            produced_by_request_id: "req-int-2".into(),
+            produced_by_request_doc_id: "req-int-2-doc".into(),
+            mode: IntegrateMode::ApplyDiff,
+        }),
+        &mut Vec::new(),
+        &mut fx.ctx(&mut docs, integrate_caps()),
+    )
+    .expect("second integrate of already-landed seal");
+    finalize_integrate_trunk(&fx.repo, second.pending_head_sha.as_deref()).unwrap();
+
+    assert_eq!(
+        git(&fx.repo, &["rev-parse", "HEAD"]),
+        operator,
+        "already-integrated seal must not rewind trunk past later operator commits"
+    );
+    assert_eq!(
+        fs::read_to_string(fx.repo.join("later.txt")).unwrap(),
+        "operator\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fx.repo.join("patch.rs")).unwrap(),
+        "fn patch() {}\n"
+    );
+}
+
 fn cleanup_ws(
     fx: &Fixture,
     docs: &mut MemoryWorkspaceDocuments,

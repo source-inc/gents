@@ -265,11 +265,12 @@ pub(crate) fn prepare_integrate_commit(
                 snapshot.tree_hash
             );
         }
+        let head = git_output(&trunk, &["rev-parse", "HEAD"])?;
         return Ok(IntegrateEffect {
+            pending_head: head == existing,
             head_sha: existing,
             changed_files: snapshot.changed_files,
             diff: snapshot.diff,
-            pending_head: true,
         });
     }
     let snapshot = capture_seal_snapshot(&worktree)?;
@@ -324,37 +325,46 @@ fn diff_is_empty(diff: &[u8]) -> bool {
 /// Point trunk `HEAD` at a commit created by [`prepare_integrate_commit`]
 /// without rewriting the default index (operator staged files stay put).
 ///
-/// Path updates run even when `HEAD` already equals `<commit>` so a crash
-/// between `update-ref` and the last path still converges.
+/// `update-ref` is CAS from the pending commit's parent so later trunk
+/// commits are not rewound. `HEAD == commit` still applies path updates
+/// so a crash between `update-ref` and the last path converges.
 pub(crate) fn advance_trunk_to_integrate_commit(trunk: &Path, commit: &str) -> Result<()> {
     let trunk = fs::canonicalize(trunk)
         .with_context(|| format!("canonicalizing trunk {}", trunk.display()))?;
     let head = git_output(&trunk, &["rev-parse", "HEAD"])?;
-    let name_status = if head == commit {
+    if head == commit {
         let subject = git_output(&trunk, &["log", "-1", "--format=%s", commit])?;
         if !subject.starts_with("gents: integrate workspace seal ") {
             return Ok(());
         }
-        let parent = git_output(&trunk, &["rev-parse", &format!("{commit}^")])?;
-        git_output(
-            &trunk,
-            &["diff", "--name-status", "--no-renames", &parent, commit],
-        )?
-    } else {
-        git_output(
-            &trunk,
-            &["diff", "--name-status", "--no-renames", &head, commit],
-        )?
-    };
-    if head != commit {
-        git_run(&trunk, &["update-ref", "HEAD", commit]).with_context(|| {
-            format!(
-                "moving trunk HEAD at {} to integrate commit {commit}",
-                trunk.display()
-            )
-        })?;
+        return apply_integrate_commit_paths(&trunk, commit);
     }
-    apply_integrate_name_status(&trunk, commit, &name_status)
+    if git_ok(&trunk, &["merge-base", "--is-ancestor", commit, &head]) {
+        return Ok(());
+    }
+    let parent = git_output(&trunk, &["rev-parse", &format!("{commit}^")])?;
+    if head != parent {
+        bail!(
+            "refusing to move trunk HEAD at {} to integrate commit {commit}: HEAD {head} is not the commit's parent {parent}",
+            trunk.display()
+        );
+    }
+    git_run(&trunk, &["update-ref", "HEAD", commit, &parent]).with_context(|| {
+        format!(
+            "moving trunk HEAD at {} to integrate commit {commit}",
+            trunk.display()
+        )
+    })?;
+    apply_integrate_commit_paths(&trunk, commit)
+}
+
+fn apply_integrate_commit_paths(trunk: &Path, commit: &str) -> Result<()> {
+    let parent = git_output(trunk, &["rev-parse", &format!("{commit}^")])?;
+    let name_status = git_output(
+        trunk,
+        &["diff", "--name-status", "--no-renames", &parent, commit],
+    )?;
+    apply_integrate_name_status(trunk, commit, &name_status)
 }
 
 fn apply_integrate_name_status(trunk: &Path, commit: &str, name_status: &str) -> Result<()> {
