@@ -70,6 +70,7 @@ test.describe("desktop responsive layout guardrails", () => {
     const deploymentRow = page.getByTestId(`fleet-row-${PEER_ID}`);
     await expect(deploymentRow).toBeVisible();
     await deploymentRow.click();
+    await page.getByTestId("agent-actions").click();
     const configureButton = page.getByRole("button", { name: "Configure" });
     await expect(configureButton).toBeVisible();
 

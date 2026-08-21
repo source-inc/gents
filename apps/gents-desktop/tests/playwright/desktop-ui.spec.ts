@@ -33,6 +33,7 @@ test.describe("desktop UI harness", () => {
     await captureStableScreenshot(page, testInfo, "chat-with-transcript");
 
     await openChatNavigation(page);
+    await page.getByTestId("agent-actions").click();
     await page.getByRole("button", { name: "Configure" }).click();
     await expect(page.locator(".config-workspace")).toBeVisible();
     await expect(
@@ -52,6 +53,7 @@ test.describe("desktop UI harness", () => {
     await expect(adjacentDuplicateTranscriptRows(page)).resolves.toEqual([]);
 
     await openChatNavigation(page);
+    await page.getByTestId("agent-tab-behaviors").click();
     await page.getByTestId("sidebar-new-chat-ops").click();
     await expect(
       page.getByRole("heading", { name: "Start a conversation" }),
@@ -81,18 +83,22 @@ test.describe("desktop UI harness", () => {
 
     await page.getByTestId("composer-input").fill("existing conversation draft");
     await openChatNavigation(page);
+    await page.getByTestId("agent-tab-behaviors").click();
     await page.getByTestId("sidebar-new-chat-ops").click();
     await expect(page.getByTestId("composer-input")).toHaveValue("");
 
     await page.getByTestId("composer-input").fill("new ops conversation draft");
     await openChatNavigation(page);
+    await page.getByTestId("agent-tab-behaviors").click();
     await page.getByTestId("sidebar-behavior-default").click();
+    await page.getByTestId("agent-tab-sessions").click();
     await page.getByTestId("conversation-session-intro").click();
     await expect(page.getByTestId("composer-input")).toHaveValue(
       "existing conversation draft",
     );
 
     await openChatNavigation(page);
+    await page.getByTestId("agent-tab-behaviors").click();
     await page.getByTestId("sidebar-new-chat-ops").click();
     await expect(page.getByTestId("composer-input")).toHaveValue(
       "new ops conversation draft",

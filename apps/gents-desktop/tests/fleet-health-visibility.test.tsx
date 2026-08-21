@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { FleetRow, type FleetRowProps } from "@source-inc/gents-desktop-fleet";
@@ -51,22 +51,10 @@ describe("fleet health visibility", () => {
     expect(screen.queryByTestId("fleet-error-peer-1")).not.toBeInTheDocument();
   });
 
-  it("offers a Code-mode action when wired", () => {
-    const onOpenCode = vi.fn();
-    render(
-      <table>
-        <tbody>
-          <FleetRow
-            bootstrap={null}
-            deployment={{ ...deployment, dialSucceeded: true, lastError: null }}
-            onOpenChat={vi.fn()}
-            onOpenCode={onOpenCode}
-            onOpenConfig={vi.fn()}
-          />
-        </tbody>
-      </table>,
-    );
-    fireEvent.click(screen.getByTestId("fleet-code-peer-1"));
-    expect(onOpenCode).toHaveBeenCalledWith(deployment.agentDid);
+  it("keeps the fleet actions focused on sessions and configuration", () => {
+    renderRow({ ...deployment, dialSucceeded: true, lastError: null });
+    expect(screen.getByTestId("fleet-chat-peer-1")).toBeInTheDocument();
+    expect(screen.getByTestId("fleet-config-peer-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("fleet-code-peer-1")).not.toBeInTheDocument();
   });
 });

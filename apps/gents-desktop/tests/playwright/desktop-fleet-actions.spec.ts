@@ -30,6 +30,7 @@ test.describe("fleet deployment navigation", () => {
     await expect(page.getByTestId("fleet-dashboard")).toBeVisible();
 
     await page.getByTestId(`fleet-row-${PEER_ID}`).click();
+    await page.getByTestId("agent-actions").click();
     await page.getByRole("button", { name: "Configure" }).click();
 
     await expect(page.locator(".config-workspace")).toBeVisible();

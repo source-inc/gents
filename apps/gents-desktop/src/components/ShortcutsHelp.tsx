@@ -6,8 +6,7 @@ const MOD = IS_MAC ? "⌘" : "Ctrl+";
 const SHORTCUTS: Array<[string, string]> = [
   [`${MOD}1`, "Fleet dashboard"],
   [`${MOD}2`, "Chat"],
-  [`${MOD}3`, "Code mode"],
-  [`${MOD}4`, "Configuration"],
+  [`${MOD}3`, "Configuration"],
   [`${MOD}N`, "New conversation"],
   [`${MOD}K`, "Focus the composer"],
   [`${MOD}/`, "Show this reference"],

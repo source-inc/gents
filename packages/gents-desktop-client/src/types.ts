@@ -10,6 +10,7 @@ export type {
 } from "./types/bootstrap.js";
 export type {
   AgentPrincipalView,
+  BehaviorEnvironmentView,
   BehaviorView,
   ConversationSummary,
   DeploymentView,

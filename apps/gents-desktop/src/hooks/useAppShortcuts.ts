@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
 export type AppShortcutHandlers = {
-  setView: (view: "fleet" | "chat" | "code" | "config") => void;
+  setView: (view: "fleet" | "chat" | "config") => void;
   newConversation: () => void;
   focusComposer: () => void;
   toggleHelp: () => void;
@@ -25,9 +25,6 @@ export function useAppShortcuts(handlers: AppShortcutHandlers) {
           current.setView("chat");
           break;
         case "3":
-          current.setView("code");
-          break;
-        case "4":
           current.setView("config");
           break;
         case "n":

@@ -408,8 +408,7 @@
       display: none;
     }
 
-    .app-shell.app-view-chat,
-    .app-shell.app-view-code {
+    .app-shell.app-view-chat {
       padding: calc(var(--space-3) + env(safe-area-inset-top))
         calc(var(--space-3) + env(safe-area-inset-right))
         calc(var(--space-3) + env(safe-area-inset-bottom))

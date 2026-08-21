@@ -8,16 +8,6 @@ export function ChatIcon() {
   );
 }
 
-export function CodeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M8 6 3 12l5 6" />
-      <path d="m16 6 5 6-5 6" />
-      <path d="M13 4 11 20" />
-    </svg>
-  );
-}
-
 export function ConfigIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">

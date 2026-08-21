@@ -1,8 +1,8 @@
 @layer sidebar {
   .sidebar {
     display: grid;
-    grid-template-rows: auto minmax(0, 2fr) minmax(0, 3fr);
-    gap: var(--space-6);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    gap: var(--space-4);
     min-height: 0;
     min-width: 0;
     overflow: hidden;
@@ -12,7 +12,7 @@
   .sidebar-section,
   .stack-panel {
     display: grid;
-    gap: var(--space-4);
+    gap: var(--space-3);
     min-height: 0;
     min-width: 0;
   }
@@ -23,15 +23,29 @@
     overflow: hidden;
   }
 
-  .behavior-section {
-    grid-template-rows: auto minmax(0, 1fr);
-    overflow: hidden;
+  .agent-section-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-height: 42px;
+    border: 1px solid var(--border-default);
+    background: var(--color-surface-muted);
+    padding: 3px;
   }
 
-  .behavior-section .compact-list,
-  .conversation-list {
-    overscroll-behavior-y: contain;
-    -webkit-overflow-scrolling: touch;
+  .agent-section-tabs button {
+    min-height: 34px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+    font-weight: 700;
+  }
+
+  .agent-section-tabs button.selected {
+    background: var(--color-surface-row);
+    box-shadow: inset 0 -2px 0 var(--color-accent);
+    color: var(--color-text);
   }
 
   .sidebar-section-controls {
@@ -40,30 +54,6 @@
     justify-content: flex-end;
     gap: var(--space-2);
     min-width: 0;
-  }
-
-  .sidebar-scroll-hint {
-    display: none;
-    color: var(--color-text-muted);
-    font-size: var(--text-2xs);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-
-  .sidebar .panel-header {
-    align-items: end;
-    padding: 0 1px;
-  }
-
-  .sidebar .panel-header h2 {
-    font-size: var(--text-xl);
-    line-height: 1.15;
-  }
-
-  .sidebar .eyebrow {
-    margin-bottom: var(--space-2);
-    letter-spacing: 0.14em;
   }
 
   .sidebar-utility {
@@ -103,7 +93,6 @@
     }
 
     .sidebar {
-      grid-template-rows: auto minmax(0, 2fr) minmax(0, 3fr);
       gap: var(--space-3);
       padding: 0;
     }
@@ -111,22 +100,6 @@
     .sidebar-section,
     .stack-panel {
       gap: var(--space-2);
-    }
-
-    .sidebar .panel-header {
-      align-items: center;
-    }
-
-    .sidebar .panel-header .eyebrow {
-      display: none;
-    }
-
-    .sidebar .panel-header h2 {
-      font-size: var(--text-lg);
-    }
-
-    .sidebar-scroll-hint {
-      display: inline;
     }
   }
 }

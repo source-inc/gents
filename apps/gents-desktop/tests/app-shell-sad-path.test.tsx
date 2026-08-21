@@ -86,10 +86,11 @@ describe("App shell command sad paths", () => {
           "navigation",
         );
       });
-      expect(screen.getByRole("heading", { name: "Behaviors" })).toBeInTheDocument();
-      expect(
-        document.querySelector(".conversation-section .eyebrow"),
-      ).toHaveTextContent("Conversations");
+      expect(screen.getByRole("button", { name: "Sessions" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      expect(screen.getByRole("button", { name: "New session" })).toBeInTheDocument();
     } finally {
       await driver.dispose();
     }
