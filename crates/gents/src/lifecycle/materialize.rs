@@ -104,20 +104,10 @@ fn workspace_lineage_graphql_fields(workspace: Option<&WorkspaceLineage>) -> Str
         }
     };
     push("workspace_id", workspace.workspace_id.as_deref());
-    let authority = workspace
-        .workspace_authority
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            workspace
-                .workspace_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|_| "readWrite")
-        });
-    push("workspace_authority", authority);
+    push(
+        "workspace_authority",
+        workspace.workspace_authority.as_deref(),
+    );
     push(
         "workspace_owner_deployment_id",
         workspace.workspace_owner_deployment_id.as_deref(),
@@ -205,6 +195,9 @@ pub(crate) async fn write_pending_agent_request_with_lineage_workspace_and_conve
         && trigger_lineage.trigger_id.is_some()
     {
         anyhow::bail!("Manual trigger enqueue must not carry trigger_id");
+    }
+    if let Some(workspace) = workspace_lineage {
+        workspace.require_authority_if_workspace_id()?;
     }
 
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);

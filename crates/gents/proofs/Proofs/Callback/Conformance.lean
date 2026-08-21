@@ -56,6 +56,8 @@ def callbackCases : List CallbackCase :=
       [.resultDocsWritten, .resultDocsWritten] true true
   , mkCase "denied_empty_journal_legal" .denied [] false true
   , mkCase "denied_executing_journal_illegal" .denied [.executing] false false
+  , mkCase "failed_after_result_docs_no_emit_legal" .failed
+      [.resultDocsWritten] false true
   ]
 
 theorem callbackCasesLegalCorrect :

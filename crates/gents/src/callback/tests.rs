@@ -21,7 +21,9 @@ use super::documents::{
     strip_secret_fields, validate_callback_binding, CallbackBindingDoc, CallbackInvocationDoc,
 };
 use super::host::ensure_local_host_deployment;
-use super::run::{can_emit_callback_result, can_start_executing, emit_plan_from_source};
+use super::run::{
+    can_emit_callback_result, can_start_executing, emit_plan_from_source, resolve_action_plan,
+};
 use super::{BUILTIN_CREATE_WORKSPACE, LIFECYCLE_PENDING, LIFECYCLE_RUNNING, LIFECYCLE_SUCCEEDED};
 
 fn binding() -> CallbackBindingDoc {
@@ -96,7 +98,7 @@ fn callback_result_requires_succeeded_complete_journal_and_docs() {
         provisioning_state: "{}".into(),
         observed_tree_hash: "tree".into(),
     };
-    assert!(!can_emit_callback_result(
+    assert!(can_emit_callback_result(
         LIFECYCLE_RUNNING,
         &journal,
         Some(&workspace),
@@ -180,6 +182,74 @@ fn apply_rejects_secret_bearing_source_fields() {
     let stripped = strip_secret_fields(json!({"branch": "topic", "api_token": "secret"}));
     assert_eq!(stripped["branch"], "topic");
     assert!(stripped.get("api_token").is_none());
+}
+
+#[test]
+fn apply_rejects_secret_bearing_filter_fields() {
+    let mut secret = binding();
+    secret.filter = Some(r#"{ api_token: { _eq: "x" } }"#.into());
+    let error = validate_callback_binding(&secret).unwrap_err().to_string();
+    assert!(error.contains("secret-bearing"), "{error}");
+    let mut literal = binding();
+    literal.filter = Some(r#"{ work_unit_id: { _eq: "TOKEN" } }"#.into());
+    assert!(validate_callback_binding(&literal).is_ok());
+}
+
+#[test]
+fn apply_rejects_wasm_only_bindings() {
+    let mut wasm = binding();
+    wasm.builtin_emitter = None;
+    wasm.module_id = Some("mod-1".into());
+    let error = validate_callback_binding(&wasm).unwrap_err().to_string();
+    assert!(error.contains("WASM planner is not implemented"), "{error}");
+}
+
+#[test]
+fn recovery_reuses_stored_action_plan() {
+    let source = json!({
+        "work_unit_id": "unit-1",
+        "repository_id": "repo-1",
+        "base_sha": "abc",
+        "branch": "topic",
+        "workspace_id": "ws-stored"
+    });
+    let plan = emit_plan_from_source(&binding(), &source).unwrap();
+    let mut invocation = CallbackInvocationDoc {
+        invocation_id: "inv-1".into(),
+        owner_deployment_id: "deploy-1".into(),
+        binding_id: "bind-1".into(),
+        source_collection: "WorkUnit".into(),
+        source_doc_id: "doc-1".into(),
+        source_version: Some("created".into()),
+        idempotency_key: "bind-1:doc-1:created".into(),
+        lifecycle_state: LIFECYCLE_RUNNING.into(),
+        attempts: Some(1),
+        action_plan: Some(serde_json::to_string(&plan).unwrap()),
+        action_journal: Some(
+            serde_json::to_string(&[ActionJournalEntry::new(0, ActionJournalState::Executing)])
+                .unwrap(),
+        ),
+        error: None,
+        claimed_at: None,
+        created_at: None,
+    };
+    let mutated = json!({
+        "work_unit_id": "unit-OTHER",
+        "repository_id": "repo-1",
+        "base_sha": "abc",
+        "branch": "topic-OTHER",
+        "workspace_id": "ws-mutated"
+    });
+    let resolved = resolve_action_plan(&invocation, &binding(), &mutated).unwrap();
+    match &resolved.actions[0] {
+        crate::workspace::HostAction::CreateWorkspace(action) => {
+            assert_eq!(action.workspace_id, "ws-stored");
+            assert_eq!(action.branch, "topic");
+        }
+    }
+    invocation.action_plan = None;
+    let missing = resolve_action_plan(&invocation, &binding(), &mutated).unwrap_err();
+    assert!(missing.contains("missing stored ActionPlan"), "{missing}");
 }
 
 #[test]
@@ -296,7 +366,7 @@ fn callback_result_only_after_workspace_docs_are_durable() {
         journal.last().map(|entry| entry.state),
         Some(ActionJournalState::ResultDocsWritten)
     );
-    assert!(!can_emit_callback_result(
+    assert!(can_emit_callback_result(
         LIFECYCLE_RUNNING,
         &journal,
         Some(&outcome.workspace),

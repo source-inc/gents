@@ -35,21 +35,31 @@ pub fn can_start_executing(journal: &[ActionJournalEntry], index: u32) -> bool {
             ))
 }
 
-/// CallbackResult exists only after Succeeded and durable result documents.
-pub fn can_emit_callback_result(
-    state: &str,
+pub fn result_docs_ready(
     journal: &[ActionJournalEntry],
     workspace: Option<&IsolatedWorkspaceDoc>,
     placement: Option<&WorkspacePlacementDoc>,
 ) -> bool {
-    state == LIFECYCLE_SUCCEEDED
-        && !journal.is_empty()
+    !journal.is_empty()
         && crate::workspace::action_journal_prefix_legal(journal)
         && journal
             .iter()
             .all(|entry| matches!(entry.state, ActionJournalState::ResultDocsWritten))
         && workspace.is_some()
         && placement.is_some()
+}
+
+/// CallbackResult may be written from running (then succeed) or to repair
+/// succeeded-without-result. The document must not exist while journal/docs
+/// are incomplete.
+pub fn can_emit_callback_result(
+    state: &str,
+    journal: &[ActionJournalEntry],
+    workspace: Option<&IsolatedWorkspaceDoc>,
+    placement: Option<&WorkspacePlacementDoc>,
+) -> bool {
+    matches!(state, LIFECYCLE_RUNNING | LIFECYCLE_SUCCEEDED)
+        && result_docs_ready(journal, workspace, placement)
 }
 
 pub fn encode_journal(journal: &[ActionJournalEntry]) -> String {
@@ -138,6 +148,36 @@ fn correlation_from_source(source: &Value) -> String {
         .unwrap_or_default()
 }
 
+fn stored_action_plan(invocation: &CallbackInvocationDoc) -> Result<Option<ActionPlan>, String> {
+    let Some(raw) = invocation
+        .action_plan
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    serde_json::from_str(raw)
+        .map(Some)
+        .map_err(|error| format!("stored ActionPlan is invalid: {error}"))
+}
+
+pub fn resolve_action_plan(
+    invocation: &CallbackInvocationDoc,
+    binding: &CallbackBindingDoc,
+    source: &Value,
+) -> Result<ActionPlan, String> {
+    if let Some(plan) = stored_action_plan(invocation)? {
+        return Ok(plan);
+    }
+    let journal =
+        decode_journal(invocation.action_journal.as_deref()).map_err(|error| error.to_string())?;
+    if !journal.is_empty() {
+        return Err("missing stored ActionPlan with a non-empty journal".to_string());
+    }
+    emit_plan_from_source(binding, source)
+}
+
 pub async fn run_owned_invocation(
     node: &EmbeddedNode,
     invocation: &CallbackInvocationDoc,
@@ -155,20 +195,42 @@ pub async fn run_owned_invocation(
     else {
         return Ok(());
     };
-    claimed.lifecycle_state = LIFECYCLE_RUNNING.to_string();
-    let _ = update_invocation(node, &claimed, Some(LIFECYCLE_CLAIMED)).await;
+    persist_claimed_to_running(node, &mut claimed).await?;
+
+    if finish_succeeded_if_docs_ready(node, &claimed).await? {
+        return Ok(());
+    }
 
     let source = fetch_source_for_invocation(node, binding, &claimed).await?;
-    match execute_running_invocation(node, &mut claimed, binding, &source, ceiling).await {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            tracing::warn!(
-                invocation_id = %claimed.invocation_id,
-                %error,
-                "callback invocation execution failed"
-            );
+    execute_running_invocation(node, &mut claimed, binding, &source, ceiling).await
+}
+
+async fn persist_claimed_to_running(
+    node: &EmbeddedNode,
+    invocation: &mut CallbackInvocationDoc,
+) -> Result<()> {
+    if invocation.lifecycle_state == LIFECYCLE_RUNNING {
+        return Ok(());
+    }
+    invocation.lifecycle_state = LIFECYCLE_RUNNING.to_string();
+    if update_invocation(node, invocation, Some(LIFECYCLE_CLAIMED)).await? {
+        return Ok(());
+    }
+    let current = super::documents::load_invocation(node, &invocation.invocation_id).await?;
+    match current {
+        Some(row) if row.lifecycle_state == LIFECYCLE_RUNNING => {
+            *invocation = row;
             Ok(())
         }
+        Some(row) => anyhow::bail!(
+            "CallbackInvocation {} could not persist claimed→running; state={}",
+            invocation.invocation_id,
+            row.lifecycle_state
+        ),
+        None => anyhow::bail!(
+            "CallbackInvocation {} disappeared during claimed→running",
+            invocation.invocation_id
+        ),
     }
 }
 
@@ -185,7 +247,7 @@ async fn execute_running_invocation(
         return deny(node, invocation, "illegal action journal prefix").await;
     }
 
-    let plan = match emit_plan_from_source(binding, source) {
+    let plan = match resolve_action_plan(invocation, binding, source) {
         Ok(plan) => plan,
         Err(reason) => return deny(node, invocation, &reason).await,
     };
@@ -272,32 +334,15 @@ async fn execute_running_invocation(
     let written = memory_from_outcome(&outcome);
     flush_workspace_docs(node, &written).await?;
     persist_journal(node, invocation, &journal, LIFECYCLE_RUNNING, None).await?;
-
-    invocation.lifecycle_state = LIFECYCLE_SUCCEEDED.to_string();
-    persist_journal(node, invocation, &journal, LIFECYCLE_SUCCEEDED, None).await?;
-
-    if can_emit_callback_result(
-        &invocation.lifecycle_state,
+    emit_result_then_succeed(
+        node,
+        invocation,
         &journal,
-        Some(&outcome.workspace),
-        Some(&outcome.placement),
-    ) {
-        let _ = create_callback_result(
-            node,
-            &CallbackResultDoc {
-                result_id: format!("res-{}", invocation.invocation_id),
-                invocation_id: invocation.invocation_id.clone(),
-                owner_deployment_id: invocation.owner_deployment_id.clone(),
-                workspace_id: Some(outcome.workspace.workspace_id.clone()),
-                caused_by_correlation: Some(correlation),
-                created_at: Some(
-                    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                ),
-            },
-        )
-        .await?;
-    }
-    Ok(())
+        &outcome.workspace,
+        &outcome.placement,
+        Some(correlation),
+    )
+    .await
 }
 
 fn memory_from_outcome(
@@ -319,7 +364,12 @@ async fn persist_journal(
     invocation.action_journal = Some(encode_journal(journal));
     invocation.lifecycle_state = state.to_string();
     invocation.error = error.map(str::to_string);
-    let _ = update_invocation(node, invocation, None).await?;
+    if !update_invocation(node, invocation, None).await? {
+        anyhow::bail!(
+            "CallbackInvocation {} persist matched no row (state={state})",
+            invocation.invocation_id
+        );
+    }
     Ok(())
 }
 
@@ -331,8 +381,50 @@ async fn deny(
     invocation.action_journal = Some("[]".to_string());
     invocation.lifecycle_state = LIFECYCLE_DENIED.to_string();
     invocation.error = Some(reason.to_string());
-    let _ = update_invocation(node, invocation, None).await?;
+    if !update_invocation(node, invocation, None).await? {
+        anyhow::bail!(
+            "CallbackInvocation {} deny persist matched no row",
+            invocation.invocation_id
+        );
+    }
     Ok(())
+}
+
+async fn emit_result_then_succeed(
+    node: &EmbeddedNode,
+    invocation: &mut CallbackInvocationDoc,
+    journal: &[ActionJournalEntry],
+    workspace: &IsolatedWorkspaceDoc,
+    placement: &WorkspacePlacementDoc,
+    correlation: Option<String>,
+) -> Result<()> {
+    if !can_emit_callback_result(
+        &invocation.lifecycle_state,
+        journal,
+        Some(workspace),
+        Some(placement),
+    ) {
+        anyhow::bail!(
+            "CallbackInvocation {} result docs are not ready",
+            invocation.invocation_id
+        );
+    }
+    let correlation = correlation
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| workspace.caused_by_correlation.clone());
+    create_callback_result(
+        node,
+        &CallbackResultDoc {
+            result_id: format!("res-{}", invocation.invocation_id),
+            invocation_id: invocation.invocation_id.clone(),
+            owner_deployment_id: invocation.owner_deployment_id.clone(),
+            workspace_id: Some(workspace.workspace_id.clone()),
+            caused_by_correlation: Some(correlation),
+            created_at: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        },
+    )
+    .await?;
+    persist_journal(node, invocation, journal, LIFECYCLE_SUCCEEDED, None).await
 }
 
 pub async fn recover_local_invocations(
@@ -343,6 +435,19 @@ pub async fn recover_local_invocations(
     let invocations =
         super::documents::list_recoverable_invocations(node, local_deployment_id).await?;
     for invocation in invocations {
+        if invocation.owner_deployment_id != local_deployment_id {
+            continue;
+        }
+        if invocation.lifecycle_state == LIFECYCLE_SUCCEEDED {
+            if let Err(error) = finish_succeeded_if_docs_ready(node, &invocation).await {
+                tracing::warn!(
+                    invocation_id = %invocation.invocation_id,
+                    %error,
+                    "callback succeeded-without-result repair failed"
+                );
+            }
+            continue;
+        }
         if !invocation_is_claimable(local_deployment_id, &invocation) {
             continue;
         }
@@ -361,11 +466,6 @@ pub async fn recover_local_invocations(
                 "callback recovery run failed"
             );
         }
-        if let Ok(Some(current)) =
-            super::documents::load_invocation(node, &invocation.invocation_id).await
-        {
-            let _ = finish_succeeded_if_docs_ready(node, &current).await;
-        }
     }
     Ok(())
 }
@@ -374,20 +474,15 @@ pub async fn finish_succeeded_if_docs_ready(
     node: &EmbeddedNode,
     invocation: &CallbackInvocationDoc,
 ) -> Result<bool> {
-    if invocation.lifecycle_state != LIFECYCLE_SUCCEEDED {
+    if !matches!(
+        invocation.lifecycle_state.as_str(),
+        LIFECYCLE_RUNNING | LIFECYCLE_SUCCEEDED
+    ) {
         return Ok(false);
     }
-    if load_callback_result(node, &invocation.invocation_id)
-        .await?
-        .is_some()
-    {
-        return Ok(true);
-    }
     let journal = decode_journal(invocation.action_journal.as_deref())?;
-    let workspace_id = invocation
-        .action_plan
-        .as_deref()
-        .and_then(|raw| serde_json::from_str::<ActionPlan>(raw).ok())
+    let workspace_id = stored_action_plan(invocation)
+        .map_err(anyhow::Error::msg)?
         .and_then(|plan| match plan.actions.into_iter().next() {
             Some(HostAction::CreateWorkspace(action)) => Some(action.workspace_id),
             None => None,
@@ -398,24 +493,30 @@ pub async fn finish_succeeded_if_docs_ready(
     let docs = load_memory_workspace_docs(node, &workspace_id).await?;
     let workspace = docs.load_isolated_workspace(&workspace_id)?;
     let placement = docs.load_placement(&workspace_id)?;
-    if !can_emit_callback_result(
-        LIFECYCLE_SUCCEEDED,
-        &journal,
-        workspace.as_ref(),
-        placement.as_ref(),
-    ) {
+    if !result_docs_ready(&journal, workspace.as_ref(), placement.as_ref()) {
         return Ok(false);
     }
-    let _ = create_callback_result(
+    let Some(workspace) = workspace else {
+        return Ok(false);
+    };
+    let Some(placement) = placement else {
+        return Ok(false);
+    };
+    if load_callback_result(node, &invocation.invocation_id)
+        .await?
+        .is_some()
+        && invocation.lifecycle_state == LIFECYCLE_SUCCEEDED
+    {
+        return Ok(true);
+    }
+    let mut current = invocation.clone();
+    emit_result_then_succeed(
         node,
-        &CallbackResultDoc {
-            result_id: format!("res-{}", invocation.invocation_id),
-            invocation_id: invocation.invocation_id.clone(),
-            owner_deployment_id: invocation.owner_deployment_id.clone(),
-            workspace_id: Some(workspace_id),
-            caused_by_correlation: None,
-            created_at: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
-        },
+        &mut current,
+        &journal,
+        &workspace,
+        &placement,
+        Some(workspace.caused_by_correlation.clone()),
     )
     .await?;
     Ok(true)

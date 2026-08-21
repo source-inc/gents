@@ -32,7 +32,7 @@ use crate::lifecycle::{
     TriggerLineage, WorkspaceLineage,
 };
 use crate::runtime_snapshot::{ActiveRuntimeSnapshot, ResolvedTask};
-use crate::trigger_engine::{MaterializerHandle, TriggerKind};
+use crate::trigger_engine::{MaterializeSkip, MaterializerHandle, TriggerKind};
 use crate::watcher::workspace_bound_request_claimable;
 
 pub(crate) struct ProductionMaterializer {
@@ -160,6 +160,7 @@ impl MaterializerHandle for ProductionMaterializer {
         Box::pin(async move {
             let (behavior_name, behavior_did, _deadline_secs, _backend_id) = resolved?;
             let workspace = WorkspaceLineage::from_trigger_context(trigger_context.as_deref())?;
+            workspace.require_authority_if_workspace_id()?;
             if workspace.is_bound()
                 && !workspace_bound_request_claimable(
                     local_deployment_id.as_deref(),
@@ -167,9 +168,12 @@ impl MaterializerHandle for ProductionMaterializer {
                     workspace.workspace_owner_deployment_id.as_deref(),
                 )
             {
-                anyhow::bail!(
-                    "workspace-bound request is owned by another deployment; not claimable here"
-                );
+                return Err(MaterializeSkip {
+                    reason:
+                        "workspace-bound request is owned by another deployment; not claimable here"
+                            .to_string(),
+                }
+                .into());
             }
             let lineage = TriggerLineage {
                 trigger_id: trigger_id.clone(),

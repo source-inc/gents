@@ -19,7 +19,7 @@ fn result_emitted_ok(state: &str, journal: &[String], result_emitted: bool) -> b
 }
 
 fn denied_failed_no_execute(state: &str, journal: &[String]) -> bool {
-    !(state == "denied" || state == "failed") || journal.is_empty()
+    state != "denied" || journal.is_empty()
 }
 
 fn invocation_legal(state: &str, journal: &[String], result_emitted: bool) -> bool {
@@ -43,6 +43,7 @@ fn generated_callback_cases_match_lean_predicate() {
         "result_emitted_on_succeeded_with_complete_journal_legal",
         "denied_empty_journal_legal",
         "denied_executing_journal_illegal",
+        "failed_after_result_docs_no_emit_legal",
     ] {
         assert!(
             names.iter().any(|name| *name == required),

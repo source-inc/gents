@@ -228,6 +228,12 @@ pub fn validate_callback_binding(binding: &CallbackBindingDoc) -> Result<()> {
         .filter(|filter| !filter.is_empty())
     {
         crate::graphql::validate_graphql_filter_fragment(filter)?;
+        if let Some(field) = secret_field_in_filter(filter) {
+            anyhow::bail!(
+                "CallbackBinding {} filter field `{field}` is secret-bearing",
+                binding.binding_id
+            );
+        }
     }
     for field in binding.projected_fields()? {
         crate::graphql::validate_graphql_name(&field)?;
@@ -253,12 +259,60 @@ pub fn validate_callback_binding(binding: &CallbackBindingDoc) -> Result<()> {
             "CallbackBinding {} needs builtin_emitter or module_id",
             binding.binding_id
         ),
+        (None, Some(_)) => anyhow::bail!(
+            "CallbackBinding {} WASM planner is not implemented",
+            binding.binding_id
+        ),
         (Some(name), _) if name != BUILTIN_CREATE_WORKSPACE => anyhow::bail!(
             "CallbackBinding {} unknown builtin_emitter `{name}`",
             binding.binding_id
         ),
-        _ => Ok(()),
+        (Some(_), _) => Ok(()),
     }
+}
+
+fn secret_field_in_filter(filter: &str) -> Option<String> {
+    let stripped = strip_graphql_string_literals(filter);
+    let mut ident = String::new();
+    for ch in stripped.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            ident.push(ch);
+            continue;
+        }
+        if let Some(secret) = secret_ident(&ident) {
+            return Some(secret);
+        }
+        ident.clear();
+    }
+    secret_ident(&ident)
+}
+
+fn secret_ident(ident: &str) -> Option<String> {
+    if ident.is_empty() || ident.starts_with('_') {
+        return None;
+    }
+    crate::toolset::is_secret_env_name(ident).then(|| ident.to_string())
+}
+
+fn strip_graphql_string_literals(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '"' {
+            out.push(ch);
+            continue;
+        }
+        while let Some(next) = chars.next() {
+            if next == '\\' {
+                let _ = chars.next();
+                continue;
+            }
+            if next == '"' {
+                break;
+            }
+        }
+    }
+    out
 }
 
 pub fn strip_secret_fields(value: Value) -> Value {
@@ -375,22 +429,46 @@ pub async fn list_recoverable_invocations(
     node: &EmbeddedNode,
     owner_deployment_id: &str,
 ) -> Result<Vec<CallbackInvocationDoc>> {
+    let mut invocations = query_owner_invocations(
+        node,
+        owner_deployment_id,
+        r#"["pending", "claimed", "running"]"#,
+    )
+    .await?;
+    let succeeded = query_owner_invocations(node, owner_deployment_id, r#"["succeeded"]"#).await?;
+    for invocation in succeeded {
+        if load_callback_result(node, &invocation.invocation_id)
+            .await?
+            .is_none()
+        {
+            invocations.push(invocation);
+        }
+    }
+    Ok(invocations)
+}
+
+async fn query_owner_invocations(
+    node: &EmbeddedNode,
+    owner_deployment_id: &str,
+    states: &str,
+) -> Result<Vec<CallbackInvocationDoc>> {
     let query = format!(
         r#"{{
             CallbackInvocation(
                 filter: {{
                     owner_deployment_id: {{ _eq: "{owner}" }},
-                    lifecycle_state: {{ _in: ["pending", "claimed", "running"] }}
+                    lifecycle_state: {{ _in: {states} }}
                 }},
                 order: {{ created_at: ASC }}
             ) {{ {INVOCATION_FIELDS} }}
         }}"#,
         owner = escape_graphql_string(owner_deployment_id),
+        states = states,
     );
     let response = node.execute(&query).await;
     if response.has_errors() {
         anyhow::bail!(
-            "query recoverable CallbackInvocation failed: {:?}",
+            "query CallbackInvocation states {states} failed: {:?}",
             response.errors
         );
     }

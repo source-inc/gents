@@ -168,6 +168,23 @@ impl WorkspaceLineage {
                 .map(str::trim)
                 .is_some_and(|value| !value.is_empty())
     }
+
+    pub fn require_authority_if_workspace_id(&self) -> Result<()> {
+        let has_workspace_id = self
+            .workspace_id
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+        let has_authority = self
+            .workspace_authority
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+        if has_workspace_id && !has_authority {
+            anyhow::bail!("workspace-bound request requires workspace_authority");
+        }
+        Ok(())
+    }
 }
 
 pub const MAX_TRIGGER_CONTEXT_BYTES: usize = 16 * 1024;

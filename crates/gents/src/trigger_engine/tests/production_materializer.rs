@@ -132,7 +132,18 @@ async fn materializer_skips_workspace_bound_request_for_other_deployment() {
         )
         .await
         .expect_err("replica must not enqueue workspace-bound work");
-    assert!(error.to_string().contains("another deployment"), "{error}");
+    assert!(
+        error
+            .downcast_ref::<crate::trigger_engine::MaterializeSkip>()
+            .is_some(),
+        "{error}"
+    );
+    match crate::trigger_engine::fire_result_from_materialize(Err(error)) {
+        FireResult::Skipped { reason } => {
+            assert!(reason.contains("another deployment"), "{reason}");
+        }
+        other => panic!("expected Skipped, got {other:?}"),
+    }
 }
 
 /// Per-group Serial/LatestOnly gates include correlation; per-document gates
