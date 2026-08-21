@@ -1,5 +1,6 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use defra_node::EmbeddedNode;
@@ -15,6 +16,12 @@ use crate::workspace::{
 };
 
 use super::BUILTIN_CREATE_WORKSPACE;
+
+/// Crash-window bound for succeeded-without-result repair. Happy-path
+/// succeeded rows are excluded by a batched CallbackResult lookup, not by
+/// probing every historical invocation.
+pub(crate) const SUCCEEDED_REPAIR_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
+pub(crate) const SUCCEEDED_REPAIR_LIMIT: u32 = 256;
 
 const BINDING_FIELDS: &str = r#"
     binding_id
@@ -435,16 +442,97 @@ pub async fn list_recoverable_invocations(
         r#"["pending", "claimed", "running"]"#,
     )
     .await?;
-    let succeeded = query_owner_invocations(node, owner_deployment_id, r#"["succeeded"]"#).await?;
-    for invocation in succeeded {
-        if load_callback_result(node, &invocation.invocation_id)
-            .await?
-            .is_none()
-        {
-            invocations.push(invocation);
-        }
-    }
+    invocations.extend(list_recent_succeeded_missing_result(node, owner_deployment_id).await?);
     Ok(invocations)
+}
+
+async fn list_recent_succeeded_missing_result(
+    node: &EmbeddedNode,
+    owner_deployment_id: &str,
+) -> Result<Vec<CallbackInvocationDoc>> {
+    let cutoff = succeeded_repair_cutoff(chrono::Utc::now());
+    let query = format!(
+        r#"{{
+            CallbackInvocation(
+                filter: {{
+                    owner_deployment_id: {{ _eq: "{owner}" }},
+                    lifecycle_state: {{ _eq: "succeeded" }},
+                    created_at: {{ _ge: "{cutoff}" }}
+                }},
+                order: {{ created_at: DESC }},
+                limit: {limit}
+            ) {{ {INVOCATION_FIELDS} }}
+        }}"#,
+        owner = escape_graphql_string(owner_deployment_id),
+        cutoff = escape_graphql_string(&cutoff),
+        limit = SUCCEEDED_REPAIR_LIMIT,
+    );
+    let response = node.execute(&query).await;
+    if response.has_errors() {
+        anyhow::bail!(
+            "query recent succeeded CallbackInvocation failed: {:?}",
+            response.errors
+        );
+    }
+    let succeeded: Vec<CallbackInvocationDoc> = rows(&response, "CallbackInvocation")?;
+    if succeeded.is_empty() {
+        return Ok(Vec::new());
+    }
+    let results = load_callback_results_for_invocations(
+        node,
+        succeeded.iter().map(|row| row.invocation_id.as_str()),
+    )
+    .await?;
+    Ok(succeeded_missing_result(succeeded, &results))
+}
+
+pub(crate) fn succeeded_repair_cutoff(now: chrono::DateTime<chrono::Utc>) -> String {
+    let start = now
+        - chrono::Duration::from_std(SUCCEEDED_REPAIR_WINDOW)
+            .unwrap_or_else(|_| chrono::Duration::hours(24));
+    start.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+pub(crate) fn succeeded_missing_result(
+    succeeded: Vec<CallbackInvocationDoc>,
+    result_invocation_ids: &HashSet<String>,
+) -> Vec<CallbackInvocationDoc> {
+    succeeded
+        .into_iter()
+        .filter(|row| !result_invocation_ids.contains(&row.invocation_id))
+        .collect()
+}
+
+async fn load_callback_results_for_invocations(
+    node: &EmbeddedNode,
+    invocation_ids: impl IntoIterator<Item = &str>,
+) -> Result<HashSet<String>> {
+    let ids: Vec<String> = invocation_ids
+        .into_iter()
+        .map(|id| format!(r#""{}""#, escape_graphql_string(id)))
+        .collect();
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let query = format!(
+        r#"{{
+            CallbackResult(
+                filter: {{ invocation_id: {{ _in: [{ids}] }} }},
+                limit: {limit}
+            ) {{ invocation_id }}
+        }}"#,
+        ids = ids.join(", "),
+        limit = SUCCEEDED_REPAIR_LIMIT,
+    );
+    let response = node.execute(&query).await;
+    if response.has_errors() {
+        anyhow::bail!(
+            "query CallbackResult batch for succeeded repair failed: {:?}",
+            response.errors
+        );
+    }
+    let rows: Vec<CallbackResultDoc> = rows(&response, "CallbackResult")?;
+    Ok(rows.into_iter().map(|row| row.invocation_id).collect())
 }
 
 async fn query_owner_invocations(

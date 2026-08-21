@@ -18,7 +18,9 @@ use crate::workspace::{
 
 use super::claim::invocation_is_claimable;
 use super::documents::{
-    strip_secret_fields, validate_callback_binding, CallbackBindingDoc, CallbackInvocationDoc,
+    strip_secret_fields, succeeded_missing_result, succeeded_repair_cutoff,
+    validate_callback_binding, CallbackBindingDoc, CallbackInvocationDoc, SUCCEEDED_REPAIR_LIMIT,
+    SUCCEEDED_REPAIR_WINDOW,
 };
 use super::host::ensure_local_host_deployment;
 use super::run::{
@@ -193,6 +195,47 @@ fn apply_rejects_secret_bearing_filter_fields() {
     let mut literal = binding();
     literal.filter = Some(r#"{ work_unit_id: { _eq: "TOKEN" } }"#.into());
     assert!(validate_callback_binding(&literal).is_ok());
+}
+
+#[test]
+fn succeeded_without_result_repair_is_windowed_and_batched() {
+    assert_eq!(SUCCEEDED_REPAIR_LIMIT, 256);
+    assert_eq!(
+        SUCCEEDED_REPAIR_WINDOW,
+        std::time::Duration::from_secs(24 * 60 * 60)
+    );
+    let now = chrono::DateTime::parse_from_rfc3339("2026-08-21T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(succeeded_repair_cutoff(now), "2026-08-20T12:00:00Z");
+
+    let row = |id: &str| CallbackInvocationDoc {
+        invocation_id: id.into(),
+        owner_deployment_id: "deploy-1".into(),
+        binding_id: "bind-1".into(),
+        source_collection: "WorkUnit".into(),
+        source_doc_id: id.into(),
+        source_version: Some("created".into()),
+        idempotency_key: format!("bind-1:{id}:created"),
+        lifecycle_state: LIFECYCLE_SUCCEEDED.into(),
+        attempts: Some(1),
+        action_plan: None,
+        action_journal: None,
+        error: None,
+        claimed_at: None,
+        created_at: None,
+    };
+    let missing = succeeded_missing_result(
+        vec![row("inv-ok"), row("inv-gap")],
+        &["inv-ok".to_string()].into_iter().collect(),
+    );
+    assert_eq!(
+        missing
+            .iter()
+            .map(|row| row.invocation_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["inv-gap"]
+    );
 }
 
 #[test]
