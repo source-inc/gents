@@ -348,6 +348,15 @@ pub fn workspace_binding_upsert_mutation(doc: &WorkspaceBindingDoc) -> String {
     )
 }
 
+pub fn workspace_bindings_upsert_mutation(docs: &[WorkspaceBindingDoc]) -> String {
+    let fields: Vec<String> = docs
+        .iter()
+        .enumerate()
+        .map(|(index, doc)| workspace_binding_upsert_field(&format!("bind{index}"), doc))
+        .collect();
+    format!("mutation {{\n{}\n}}", fields.join("\n"))
+}
+
 /// One GraphQL mutation for the seal recovery unit: workspace, placement,
 /// writer receipt, and any binding releases.
 pub fn workspace_seal_docs_mutation(

@@ -16,7 +16,10 @@ use crate::toolset::{workspace_write_sandbox_enforced, WorkspaceAuthority};
 use crate::watcher::AgentRequest;
 
 use super::binding::{admit_workspace_binding, new_binding, AdmitBinding};
-use super::documents::{workspace_binding_upsert_mutation, WorkspaceBindingDoc, BINDING_ACTIVE};
+use super::documents::{
+    workspace_binding_upsert_mutation, workspace_bindings_upsert_mutation, WorkspaceBindingDoc,
+    BINDING_ACTIVE,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IsolatedWorkspaceRecord {
@@ -503,10 +506,32 @@ pub(super) async fn persist_workspace_binding_doc(
     node: &EmbeddedNode,
     doc: &WorkspaceBindingDoc,
 ) -> Result<()> {
-    let mutation = workspace_binding_upsert_mutation(doc);
+    persist_workspace_binding_docs(node, std::slice::from_ref(doc)).await
+}
+
+pub(super) async fn persist_workspace_binding_docs(
+    node: &EmbeddedNode,
+    docs: &[WorkspaceBindingDoc],
+) -> Result<()> {
+    if docs.is_empty() {
+        return Ok(());
+    }
+    let mutation = if docs.len() == 1 {
+        workspace_binding_upsert_mutation(&docs[0])
+    } else {
+        workspace_bindings_upsert_mutation(docs)
+    };
     graphql_mutation_with_transaction_retry(node, &mutation, "upsert_WorkspaceBinding")
         .await
-        .with_context(|| format!("persist WorkspaceBinding {}", doc.binding_id))?;
+        .with_context(|| {
+            format!(
+                "persist WorkspaceBinding {}",
+                docs.iter()
+                    .map(|doc| doc.binding_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        })?;
     Ok(())
 }
 

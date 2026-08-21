@@ -288,10 +288,9 @@ pub async fn materialize_workspace_binding(
     )? {
         AdmitBinding::Reuse(_) => Ok(()),
         AdmitBinding::Create { binding, release } => {
-            for released in release {
-                super::overlay::persist_workspace_binding_doc(node, &released).await?;
-            }
-            super::overlay::persist_workspace_binding_doc(node, &binding).await
+            let mut docs = release;
+            docs.push(binding);
+            super::overlay::persist_workspace_binding_docs(node, &docs).await
         }
     }
 }
