@@ -323,9 +323,9 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
             )
             .await?;
             // Some even when empty: bound requests must not fall through to a live walk.
-            let frozen_instruction_manifest = overlay
-                .as_ref()
-                .map(|overlay| overlay.instruction_manifest.clone());
+            let frozen_instruction_manifest =
+                crate::workspace::frozen_instruction_manifest_from_overlay(overlay.as_ref())
+                    .map(str::to_owned);
             let workspace = match overlay {
                 Some(overlay) => crate::tool_call_lifecycle::runtime::ToolWorkspaceScope {
                     workspace_cwd: Some(overlay.cwd),

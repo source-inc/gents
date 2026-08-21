@@ -65,6 +65,14 @@ pub(crate) struct WorkspaceOverlay {
     pub seal_hash: Option<String>,
 }
 
+/// Bound overlays always yield `Some`, including empty `{}` manifests.
+/// Unbound requests (`None`) fall through to the live cwd→tool-root walk.
+pub(crate) fn frozen_instruction_manifest_from_overlay(
+    overlay: Option<&WorkspaceOverlay>,
+) -> Option<&str> {
+    overlay.map(|overlay| overlay.instruction_manifest.as_str())
+}
+
 pub(crate) struct WorkspaceBindInput<'a> {
     pub workspace_id: &'a str,
     pub authority: WorkspaceAuthority,

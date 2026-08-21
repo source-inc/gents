@@ -1042,6 +1042,22 @@ mod tests {
     }
 
     #[test]
+    fn bound_empty_manifest_does_not_include_live_agents_md() {
+        let (_tmp, root, nested) = live_instruction_tree();
+        assert!(
+            assemble_request_context_message(None, Some("{}"), Some(&nested), Some(&root))
+                .is_none()
+        );
+        assert!(
+            assemble_request_context_message(None, Some(""), Some(&nested), Some(&root)).is_none()
+        );
+        let live = assemble_request_context_message(None, None, Some(&nested), Some(&root))
+            .expect("unbound live");
+        let encoded = serde_json::to_string(&live).expect("serialize");
+        assert!(encoded.contains("nested-live-instructions"));
+    }
+
+    #[test]
     fn unbound_request_includes_live_agents_md() {
         let (_tmp, root, nested) = live_instruction_tree();
         let message = assemble_request_context_message(None, None, Some(&nested), Some(&root))

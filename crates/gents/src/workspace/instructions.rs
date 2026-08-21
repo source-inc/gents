@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -172,23 +173,19 @@ fn discover_live_instruction_files(cwd: Option<&Path>, tool_root: &Path) -> Vec<
         if remaining == 0 {
             break;
         }
-        let Some(path) = first_live_instruction_file(&dir, &tool_root) else {
+        let Some(found) = first_live_instruction_file(&dir, &tool_root) else {
             continue;
         };
-        let Ok(bytes) = std::fs::read(&path) else {
+        let Some(bytes) = read_live_instruction_prefix(&found.read_path, remaining) else {
             continue;
         };
-        if bytes.is_empty() {
-            continue;
-        }
-        let file =
-            InstructionFile::from_bytes_with_budget(&path.to_string_lossy(), &bytes, remaining);
+        let file = InstructionFile::from_bytes_with_budget(&found.display, &bytes, remaining);
         if file.text.is_empty() {
             continue;
         }
         if !file.truncated.is_empty() {
             tracing::warn!(
-                path = %path.display(),
+                path = %found.display,
                 budget = remaining,
                 "live AGENTS.md truncated to instruction budget"
             );
@@ -199,7 +196,12 @@ fn discover_live_instruction_files(cwd: Option<&Path>, tool_root: &Path) -> Vec<
     files
 }
 
-fn first_live_instruction_file(dir: &Path, tool_root: &Path) -> Option<PathBuf> {
+struct LiveInstructionPath {
+    display: String,
+    read_path: PathBuf,
+}
+
+fn first_live_instruction_file(dir: &Path, tool_root: &Path) -> Option<LiveInstructionPath> {
     for name in DEFAULT_INSTRUCTION_PATHS {
         let candidate = dir.join(name);
         let Ok(canonical) = std::fs::canonicalize(&candidate) else {
@@ -209,11 +211,42 @@ fn first_live_instruction_file(dir: &Path, tool_root: &Path) -> Option<PathBuf> 
             continue;
         }
         match std::fs::metadata(&canonical) {
-            Ok(meta) if meta.len() > 0 => return Some(canonical),
+            Ok(meta) if meta.len() > 0 => {
+                return Some(LiveInstructionPath {
+                    display: instruction_display_path(&candidate, tool_root),
+                    read_path: canonical,
+                });
+            }
             _ => continue,
         }
     }
     None
+}
+
+fn instruction_display_path(path: &Path, tool_root: &Path) -> String {
+    path.strip_prefix(tool_root)
+        .ok()
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .filter(|relative| !relative.is_empty())
+        .or_else(|| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "AGENTS.md".to_string())
+}
+
+/// Read at most `remaining` bytes plus a short UTF-8 tail so a multi-gigabyte
+/// file cannot be pulled into the inference entry path.
+fn read_live_instruction_prefix(path: &Path, remaining: usize) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut buf = Vec::new();
+    let cap = remaining.saturating_add(4);
+    file.take(cap as u64).read_to_end(&mut buf).ok()?;
+    if buf.is_empty() {
+        None
+    } else {
+        Some(buf)
+    }
 }
 
 fn bound_instruction_text_to(bytes: &[u8], budget: usize) -> (String, String) {
@@ -260,30 +293,63 @@ mod tests {
         assert!(!section.contains("live-writer"));
     }
 
-    fn live_tree() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    fn live_tree() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let outside = tmp.path().join("outside");
         let root = tmp.path().join("root");
         let nested = root.join("src");
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::create_dir_all(&nested).unwrap();
+        // Parent of the tool root — must not load if the walk stops at root.
+        std::fs::write(
+            tmp.path().join("AGENTS.md"),
+            "parent-of-root-instructions\n",
+        )
+        .unwrap();
         std::fs::write(outside.join("AGENTS.md"), "outside-instructions\n").unwrap();
         std::fs::write(root.join("AGENTS.md"), "root-instructions\n").unwrap();
         std::fs::write(nested.join("AGENTS.md"), "nested-instructions\n").unwrap();
         let root = std::fs::canonicalize(&root).unwrap();
         let nested = std::fs::canonicalize(&nested).unwrap();
-        (tmp, root, nested)
+        let outside = std::fs::canonicalize(&outside).unwrap();
+        (tmp, root, nested, outside)
     }
 
     #[test]
     fn live_walk_concatenates_tool_root_to_cwd_most_local_last() {
-        let (_tmp, root, nested) = live_tree();
+        let (_tmp, root, nested, _outside) = live_tree();
         let section = live_instruction_context_section(Some(&nested), Some(&root)).unwrap();
         let root_at = section.find("root-instructions").expect("root file");
         let nested_at = section.find("nested-instructions").expect("nested file");
         assert!(root_at < nested_at, "tool-root content must precede cwd");
         assert!(!section.contains("outside-instructions"));
+        assert!(!section.contains("parent-of-root-instructions"));
         assert!(section.contains("# Live workspace instructions"));
+        assert!(section.contains("## AGENTS.md\n"));
+        assert!(section.contains("## src/AGENTS.md\n"));
+        assert!(
+            !section.contains(&root.to_string_lossy().replace('\\', "/")),
+            "headings must not leak the host tool-root path: {section}"
+        );
+    }
+
+    #[test]
+    fn live_walk_omits_parent_of_tool_root() {
+        let (_tmp, root, nested, _outside) = live_tree();
+        let section = live_instruction_context_section(Some(&nested), Some(&root)).unwrap();
+        assert!(section.contains("root-instructions"));
+        assert!(section.contains("nested-instructions"));
+        assert!(!section.contains("parent-of-root-instructions"));
+    }
+
+    #[test]
+    fn live_walk_cwd_outside_root_uses_tool_root_only() {
+        let (_tmp, root, _nested, outside) = live_tree();
+        let section = live_instruction_context_section(Some(&outside), Some(&root)).unwrap();
+        assert!(section.contains("root-instructions"));
+        assert!(!section.contains("nested-instructions"));
+        assert!(!section.contains("outside-instructions"));
+        assert!(!section.contains("parent-of-root-instructions"));
     }
 
     #[test]
@@ -301,10 +367,11 @@ mod tests {
 
     #[test]
     fn live_walk_without_cwd_uses_tool_root_only() {
-        let (_tmp, root, _nested) = live_tree();
+        let (_tmp, root, _nested, _outside) = live_tree();
         let section = live_instruction_context_section(None, Some(&root)).unwrap();
         assert!(section.contains("root-instructions"));
         assert!(!section.contains("nested-instructions"));
+        assert!(!section.contains("parent-of-root-instructions"));
     }
 
     #[cfg(unix)]
@@ -351,6 +418,30 @@ mod tests {
     }
 
     #[test]
+    fn live_walk_truncates_file_larger_than_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let huge = "H".repeat(INSTRUCTION_TEXT_BUDGET + 128);
+        std::fs::write(root.join("AGENTS.md"), &huge).unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        let section = live_instruction_context_section(Some(&root), Some(&root)).unwrap();
+        assert!(section.contains("truncated"));
+        assert!(!section.contains(&huge));
+        let heading = "## AGENTS.md\n";
+        let start = section.find(heading).expect("heading") + heading.len();
+        let rest = &section[start..];
+        let text = rest
+            .strip_prefix("truncated to ")
+            .and_then(|tail| tail.find('\n').map(|idx| &tail[idx + 1..]))
+            .unwrap_or(rest)
+            .trim_end_matches('\n');
+        assert!(text.len() <= INSTRUCTION_TEXT_BUDGET);
+        assert_eq!(text, "H".repeat(INSTRUCTION_TEXT_BUDGET));
+        assert!(!section.contains(&root.to_string_lossy().replace('\\', "/")));
+    }
+
+    #[test]
     fn live_walk_skips_empty_override_and_uses_agents_md() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("root");
@@ -364,21 +455,23 @@ mod tests {
 
     #[test]
     fn bound_empty_manifest_does_not_live_walk() {
-        let (_tmp, root, nested) = live_tree();
+        let (_tmp, root, nested, _outside) = live_tree();
         assert!(instruction_body_for_request(Some("{}"), Some(&nested), Some(&root)).is_none());
+        assert!(instruction_body_for_request(Some(""), Some(&nested), Some(&root)).is_none());
     }
 
     #[test]
     fn unbound_body_uses_live_files() {
-        let (_tmp, root, nested) = live_tree();
+        let (_tmp, root, nested, _outside) = live_tree();
         let body = instruction_body_for_request(None, Some(&nested), Some(&root)).unwrap();
         assert!(body.contains("nested-instructions"));
         assert!(body.contains("root-instructions"));
+        assert!(!body.contains("parent-of-root-instructions"));
     }
 
     #[test]
     fn bound_body_keeps_frozen_when_live_tree_changed() {
-        let (_tmp, root, nested) = live_tree();
+        let (_tmp, root, nested, _outside) = live_tree();
         let manifest = InstructionManifest::new(
             "abc",
             vec![InstructionFile::from_bytes(
