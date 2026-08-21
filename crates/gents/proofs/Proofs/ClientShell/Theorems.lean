@@ -42,8 +42,7 @@ theorem selection_sticky_under_inflight
     (s : ShellState) (store store' : LocalStore) (h : TransportHealth)
     (ctx : SubmitContext)
     (_h_inflight :
-      (∃ a, s.workflow = .creating a)
-      ∨ (∃ a opt, s.workflow = .submitting a opt)
+      (∃ a opt, s.workflow = .submitting a opt)
       ∨ (∃ sid req, s.workflow = .awaiting sid req)) :
     (step s (.snapshot store') store h ctx).selection = s.selection :=
   snapshot_preserves_selection s store store' h ctx
@@ -97,11 +96,17 @@ theorem projection_reflects_observed_tip
     (projectChat s store ctx).turnState = obs.latestTurn := by
   simp [projectChat, classifySelection, h_sel, h_find]
 
-theorem mutation_submitted_preserves_selection
+theorem mutation_submitted_selects_session
     (s : ShellState) (store : LocalStore) (h : TransportHealth)
     (ctx : SubmitContext) (sid : SessionId) (req : RequestId) :
-    (step s (.mutation (.submitted sid req)) store h ctx).selection
-      = s.selection := rfl
+    (step s (.mutation (.submitted sid req)) store h ctx).selection.session
+      = some sid := rfl
+
+theorem new_conversation_is_ephemeral
+    (s : ShellState) (store : LocalStore) (h : TransportHealth)
+    (ctx : SubmitContext) :
+    (step s (.user .requestNewConversation) store h ctx).selection.session
+      = none := rfl
 
 theorem mutation_failed_preserves_selection
     (s : ShellState) (store : LocalStore) (h : TransportHealth)

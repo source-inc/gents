@@ -7,7 +7,7 @@ use gents_desktop_core::client::{
 use gents_protocol::client_protocol::ClientTurnState;
 use gents_protocol::row::{
     AgentConversationRow, AgentMessageRow, AgentPrincipalRow, AgentRequestRow, AgentResponseRow,
-    AgentRuntimeRow, AgentSessionRow,
+    AgentRuntimeRow, AgentSessionRow, AgentToolCallRow,
 };
 use tokio::time::{sleep, timeout};
 
@@ -400,7 +400,7 @@ fn chat_patch_merge_updates_one_agent_without_dropping_other_agent_rows() {
         ..ClientStoreRows::default()
     });
 
-    let mut patch = ClientStore::from_rows(ClientStoreRows {
+    let patch = ClientStore::from_rows(ClientStoreRows {
         conversations: vec![AgentConversationRow {
             session_id: "session-1".to_string(),
             agent_name: Some("Amy".to_string()),
@@ -472,9 +472,10 @@ fn chat_patch_merge_updates_one_agent_without_dropping_other_agent_rows() {
             ended: None,
             status: Some("active".to_string()),
         }],
+        message_source_agent_dids: vec![Some("did:test:amy".to_string())],
+        session_source_agent_dids: vec![Some("did:test:amy".to_string())],
         ..ClientStoreRows::default()
     });
-    patch.stamp_source_agent_did("did:test:amy");
 
     let merged = base.merge_chat_patch(patch);
 
@@ -504,6 +505,199 @@ fn chat_patch_merge_updates_one_agent_without_dropping_other_agent_rows() {
         .session_source_agent_dids
         .iter()
         .any(|source| source.as_deref() == Some("did:test:bea")));
+}
+
+#[test]
+fn local_chat_patch_updates_durable_transcript_without_creating_projection_twins() {
+    let message = |content: &str| AgentMessageRow {
+        message_key: "session-1:2".to_string(),
+        session_id: Some("session-1".to_string()),
+        request_id: Some("request-1".to_string()),
+        requester_did: None,
+        sequence: Some(2),
+        role: Some("assistant".to_string()),
+        content: Some(content.to_string()),
+        reasoning: None,
+        timestamp: Some("2026-08-21T18:07:36Z".to_string()),
+    };
+    let tool_call = |lifecycle_state: &str| {
+        serde_json::from_value::<AgentToolCallRow>(serde_json::json!({
+            "tool_call_key": "session-1:tool-1",
+            "session_id": "session-1",
+            "request_id": "request-1",
+            "message_sequence": 2,
+            "tool_name": "bash_unrestricted",
+            "tool_call_id": "tool-1",
+            "lifecycle_state": lifecycle_state,
+            "status": lifecycle_state
+        }))
+        .expect("tool call row")
+    };
+    let baseline = ClientStore::from_rows(ClientStoreRows {
+        messages: vec![message("Let me locate the repo")],
+        tool_calls: vec![tool_call("running")],
+        ..ClientStoreRows::default()
+    });
+    let local_patch = ClientStore::from_rows(ClientStoreRows {
+        messages: vec![message("Let me locate the repo, then run the searches.")],
+        tool_calls: vec![tool_call("completed")],
+        ..ClientStoreRows::default()
+    });
+    let tagged_patch = ClientStore::from_rows(ClientStoreRows {
+        messages: vec![message("Let me locate the repo, then run the searches.")],
+        tool_calls: vec![tool_call("completed")],
+        message_source_agent_dids: vec![Some("did:test:amy".to_string())],
+        tool_call_source_agent_dids: vec![Some("did:test:amy".to_string())],
+        ..ClientStoreRows::default()
+    });
+
+    let split_identity = baseline.merge_chat_patch(tagged_patch);
+    assert_eq!(split_identity.messages.len(), 2);
+    assert_eq!(split_identity.tool_calls.len(), 2);
+
+    let merged = baseline.merge_chat_patch(local_patch);
+    let transcript = merged.transcript_for_agent("session-1", "did:test:amy");
+
+    assert_eq!(transcript.messages.len(), 1);
+    assert_eq!(
+        transcript.messages[0].content.as_deref(),
+        Some("Let me locate the repo, then run the searches.")
+    );
+    assert_eq!(transcript.tool_calls.len(), 1);
+    assert_eq!(
+        transcript.tool_calls[0].lifecycle_state.as_deref(),
+        Some("completed")
+    );
+    assert_eq!(merged.message_source_agent_dids, vec![None]);
+    assert_eq!(merged.tool_call_source_agent_dids, vec![None]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn local_request_refresh_preserves_replica_identity_and_foreign_twins() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let core = ClientCore::start_with_paths_and_options(
+        DesktopPaths::from_root(tempdir.path()),
+        ClientCoreOptions::local_only(),
+    )
+    .await?;
+    let response = core
+        .node()
+        .execute(
+            r#"mutation {
+                create_AgentRequest(input: {
+                    request_id: "request-1"
+                    agent_did: "did:test:amy"
+                    behavior_id: "default"
+                    session_id: "session-1"
+                    content: "run it"
+                    status: "processing"
+                    lifecycle_state: "processing"
+                    created_at: "2026-08-21T18:07:35Z"
+                }) { _docID }
+                create_AgentMessage(input: {
+                    message_key: "session-1:2"
+                    session_id: "session-1"
+                    request_id: "request-1"
+                    sequence: 2
+                    role: "assistant"
+                    content: "partial"
+                    timestamp: "2026-08-21T18:07:36Z"
+                }) { _docID }
+                create_AgentToolCall(input: {
+                    tool_call_key: "session-1:tool-1"
+                    session_id: "session-1"
+                    request_id: "request-1"
+                    message_sequence: 2
+                    tool_name: "bash_unrestricted"
+                    tool_call_id: "tool-1"
+                    args: "{}"
+                    status: "running"
+                    lifecycle_state: "running"
+                }) { _docID }
+            }"#,
+        )
+        .await;
+    assert!(!response.has_errors(), "seed rows: {:?}", response.errors);
+    core.refresh_store().await?;
+
+    let foreign_message: AgentMessageRow = serde_json::from_value(serde_json::json!({
+        "message_key": "session-1:2",
+        "session_id": "session-1",
+        "request_id": "request-1",
+        "sequence": 2,
+        "role": "assistant",
+        "content": "foreign"
+    }))?;
+    let foreign_tool: AgentToolCallRow = serde_json::from_value(serde_json::json!({
+        "tool_call_key": "session-1:tool-1",
+        "session_id": "session-1",
+        "request_id": "request-1",
+        "message_sequence": 2,
+        "tool_name": "bash_unrestricted",
+        "tool_call_id": "tool-1",
+        "status": "running",
+        "lifecycle_state": "running"
+    }))?;
+    core.store()
+        .merge_snapshot(ClientStore::from_rows(ClientStoreRows {
+            messages: vec![foreign_message],
+            tool_calls: vec![foreign_tool],
+            message_source_agent_dids: vec![Some("did:test:bea".to_string())],
+            tool_call_source_agent_dids: vec![Some("did:test:bea".to_string())],
+            ..ClientStoreRows::default()
+        }));
+
+    let response = core
+        .node()
+        .execute(
+            r#"mutation {
+                update_AgentMessage(
+                    filter: { message_key: { _eq: "session-1:2" } }
+                    input: { content: "complete" }
+                ) { _docID }
+                update_AgentToolCall(
+                    filter: { tool_call_key: { _eq: "session-1:tool-1" } }
+                    input: { status: "completed", lifecycle_state: "completed" }
+                ) { _docID }
+            }"#,
+        )
+        .await;
+    assert!(!response.has_errors(), "update rows: {:?}", response.errors);
+    assert!(core
+        .refresh_local_request("did:test:amy", "request-1")
+        .await?
+        .is_some());
+
+    let snapshot = core.store().snapshot();
+    assert_eq!(snapshot.messages.len(), 2);
+    assert_eq!(snapshot.tool_calls.len(), 2);
+    let local_message = snapshot
+        .messages
+        .iter()
+        .zip(snapshot.message_source_agent_dids.iter())
+        .find(|(_, source)| source.is_none())
+        .expect("local message");
+    assert_eq!(local_message.0.content.as_deref(), Some("complete"));
+    let local_tool = snapshot
+        .tool_calls
+        .iter()
+        .zip(snapshot.tool_call_source_agent_dids.iter())
+        .find(|(_, source)| source.is_none())
+        .expect("local tool call");
+    assert_eq!(local_tool.0.lifecycle_state.as_deref(), Some("completed"));
+    assert!(snapshot
+        .messages
+        .iter()
+        .zip(snapshot.message_source_agent_dids.iter())
+        .any(|(row, source)| row.content.as_deref() == Some("foreign")
+            && source.as_deref() == Some("did:test:bea")));
+    assert!(snapshot
+        .tool_call_source_agent_dids
+        .iter()
+        .any(|source| source.as_deref() == Some("did:test:bea")));
+
+    core.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

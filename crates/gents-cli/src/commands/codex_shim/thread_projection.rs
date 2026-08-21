@@ -30,8 +30,9 @@ pub(super) use mutations::{
     set_codex_thread_memory_mode, set_codex_thread_name, set_codex_thread_settings,
 };
 
-pub(super) use storage::{ensure_agent_session, ensure_agent_session_pinning};
-use storage::{list_scoped_sessions, load_conversation, load_scoped_session};
+use storage::{
+    list_scoped_request_session_ids, list_scoped_sessions, load_conversation, load_scoped_session,
+};
 pub(super) use usage::{
     latest_inference_usage_observation, latest_requests_token_usage, session_token_usage,
     thread_record_token_usage, thread_token_usage, TokenTotals,
@@ -102,7 +103,6 @@ pub(super) async fn create_codex_thread(
     thread_id: &str,
     cwd: &Path,
 ) -> Result<CodexThreadRecord> {
-    ensure_agent_session(state, thread_id).await?;
     state.mark_thread_created(thread_id).await;
     state.set_thread_cwd(thread_id, cwd.to_path_buf()).await;
     state.set_thread_loaded(thread_id, true).await;
@@ -136,11 +136,20 @@ pub(super) async fn load_codex_thread(
     state: &ShimState,
     thread_id: &str,
 ) -> Result<Option<CodexThreadRecord>> {
-    if let Some(session) = load_scoped_session(state, thread_id).await? {
-        let conversation = load_conversation(state, thread_id).await?;
+    let session = load_scoped_session(state, thread_id).await?;
+    if let Some(conversation) = load_conversation(state, thread_id).await? {
         return Ok(Some(
-            assemble_record(state, thread_id, session.started, conversation).await?,
+            assemble_record(
+                state,
+                thread_id,
+                session.and_then(|session| session.started),
+                Some(conversation),
+            )
+            .await?,
         ));
+    }
+    if state.is_thread_created(thread_id).await {
+        return Ok(Some(assemble_record(state, thread_id, None, None).await?));
     }
     let links = load_authorized_subagent_threads(state).await?;
     let Some(link) = links.into_iter().find(|link| link.session_id == thread_id) else {
@@ -169,32 +178,41 @@ async fn list_codex_threads_by_archived_with_git_cache(
     git_info_cache: &mut ThreadGitInfoCache,
 ) -> Result<Vec<CodexThreadRecord>> {
     let sessions = list_scoped_sessions(state).await?;
-    // Ordinary CLI/chat/runtime sessions share the shim's (agent_did,
-    // behavior_id), so the AgentSession spine is not sufficient on its own. A
-    // session is a Codex thread only if it carries a durable `codex_shim`
-    // request OR was created by this shim process (covers zero-turn starts that
-    // have no request yet).
-    let codex_marked = storage::codex_marked_session_ids(state).await?;
-    let mut records = Vec::with_capacity(sessions.len());
+    let request_session_ids = list_scoped_request_session_ids(state).await?;
+    let mut candidates = HashMap::with_capacity(sessions.len() + request_session_ids.len());
     for session in sessions {
-        let is_codex_thread = codex_marked.contains(&session.session_id)
-            || state.is_thread_created(&session.session_id).await;
-        if !is_codex_thread {
+        candidates.insert(session.session_id, session.started);
+    }
+    for session_id in request_session_ids {
+        candidates.entry(session_id).or_insert(None);
+    }
+    let mut seen = HashSet::with_capacity(candidates.len());
+    let mut records = Vec::with_capacity(candidates.len());
+    for (session_id, started) in candidates {
+        if state.is_thread_archived(&session_id).await != archived {
             continue;
         }
-        if state.is_thread_archived(&session.session_id).await != archived {
+        let Some(conversation) = load_conversation(state, &session_id).await? else {
             continue;
-        }
-        let conversation = load_conversation(state, &session.session_id).await?;
+        };
+        seen.insert(session_id.clone());
         records.push(
             assemble_record_with_git_cache(
                 state,
-                &session.session_id,
-                session.started,
-                conversation,
+                &session_id,
+                started,
+                Some(conversation),
                 git_info_cache,
             )
             .await?,
+        );
+    }
+    for session_id in state.created_thread_ids().await {
+        if seen.contains(&session_id) || state.is_thread_archived(&session_id).await != archived {
+            continue;
+        }
+        records.push(
+            assemble_record_with_git_cache(state, &session_id, None, None, git_info_cache).await?,
         );
     }
     Ok(records)
@@ -257,7 +275,6 @@ pub(super) async fn store_forked_codex_thread(
     child_session_id: &str,
     cwd: &Path,
 ) -> Result<CodexThreadRecord> {
-    ensure_agent_session(state, child_session_id).await?;
     state.mark_thread_created(child_session_id).await;
     state
         .set_thread_cwd(child_session_id, cwd.to_path_buf())
@@ -307,7 +324,7 @@ async fn assemble_record_with_git_cache(
         archived: state.is_thread_archived(session_id).await,
         loaded: state.is_thread_loaded(session_id).await,
         memory_mode: state.thread_memory_mode(session_id).await,
-        name: String::new(),
+        name: state.thread_name(session_id).await,
         settings_json: state.thread_settings(session_id).await,
         git_info,
         projection_started: started,

@@ -343,8 +343,15 @@ async fn setup_parent_hook_on_db(
         &parent_behavior_id,
     )
     .await;
+    crate::support::create_agent_session(
+        db.node.as_ref(),
+        &parent_session_id,
+        &parent_behavior_id,
+        "2026-05-20T00:00:00Z",
+    )
+    .await;
 
-    let hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    let hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &parent_session_id,
         &parent_behavior_id,

@@ -3,6 +3,7 @@ import type { Dispatch, FormEvent, MutableRefObject, SetStateAction } from "reac
 import type {
   ChatShellProjection,
   ChatWorkflowState,
+  OptimisticPendingTurn,
 } from "@source-inc/gents-desktop-chat";
 import type {
   DeploymentView,
@@ -25,6 +26,7 @@ type ChatActionParams = {
   setDraft: Dispatch<SetStateAction<string>>;
   setError: Dispatch<SetStateAction<string | null>>;
   setLocalWorkflow: Dispatch<SetStateAction<ChatWorkflowState>>;
+  setOptimisticPendingTurn: Dispatch<SetStateAction<OptimisticPendingTurn | null>>;
   setSelectedBehaviorId: Dispatch<SetStateAction<string | null>>;
   setSelectedSessionId: Dispatch<SetStateAction<string | null>>;
   setSending: Dispatch<SetStateAction<boolean>>;
@@ -45,6 +47,7 @@ export function createDesktopShellChatActions({
   setDraft,
   setError,
   setLocalWorkflow,
+  setOptimisticPendingTurn,
   setSelectedBehaviorId,
   setSelectedSessionId,
   setSending,
@@ -77,6 +80,14 @@ export function createDesktopShellChatActions({
       });
       newConversationAgentRef.current = null;
       setSelectedSessionId(result.sessionId);
+      setOptimisticPendingTurn({
+        sessionId: result.sessionId,
+        requestId: result.requestId,
+        content,
+        selectedSkillIds: [],
+        lifecycleState: "pending",
+        createdAt: new Date().toISOString(),
+      });
       setLocalWorkflow({
         kind: "awaitingObservation",
         agentDid: selectedDeployment.agentDid,

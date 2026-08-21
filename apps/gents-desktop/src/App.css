@@ -1,4 +1,4 @@
-@layer tokens, base, primitives, shell, sidebar, chat, fleet, config, transcript, components, backend-health, backgrounded-tools, holds, mcp-health, utilities, trace, workspace;
+@layer tokens, base, primitives, shell, sidebar, chat, fleet, config, transcript, components, backend-health, holds, mcp-health, utilities, trace, workspace;
 
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/funnel-display";
@@ -18,12 +18,10 @@
 @import "./styles/sidebar/nav.css";
 @import "./styles/sidebar/conversations.css";
 @import "@source-inc/gents-desktop-chat/styles.css";
-@import "./styles/code-context.css";
 @import "@source-inc/gents-desktop-fleet/styles.css";
 @import "@source-inc/gents-desktop-fleet/local-runtime.css";
 @import "./styles/config/workspace.css";
 @import "./styles/config/agent-behavior.css";
 @import "./styles/config/documents.css";
 @import "./styles/config/forms.css";
-@import "@source-inc/gents-desktop-operations/styles.css";
 @import "./styles/tokens.css";

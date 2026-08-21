@@ -29,40 +29,10 @@ pub(super) struct SessionDocument {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct ConversationDocument {
-    #[serde(rename = "_docID")]
-    #[serde(default)]
-    pub(super) doc_id: String,
     #[serde(default)]
     pub(super) title: String,
     #[serde(default)]
     pub(super) title_source: Option<String>,
-    #[serde(default)]
-    pub(super) preview_text: String,
-    #[serde(default)]
-    pub(super) status: String,
-    #[serde(default)]
-    pub(super) latest_request_id: String,
-    #[serde(default)]
-    pub(super) behavior_id: Option<String>,
-    #[serde(default)]
-    pub(super) created_at: String,
-    #[serde(default)]
-    pub(super) updated_at: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub(super) agent_did: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub(super) agent_name: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub(super) forked_from_session_id: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub(super) fork_at_user_turn: Option<i64>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub(super) forked_at: Option<String>,
 }
 
 impl TryFrom<CompactionEntryRow> for CompactionEntry {

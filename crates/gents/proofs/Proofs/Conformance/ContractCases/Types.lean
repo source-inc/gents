@@ -278,21 +278,6 @@ structure RecoverySweepCase where
   notificationReason : Option String := none
   deriving DecidableEq, Repr
 
-structure RecoveryOutcomeCase where
-  name : String
-  sweepId : String
-  collection : String
-  rustFunction : String
-  docCount : Nat
-  duplicated : Bool
-  writeSucceeds : Bool
-  expectedRecovered : Nat
-  expectedFailed : Nat
-  measureAfter : Nat
-  targetSelector : String
-  theoremName : String
-  deriving DecidableEq, Repr
-
 structure RecoveryEquivalenceCase where
   name : String
   sourceSweepCase : String

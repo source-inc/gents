@@ -1,18 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { isTerminalTurnState } from "../../chat-shell.js";
-import type { DesktopSessionSnapshot } from "@source-inc/gents-desktop-client";
+import {
+  isTerminalTurnState,
+  type OptimisticPendingTurn,
+} from "../../chat-shell.js";
+import type {
+  DesktopSessionSnapshot,
+  RenderedTimelineItem,
+} from "@source-inc/gents-desktop-client";
 import { MessageList } from "../Transcript.js";
 
 export type ChatTranscriptPanelProps = {
   selectedSessionId: string | null;
   session: DesktopSessionSnapshot | null;
+  optimisticPendingTurn?: OptimisticPendingTurn | null;
   onRetryMessage?: (requestId: string) => void | Promise<void>;
 };
 
 export function ChatTranscriptPanel({
   selectedSessionId,
   session,
+  optimisticPendingTurn,
   onRetryMessage,
 }: ChatTranscriptPanelProps) {
   const transcriptPanelRef = useRef<HTMLElement | null>(null);
@@ -22,36 +30,67 @@ export function ChatTranscriptPanel({
     null,
   );
 
+  const timelineItems = useMemo<RenderedTimelineItem[]>(() => {
+    const durable = session?.timelineItems ?? [];
+    if (
+      !optimisticPendingTurn ||
+      optimisticPendingTurn.sessionId !== selectedSessionId
+    ) {
+      return durable;
+    }
+    const hasOwner = durable.some(
+      (item) =>
+        (item.kind === "pendingUserTurn" &&
+          item.requestId === optimisticPendingTurn.requestId) ||
+        (item.kind === "userMessage" &&
+          item.requestId === optimisticPendingTurn.requestId),
+    );
+    if (hasOwner) {
+      return durable;
+    }
+    return [
+      ...durable,
+      {
+        kind: "pendingUserTurn",
+        itemKey: `optimistic-${optimisticPendingTurn.requestId}`,
+        requestId: optimisticPendingTurn.requestId,
+        content: optimisticPendingTurn.content,
+        selectedSkillIds: optimisticPendingTurn.selectedSkillIds,
+        lifecycleState: optimisticPendingTurn.lifecycleState,
+        createdAt: optimisticPendingTurn.createdAt,
+      },
+    ];
+  }, [optimisticPendingTurn, selectedSessionId, session?.timelineItems]);
+
   const transcriptSignature = useMemo(
     () =>
       JSON.stringify({
         sessionId: selectedSessionId,
-        timelineLength: session?.timelineItems.length ?? 0,
-        timelineKinds: session?.timelineItems.map((item) => item.kind) ?? [],
-        timelineContentLengths:
-          session?.timelineItems.map((item) => {
-            switch (item.kind) {
-              case "assistantMessage":
-              case "liveAssistant":
-                return [item.content?.length ?? 0, item.reasoning?.length ?? 0];
-              case "userMessage":
-              case "pendingUserTurn":
-                return item.content.length;
-              case "toolGroup":
-                return item.tools.map((tool) => [
-                  tool.status?.length ?? 0,
-                  tool.args?.rawText.length ?? 0,
-                  tool.result?.rawText.length ?? 0,
-                ]);
-            }
-          }) ?? [],
+        timelineLength: timelineItems.length,
+        timelineKinds: timelineItems.map((item) => item.kind),
+        timelineContentLengths: timelineItems.map((item) => {
+          switch (item.kind) {
+            case "assistantMessage":
+            case "liveAssistant":
+              return [item.content?.length ?? 0, item.reasoning?.length ?? 0];
+            case "userMessage":
+            case "pendingUserTurn":
+              return item.content.length;
+            case "toolGroup":
+              return item.tools.map((tool) => [
+                tool.status?.length ?? 0,
+                JSON.stringify(tool.presentation).length,
+                tool.partialOutputSeq ?? 0,
+              ]);
+          }
+        }),
         turnState: session?.turnState ?? "",
         latestResponseStatus: session?.latestResponse?.status ?? "",
         latestResponseError: session?.latestResponse?.errorMessage ?? "",
       }),
     [
       selectedSessionId,
-      session?.timelineItems,
+      timelineItems,
       session?.turnState,
       session?.latestResponse?.status,
       session?.latestResponse?.errorMessage,
@@ -62,12 +101,12 @@ export function ChatTranscriptPanel({
     setAutoFollowTranscript(true);
   }, [selectedSessionId]);
 
-  const lastItem = session?.timelineItems[session.timelineItems.length - 1];
+  const lastItem = timelineItems[timelineItems.length - 1];
   // A send may be observed as pending or already materialized. Prefer the
   // request identity so that pending -> materialized does not look like a
   // second send; fall back to the user row identity for partial snapshots.
   const latestUserTurn = useMemo(() => {
-    const items = session?.timelineItems ?? [];
+    const items = timelineItems;
     for (let index = items.length - 1; index >= 0; index -= 1) {
       const item = items[index];
       if (item.kind === "userMessage" || item.kind === "pendingUserTurn") {
@@ -75,18 +114,38 @@ export function ChatTranscriptPanel({
       }
     }
     return null;
-  }, [session?.timelineItems]);
-  const sendIdentity = session?.latestRequestId
-    ? `request:${session.latestRequestId}`
-    : latestUserTurn?.kind === "pendingUserTurn"
-      ? `request:${latestUserTurn.requestId}`
-      : latestUserTurn
-        ? `message:${latestUserTurn.itemKey}`
-        : null;
+  }, [timelineItems]);
+  const optimisticSendIdentity =
+    optimisticPendingTurn?.sessionId === selectedSessionId &&
+    timelineItems.some(
+      (item) =>
+        item.kind === "pendingUserTurn" &&
+        item.requestId === optimisticPendingTurn.requestId,
+    )
+      ? `request:${optimisticPendingTurn.requestId}`
+      : null;
+  const sendIdentity = optimisticSendIdentity
+    ? optimisticSendIdentity
+    : session?.latestRequestId
+      ? `request:${session.latestRequestId}`
+      : latestUserTurn?.kind === "pendingUserTurn"
+        ? `request:${latestUserTurn.requestId}`
+        : latestUserTurn
+          ? `message:${latestUserTurn.itemKey}`
+          : null;
   useEffect(() => {
-    if (sendIdentity) {
-      setAutoFollowTranscript(true);
+    if (!sendIdentity) {
+      return;
     }
+    setAutoFollowTranscript(true);
+    const scrollTarget = transcriptEndRef.current;
+    if (!scrollTarget) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      scrollTarget.scrollIntoView({ block: "end", behavior: "instant" });
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [sendIdentity]);
 
   useEffect(() => {
@@ -140,6 +199,8 @@ export function ChatTranscriptPanel({
     latestResponse?.cancelCause?.cause === "interrupted" ||
     latestResponse?.cancelCause?.cause === "userCancelled";
   const showResponseError = Boolean(responseError) && !responseWasInterrupted;
+  const retryRequestId = session?.latestRequestId ?? null;
+  const retryEligible = session?.retryEligibility?.eligible ?? false;
 
   // Animated placeholder between send and the assistant's first visible
   // output — without it the transcript sits inert while the turn runs.
@@ -161,9 +222,9 @@ export function ChatTranscriptPanel({
       onScroll={handleTranscriptScroll}
       ref={transcriptPanelRef}
     >
-      {selectedSessionId && session ? (
+      {selectedSessionId && (session || timelineItems.length > 0) ? (
         <div className="message-list">
-          {session.goal ? (
+          {session?.goal ? (
             <article className="message-card" data-testid="durable-goal-card">
               <div className="message-role">
                 durable goal · {session.goal.status ?? "unknown"}
@@ -181,10 +242,10 @@ export function ChatTranscriptPanel({
             </article>
           ) : null}
           <MessageList
-            timelineItems={session.timelineItems}
-            responseCancelCause={session.latestResponse?.cancelCause}
+            timelineItems={timelineItems}
+            responseCancelCause={session?.latestResponse?.cancelCause}
             responseMaterializedSequence={
-              session.latestResponse?.materializedMessageSequence
+              session?.latestResponse?.materializedMessageSequence
             }
           />
           {showThinking ? (
@@ -195,7 +256,11 @@ export function ChatTranscriptPanel({
                 role="status"
                 aria-label="Assistant is working"
               >
-                <div className="message-role">assistant</div>
+                <div className="message-role">
+                  {session?.turnState === "waitingForClaim"
+                    ? "Waiting for agent"
+                    : "Working"}
+                </div>
                 <div className="thinking-dots" aria-hidden="true">
                   <span />
                   <span />
@@ -219,18 +284,16 @@ export function ChatTranscriptPanel({
                   <summary>Error details</summary>
                   <pre className="response-error-content">{responseError}</pre>
                 </details>
-                {onRetryMessage &&
-                session.latestRequestId &&
-                session.retryEligibility.eligible ? (
+                {onRetryMessage && retryRequestId && retryEligible ? (
                   <div>
                     <button
                       className="ghost-button"
                       data-testid="retry-turn"
                       type="button"
-                      disabled={retryingRequestId === session.latestRequestId}
-                      onClick={() => void handleRetry(session.latestRequestId!)}
+                      disabled={retryingRequestId === retryRequestId}
+                      onClick={() => void handleRetry(retryRequestId)}
                     >
-                      {retryingRequestId === session.latestRequestId
+                      {retryingRequestId === retryRequestId
                         ? "Retrying…"
                         : "Retry"}
                     </button>

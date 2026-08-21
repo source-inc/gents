@@ -11,6 +11,7 @@ import type {
 import {
   projectChatShell,
   reconcileProjectedWorkflow,
+  requestProgressPresentation,
   type ChatBlockedReason,
   type ChatWorkflowState,
   type TurnState,
@@ -54,6 +55,12 @@ type LeanClientShellCase = {
 type LeanContractSnapshot = {
   frontend_client_shell_case_count: number;
   frontend_client_shell_cases: LeanClientShellCase[];
+  request_progress_cases: Array<{
+    name: string;
+    lifecycleState: string;
+    label: string;
+    animated: boolean;
+  }>;
 };
 
 let leanContractSnapshot: LeanContractSnapshot | null = null;
@@ -321,7 +328,7 @@ describe("projectChatShell", () => {
     "matches generated Lean ClientShell projection contracts",
     () => {
       const contractCases = loadLeanClientShellCases();
-      expect(contractCases).toHaveLength(15);
+      expect(contractCases).toHaveLength(17);
 
       for (const contractCase of contractCases) {
         const projection = projectChatShell({
@@ -618,4 +625,23 @@ describe("projectChatShell", () => {
     expect(projection.workflow).toEqual({ kind: "ready" });
     expect(projection.sendStatus).toEqual({ kind: "ready" });
   });
+});
+
+describe("requestProgressPresentation", () => {
+  test(
+    "matches every generated Lean request lifecycle projection",
+    () => {
+      const cases = loadLeanContractSnapshot().request_progress_cases;
+      expect(cases).toHaveLength(9);
+      for (const contractCase of cases) {
+        expect(
+          requestProgressPresentation(contractCase.lifecycleState),
+        ).toEqual({
+          label: contractCase.label,
+          animated: contractCase.animated,
+        });
+      }
+    },
+    GENERATED_CONTRACT_TEST_TIMEOUT_MS,
+  );
 });

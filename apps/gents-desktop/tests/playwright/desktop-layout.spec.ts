@@ -10,13 +10,7 @@ import {
   test,
 } from "./desktopTest";
 
-const scenarios = [
-  "default",
-  "empty-fleet",
-  "loading",
-  "long-content",
-  "operations-rich",
-] as const;
+const scenarios = ["default", "empty-fleet", "loading", "long-content"] as const;
 
 test.describe("desktop responsive layout guardrails", () => {
   for (const scenario of scenarios) {
@@ -50,20 +44,6 @@ test.describe("desktop responsive layout guardrails", () => {
     }
   });
 
-  test("opened operations drawer stays inside the viewport", async ({ page }) => {
-    await gotoHarness(page, "operations-rich");
-    await openChat(page);
-    await page.getByRole("button", { name: /open operations drawer/i }).click();
-
-    for (const tab of [/Background/, /Lineage/, /Backends/, /MCP health/]) {
-      await page.getByRole("tab", { name: tab }).click();
-      await expect(
-        page.getByRole("complementary", { name: "Operations" }),
-      ).toBeVisible();
-      await expectNoPageHorizontalOverflow(page);
-    }
-  });
-
   test("phone chat uses one full-screen pane at a time", async ({ page }) => {
     test.skip(
       (page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) > 760,
@@ -90,6 +70,7 @@ test.describe("desktop responsive layout guardrails", () => {
     const deploymentRow = page.getByTestId(`fleet-row-${PEER_ID}`);
     await expect(deploymentRow).toBeVisible();
     await deploymentRow.click();
+    await page.getByTestId("agent-actions").click();
     const configureButton = page.getByRole("button", { name: "Configure" });
     await expect(configureButton).toBeVisible();
 

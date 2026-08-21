@@ -119,6 +119,10 @@ fn project_deployment(mut deployment: DeploymentView, grants: SnapshotGrants) ->
 
     if !grants.session_read {
         deployment.conversations.clear();
+        for environment in &mut deployment.behavior_environments {
+            environment.session_count = 0;
+            environment.active_session_count = 0;
+        }
     }
 
     if grants.config_read {
@@ -145,6 +149,13 @@ fn project_deployment(mut deployment: DeploymentView, grants: SnapshotGrants) ->
         .into_iter()
         .map(project_tool_selection_for_fleet)
         .collect();
+    for environment in &mut deployment.behavior_environments {
+        // Keep coarse capability labels: chat clients need an honest account
+        // of the behavior's authority. Referenced profile labels and host paths
+        // remain config-only.
+        environment.inference_profile_name = None;
+        environment.workspace_root = None;
+    }
 
     if !grants.fleet_read {
         deployment.tasks.clear();
@@ -200,9 +211,9 @@ fn project_tool_selection_for_fleet(mut selection: ToolSelectionView) -> ToolSel
 mod tests {
     use super::*;
     use crate::types::{
-        AgentPrincipalView, BehaviorView, ConversationSummary, DeploymentView,
-        DesktopBootstrapSummary, DesktopClientSnapshot, DesktopRuntimeSnapshot, P2PHealthView,
-        SavedPeerView, SkillView,
+        AgentPrincipalView, BehaviorEnvironmentView, BehaviorView, ConversationSummary,
+        DeploymentView, DesktopBootstrapSummary, DesktopClientSnapshot, DesktopRuntimeSnapshot,
+        P2PHealthView, SavedPeerView, SkillView,
     };
 
     fn sample_snapshot() -> DesktopClientSnapshot {
@@ -284,6 +295,21 @@ mod tests {
                         skill_refs: vec!["skill_a".into()],
                         skill_excludes: vec![],
                     }],
+                    behavior_environments: vec![BehaviorEnvironmentView {
+                        behavior_id: "default".into(),
+                        display_name: "Default".into(),
+                        enabled: true,
+                        is_default: true,
+                        model_name: Some("gpt".into()),
+                        inference_profile_name: Some("Long context".into()),
+                        workspace_root: Some("/secret/workspace".into()),
+                        file_access: "read / write".into(),
+                        bash_access: "unrestricted".into(),
+                        network_access: Some("allow".into()),
+                        skill_names: vec!["Skill A".into()],
+                        session_count: 1,
+                        active_session_count: 0,
+                    }],
                     inference_backends: vec![],
                     inference_profiles: vec![],
                     tool_selections: vec![],
@@ -335,6 +361,11 @@ mod tests {
         assert!(client.listen_addresses.is_empty());
         let dep = &client.deployments[0];
         assert!(dep.conversations.is_empty());
+        assert_eq!(dep.behavior_environments[0].session_count, 0);
+        assert!(dep.behavior_environments[0].workspace_root.is_none());
+        assert!(dep.behavior_environments[0]
+            .inference_profile_name
+            .is_none());
         assert!(dep.addr.is_empty());
         assert!(dep.behaviors[0].system_prompt.is_none());
         assert_eq!(dep.behaviors[0].model_name.as_deref(), Some("gpt"));
@@ -352,6 +383,11 @@ mod tests {
         let projected = project_client_snapshot(sample_snapshot(), SnapshotGrants::chat_package());
         let dep = &projected.client.as_ref().unwrap().deployments[0];
         assert_eq!(dep.conversations.len(), 1);
+        assert_eq!(dep.behavior_environments[0].session_count, 1);
+        assert!(dep.behavior_environments[0].workspace_root.is_none());
+        assert!(dep.behavior_environments[0]
+            .inference_profile_name
+            .is_none());
         assert!(dep.behaviors[0].system_prompt.is_none());
         assert_eq!(dep.behaviors[0].model_name.as_deref(), Some("gpt"));
         assert!(dep.skills[0].instructions.is_none());
@@ -368,6 +404,8 @@ mod tests {
         let dep = &projected.client.as_ref().unwrap().deployments[0];
         assert_eq!(dep.addr, "/ip4/127.0.0.1/tcp/1");
         assert!(dep.conversations.is_empty());
+        assert_eq!(dep.behavior_environments[0].session_count, 0);
+        assert!(dep.behavior_environments[0].workspace_root.is_none());
     }
 
     #[test]
@@ -379,6 +417,18 @@ mod tests {
                 .system_prompt
                 .as_deref(),
             Some("SECRET PROMPT")
+        );
+        assert_eq!(
+            projected.client.as_ref().unwrap().deployments[0].behavior_environments[0]
+                .workspace_root
+                .as_deref(),
+            Some("/secret/workspace")
+        );
+        assert_eq!(
+            projected.client.as_ref().unwrap().deployments[0].behavior_environments[0]
+                .inference_profile_name
+                .as_deref(),
+            Some("Long context")
         );
     }
 }

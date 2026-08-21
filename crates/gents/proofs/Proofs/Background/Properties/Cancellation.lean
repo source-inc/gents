@@ -147,6 +147,8 @@ theorem detach_does_not_cancel_child
         rw [h_post]
       | dedup_lose _ _ h_post =>
         rw [h_post]
+      | admission_reject _ _ h_post =>
+        rw [h_post]
       | begin_inference _ _ h_post =>
         rw [h_post]
       | advance _ _ h_post =>

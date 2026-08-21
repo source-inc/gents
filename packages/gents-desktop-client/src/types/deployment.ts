@@ -1,4 +1,5 @@
 export type { AgentPrincipalView } from "../generated/AgentPrincipalView.js";
+export type { BehaviorEnvironmentView } from "../generated/BehaviorEnvironmentView.js";
 export type { BehaviorView } from "../generated/BehaviorView.js";
 export type { ConversationSummary } from "../generated/ConversationSummary.js";
 export type { DeploymentView } from "../generated/DeploymentView.js";

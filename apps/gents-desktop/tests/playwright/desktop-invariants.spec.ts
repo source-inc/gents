@@ -42,13 +42,5 @@ test.describe("desktop UI invariants", () => {
     await expect(page.getByTestId("startup-screen")).toContainText(
       "Desktop native bridge is unavailable",
     );
-
-    await gotoHarness(page, "backend-health-error");
-    await openChat(page);
-    await page.getByRole("button", { name: /open operations drawer/i }).click();
-    await page.getByRole("tab", { name: /Backends/ }).click();
-    await expect(page.getByRole("alert")).toContainText(
-      "Harness backend health bridge unavailable",
-    );
   });
 });

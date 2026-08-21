@@ -26,7 +26,7 @@ describe("app shortcuts", () => {
 
     fireEvent.keyDown(window, { key: "2", metaKey: true });
     expect(handlers.setView).toHaveBeenCalledWith("chat");
-    fireEvent.keyDown(window, { key: "4", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "3", ctrlKey: true });
     expect(handlers.setView).toHaveBeenCalledWith("config");
     fireEvent.keyDown(window, { key: "n", metaKey: true });
     expect(handlers.newConversation).toHaveBeenCalledTimes(1);

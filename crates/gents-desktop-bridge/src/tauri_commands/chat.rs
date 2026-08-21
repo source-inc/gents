@@ -73,44 +73,6 @@ pub async fn desktop_conversation_rename(
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionForkResultView {
-    pub session_id: String,
-    pub copied_messages: u32,
-    pub copied_tool_calls: u32,
-}
-
-#[tauri::command]
-pub async fn desktop_session_fork(
-    agent_did: String,
-    session_id: String,
-    at_user_turn: u32,
-    behavior_id: Option<String>,
-    state: State<'_, DesktopAppState>,
-) -> Result<SessionForkResultView, BridgeError> {
-    let Some(core) = current_core(&state) else {
-        return Err(BridgeError::from_legacy_message(
-            "desktop client is not running",
-        ));
-    };
-
-    let outcome = core
-        .fork_session(
-            &agent_did,
-            &session_id,
-            at_user_turn,
-            behavior_id.as_deref(),
-        )
-        .await
-        .map_err(|error| BridgeError::from_legacy_message(error.to_string()))?;
-    Ok(SessionForkResultView {
-        session_id: outcome.session_id,
-        copied_messages: outcome.copied_messages,
-        copied_tool_calls: outcome.copied_tool_calls,
-    })
-}
-
-#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[serde(rename_all = "camelCase")]
 pub struct RequestResendResultView {
     pub request_id: String,
     pub session_id: String,

@@ -40,11 +40,10 @@ permissions = ["allow-desktop-tool-surface-explain"]
 
 [[set]]
 identifier = "chat-write"
-description = "Chat send, rename, fork"
+description = "Chat send and rename"
 permissions = [
   "allow-desktop-chat-send",
   "allow-desktop-conversation-rename",
-  "allow-desktop-session-fork",
 ]
 
 [[set]]

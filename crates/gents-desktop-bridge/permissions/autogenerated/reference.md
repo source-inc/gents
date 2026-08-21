@@ -1402,32 +1402,6 @@ Denies the desktop_schedule_save command without any pre-configured scope.
 <tr>
 <td>
 
-`gents-desktop-bridge:allow-desktop-session-fork`
-
-</td>
-<td>
-
-Enables the desktop_session_fork command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`gents-desktop-bridge:deny-desktop-session-fork`
-
-</td>
-<td>
-
-Denies the desktop_session_fork command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
 `gents-desktop-bridge:allow-desktop-session-snapshot`
 
 </td>
@@ -1862,7 +1836,7 @@ Tool-surface explain (config family)
 </td>
 <td>
 
-Chat send, rename, fork
+Chat send and rename
 
 </td>
 </tr>

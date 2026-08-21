@@ -8,7 +8,6 @@ export type HarnessScenario =
   | "save-error"
   | "backend-health-error"
   | "long-content"
-  | "operations-rich"
   | "active-turn"
   | "cascade-turn"
   | "coding";
@@ -106,6 +105,7 @@ export async function openConfig(page: Page) {
   await expect(page.getByTestId("fleet-dashboard")).toBeVisible();
   await page.getByTestId(`fleet-row-${PEER_ID}`).click();
   await openChatNavigation(page);
+  await page.getByTestId("agent-actions").click();
   await page.getByRole("button", { name: "Configure" }).click();
   await expect(page.locator(".config-workspace")).toBeVisible();
 }

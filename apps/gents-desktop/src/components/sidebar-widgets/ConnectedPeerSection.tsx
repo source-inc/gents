@@ -5,7 +5,8 @@ export type ConnectedPeerSectionProps = {
   selectedAgentDid: string | null;
   onOpenFleet: () => void;
   onConfigureDeployment: (agentDid: string) => void;
-  onOpenCode?: (agentDid: string) => void;
+  onRepairP2P?: () => Promise<unknown> | void;
+  repairingP2P?: boolean;
   onSelectAgent?: (agentDid: string) => void;
 };
 
@@ -14,59 +15,45 @@ export function ConnectedPeerSection({
   selectedAgentDid,
   onOpenFleet,
   onConfigureDeployment,
-  onOpenCode,
+  onRepairP2P,
+  repairingP2P = false,
   onSelectAgent,
 }: ConnectedPeerSectionProps) {
   const selectedDeployment =
     deployments.find((deployment) => deployment.agentDid === selectedAgentDid) ?? null;
+  const agentName =
+    selectedDeployment?.agentPrincipal.displayName ??
+    selectedDeployment?.label ??
+    "No agent selected";
+  const deploymentLabel = selectedDeployment?.label.trim();
+  const showDeploymentLabel =
+    deploymentLabel && deploymentLabel.toLowerCase() !== agentName.trim().toLowerCase();
+  const activeSessionCount =
+    selectedDeployment?.behaviorEnvironments.reduce(
+      (count, environment) => count + environment.activeSessionCount,
+      0,
+    ) ?? 0;
+  const needsRepair = Boolean(
+    selectedDeployment &&
+    (!selectedDeployment.dialSucceeded || selectedDeployment.lastError),
+  );
 
   return (
     <section className="sidebar-section connected-peer-section">
       <div className="connected-peer-card">
-        <div className="connected-peer-toolbar">
-          <button
-            aria-label="Back to Fleet"
-            className="ghost-button connected-peer-back"
-            data-testid="sidebar-back-to-fleet"
-            onClick={onOpenFleet}
-            type="button"
-          >
-            <span aria-hidden="true">←</span>
-            Fleet
-          </button>
-          <div className="connected-peer-actions">
-            {onOpenCode ? (
-              <button
-                className="ghost-button connected-peer-action"
-                data-testid="sidebar-open-code"
-                disabled={!selectedDeployment}
-                onClick={() => {
-                  if (selectedDeployment) {
-                    onOpenCode(selectedDeployment.agentDid);
-                  }
-                }}
-                type="button"
-              >
-                Code
-              </button>
-            ) : null}
-            <button
-              className="ghost-button connected-peer-action"
-              disabled={!selectedDeployment}
-              onClick={() => {
-                if (selectedDeployment) {
-                  onConfigureDeployment(selectedDeployment.agentDid);
-                }
-              }}
-              type="button"
-            >
-              Configure
-            </button>
-          </div>
-        </div>
+        <button
+          aria-label="Back to Fleet"
+          className="ghost-button connected-peer-back"
+          data-testid="sidebar-back-to-fleet"
+          onClick={onOpenFleet}
+          type="button"
+        >
+          <span aria-hidden="true">←</span>
+          Fleet
+        </button>
+
         <div className="connected-peer-header">
-          <div>
-            <p className="eyebrow">Connected Peer</p>
+          <div className="connected-peer-identity">
             {deployments.length > 1 && onSelectAgent ? (
               <select
                 aria-label="Switch agent"
@@ -83,39 +70,66 @@ export function ConnectedPeerSection({
                 ))}
               </select>
             ) : (
-              <h2>{selectedDeployment?.label ?? "No peer selected"}</h2>
+              <h1>{agentName}</h1>
             )}
+            {selectedDeployment ? (
+              <p className="connected-peer-meta">
+                <span
+                  aria-hidden="true"
+                  className={
+                    selectedDeployment.dialSucceeded
+                      ? "agent-health-dot connected"
+                      : "agent-health-dot disconnected"
+                  }
+                />
+                <span>{selectedDeployment.dialSucceeded ? "Connected" : "Saved"}</span>
+                {showDeploymentLabel ? (
+                  <>
+                    <span aria-hidden="true"> · </span>
+                    <span>{deploymentLabel}</span>
+                  </>
+                ) : null}
+                {activeSessionCount > 0 ? (
+                  <>
+                    <span aria-hidden="true"> · </span>
+                    <strong>{activeSessionCount} active</strong>
+                  </>
+                ) : null}
+              </p>
+            ) : null}
           </div>
+
           {selectedDeployment ? (
-            <span className="connected-peer-status">
-              {selectedDeployment.dialSucceeded ? "connected" : "saved"}
-            </span>
+            <details className="agent-action-menu">
+              <summary
+                aria-label={`Actions for ${agentName}`}
+                data-testid="agent-actions"
+                title="Agent actions"
+              >
+                <span aria-hidden="true">•••</span>
+              </summary>
+              <div className="agent-action-menu-popover">
+                <button
+                  onClick={() => onConfigureDeployment(selectedDeployment.agentDid)}
+                  type="button"
+                >
+                  Configure
+                </button>
+                {needsRepair && onRepairP2P ? (
+                  <button
+                    data-testid="agent-repair-p2p"
+                    disabled={repairingP2P}
+                    onClick={() => void Promise.resolve(onRepairP2P()).catch(() => {})}
+                    type="button"
+                  >
+                    {repairingP2P ? "Reconnecting…" : "Retry connection"}
+                  </button>
+                ) : null}
+              </div>
+            </details>
           ) : null}
         </div>
-
-        {selectedDeployment ? (
-          <div
-            aria-label={`${selectedDeployment.behaviors.length} behaviors, ${selectedDeployment.conversations.length} conversations, ${selectedDeployment.tasks.length} tasks`}
-            className="connected-peer-stats"
-          >
-            <PeerStat label="Behaviors" value={selectedDeployment.behaviors.length} />
-            <PeerStat
-              label="Conversations"
-              value={selectedDeployment.conversations.length}
-            />
-            <PeerStat label="Tasks" value={selectedDeployment.tasks.length} />
-          </div>
-        ) : null}
       </div>
     </section>
-  );
-}
-
-function PeerStat({ label, value }: { label: string; value: number }) {
-  return (
-    <span>
-      <strong>{value}</strong>
-      {label}
-    </span>
   );
 }

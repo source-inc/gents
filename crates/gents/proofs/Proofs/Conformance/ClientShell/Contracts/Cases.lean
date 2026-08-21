@@ -139,13 +139,6 @@ def frontendWorkflowFromProjection
     (activeRequest : Option RequestId) : FrontendWorkflowContract :=
   let chat := projectChat state store ctx
   match state.workflow with
-  | .creating _ =>
-      { kind := "submittingRequest"
-      , sessionId := none
-      , requestId := none
-      , turnState := none
-      , reason := none
-      }
   | .submitting _ sid =>
       { kind := "submittingRequest"
       , sessionId := sid
@@ -267,7 +260,6 @@ def clientShellCaseFromStep
   , frontendSending :=
       match frontendLocal.workflow with
       | .submitting _ _ => true
-      | .creating _     => true
       | _               => false
   , frontendSessionPresent := obs.isSome
   , frontendSessionId := obs.map (·.sessionId)
@@ -284,7 +276,6 @@ def clientShellCaseFromStep
   , frontendLocalWorkflowKind :=
       match frontendLocal.workflow with
       | .idle           => "ready"
-      | .creating _     => "submittingRequest"
       | .submitting _ _ => "submittingRequest"
       | .awaiting _ _   => "awaitingObservation"
       | .blocked _      => "blocked"
@@ -320,7 +311,21 @@ def clientShellCases : List ClientShellContractCase :=
     }
   let switchedStaleLocal :=
     { staleBeforeSwitch with selection := { staleBeforeSwitch.selection with session := some sid2 } }
-  [ let input := ShellInput.snapshot storeNewCompleted
+  [ let pre := selectedShell (some sid1)
+    let input := ShellInput.user .requestNewConversation
+    let post := step pre input storeNewCompleted .healthy ctxReady
+    clientShellCaseFromStep
+      "new_conversation_is_ephemeral"
+      "request_owned_session_creation"
+      pre input storeNewCompleted .healthy ctxReady post post emptyStore
+  , let pre := selectedShell none (.submitting contractAgent none)
+    let input := ShellInput.mutation (.submitted sid1 reqNew)
+    let post := step pre input emptyStore .healthy ctxReady
+    clientShellCaseFromStep
+      "submitted_request_selects_session"
+      "request_owned_session_creation"
+      pre input emptyStore .healthy ctxReady post post emptyStore
+  , let input := ShellInput.snapshot storeNewCompleted
     let post := step awaitingNew input emptyStore .healthy ctxReady
     clientShellCaseFromStep
       "snapshot_preserves_selection"

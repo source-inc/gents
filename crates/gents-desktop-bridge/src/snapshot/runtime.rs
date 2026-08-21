@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
+use gents::{BashMode, FileToolMode};
 use gents_desktop_core::client::{ClientCore, ClientPeerStatus, PeerRecord};
 
 use super::super::types::{
-    normalize_optional, turn_state_label, AgentPrincipalView, BehaviorView, ConversationSummary,
-    DeploymentView, DesktopRuntimeSnapshot, EventTriggerView, InferenceBackendView,
-    InferenceProfileView, RuntimeView, ScheduleView, SkillView, TaskView, ToolSelectionView,
-    ToolServiceRegistryView,
+    normalize_optional, turn_state_label, AgentPrincipalView, BehaviorEnvironmentView,
+    BehaviorView, ConversationSummary, DeploymentView, DesktopRuntimeSnapshot, EventTriggerView,
+    InferenceBackendView, InferenceProfileView, RuntimeView, ScheduleView, SkillView, TaskView,
+    ToolSelectionView, ToolServiceRegistryView,
 };
 use super::runtime_tasks::{
     conversation_task_tag, recent_runs_for_task_views, request_backed_conversation_summaries,
@@ -469,12 +470,22 @@ pub async fn build_runtime_snapshot(core: &ClientCore) -> DesktopRuntimeSnapshot
             });
             retain_latest_conversation_summaries(&mut conversations);
 
+            let mut behavior_environments = resolve_behavior_environments(
+                &behaviors,
+                &inference_backends,
+                &inference_profiles,
+                &tool_selections,
+                &skills,
+                &conversations,
+            );
+
             let pairing_ready = peer.is_chat_ready();
             if !pairing_ready {
                 default_behavior_id = None;
                 agent_principal.default_behavior_id = None;
                 runtime = None;
                 behaviors.clear();
+                behavior_environments.clear();
                 inference_backends.clear();
                 inference_profiles.clear();
                 tool_selections.clear();
@@ -500,6 +511,7 @@ pub async fn build_runtime_snapshot(core: &ClientCore) -> DesktopRuntimeSnapshot
                 agent_principal,
                 runtime,
                 behaviors,
+                behavior_environments,
                 inference_backends,
                 inference_profiles,
                 tool_selections,
@@ -529,6 +541,144 @@ pub async fn build_runtime_snapshot(core: &ClientCore) -> DesktopRuntimeSnapshot
         approx_serialized_bytes: store.approx_serialized_bytes(),
         deployments,
     }
+}
+
+fn resolve_behavior_environments(
+    behaviors: &[BehaviorView],
+    backends: &[InferenceBackendView],
+    profiles: &[InferenceProfileView],
+    tool_selections: &[ToolSelectionView],
+    skills: &[SkillView],
+    conversations: &[ConversationSummary],
+) -> Vec<BehaviorEnvironmentView> {
+    behaviors
+        .iter()
+        .map(|behavior| {
+            let tool_selection = behavior
+                .tool_selection_id
+                .as_deref()
+                .and_then(|selection_id| {
+                    tool_selections
+                        .iter()
+                        .find(|selection| selection.selection_id == selection_id)
+                });
+            let backend = behavior.backend_id.as_deref().and_then(|backend_id| {
+                backends
+                    .iter()
+                    .find(|backend| backend.backend_id == backend_id)
+            });
+            let profile = behavior
+                .inference_profile_id
+                .as_deref()
+                .and_then(|profile_id| {
+                    profiles
+                        .iter()
+                        .find(|profile| profile.profile_id == profile_id)
+                });
+            let matches_behavior = |conversation: &&ConversationSummary| {
+                conversation.behavior_id.as_deref() == Some(behavior.behavior_id.as_str())
+            };
+            let matching_conversations = conversations
+                .iter()
+                .filter(matches_behavior)
+                .collect::<Vec<_>>();
+            let skill_names = behavior
+                .skill_refs
+                .iter()
+                .filter(|skill_id| !behavior.skill_excludes.contains(skill_id))
+                .map(|skill_id| {
+                    skills
+                        .iter()
+                        .find(|skill| skill.skill_id == *skill_id)
+                        .and_then(|skill| skill.display_name.clone().or_else(|| skill.name.clone()))
+                        .unwrap_or_else(|| skill_id.clone())
+                })
+                .collect();
+
+            BehaviorEnvironmentView {
+                behavior_id: behavior.behavior_id.clone(),
+                display_name: behavior.display_name.clone(),
+                enabled: behavior.enabled,
+                is_default: behavior.is_default,
+                model_name: behavior
+                    .model_name
+                    .clone()
+                    .or_else(|| backend.and_then(|backend| backend.models.first().cloned())),
+                inference_profile_name: profile
+                    .and_then(|profile| profile.display_name.clone())
+                    .or_else(|| behavior.inference_profile_id.clone()),
+                workspace_root: tool_selection
+                    .and_then(|selection| selection.file_tool_root.clone()),
+                file_access: file_access_label(tool_selection).to_string(),
+                bash_access: bash_access_label(tool_selection).to_string(),
+                network_access: tool_selection
+                    .and_then(|selection| selection.command_network_mode.clone()),
+                skill_names,
+                session_count: matching_conversations.len(),
+                active_session_count: matching_conversations
+                    .iter()
+                    .filter(|conversation| conversation_is_active(conversation))
+                    .count(),
+            }
+        })
+        .collect()
+}
+
+fn file_access_label(selection: Option<&ToolSelectionView>) -> &'static str {
+    let Some(selection) = selection else {
+        return "off";
+    };
+    if selection.enable_file_tools != Some(true) {
+        return "off";
+    }
+    match selection.file_tools_mode.as_deref() {
+        None => "read-only",
+        Some(value) => match FileToolMode::parse(value) {
+            Ok(FileToolMode::Off) => "off",
+            Ok(FileToolMode::ReadOnly) => "read-only",
+            Ok(FileToolMode::ReadWrite) => "read / write",
+            Err(_) => "unknown",
+        },
+    }
+}
+
+fn bash_access_label(selection: Option<&ToolSelectionView>) -> &'static str {
+    let Some(selection) = selection else {
+        return "off";
+    };
+    if selection.enable_bash != Some(true) {
+        return "off";
+    }
+    match selection.bash_mode.as_deref() {
+        None => "read-only",
+        Some(value) => match BashMode::parse(value) {
+            Ok(BashMode::Off) => "off",
+            Ok(BashMode::ReadOnly) => "read-only",
+            Ok(BashMode::Unrestricted) => "unrestricted",
+            Err(_) => "unknown",
+        },
+    }
+}
+
+fn conversation_is_active(conversation: &ConversationSummary) -> bool {
+    let state = conversation
+        .turn_state
+        .as_deref()
+        .or(conversation.status.as_deref());
+    let Some(state) = state else {
+        return false;
+    };
+    !matches!(
+        state.to_ascii_lowercase().as_str(),
+        "completed"
+            | "failed"
+            | "error"
+            | "dead"
+            | "superseded"
+            | "interrupted"
+            | "cancelled"
+            | "idle"
+    )
 }
 
 fn peer_can_infer_behaviors(peer: &PeerRecord) -> bool {
@@ -663,5 +813,182 @@ mod inferred_peer_behavior_tests {
             "did:key:amy",
             false,
         ));
+    }
+}
+
+#[cfg(test)]
+mod behavior_environment_tests {
+    use super::*;
+
+    fn behavior() -> BehaviorView {
+        BehaviorView {
+            behavior_id: "default".to_string(),
+            display_name: "Amy".to_string(),
+            system_prompt: None,
+            backend_id: Some("backend".to_string()),
+            model_name: None,
+            tool_selection_id: Some("tools".to_string()),
+            inference_profile_id: Some("profile".to_string()),
+            compaction_strategy: None,
+            compaction_threshold: None,
+            enabled: true,
+            is_default: true,
+            skill_refs: vec!["diagnostics".to_string(), "missing".to_string()],
+            skill_excludes: vec!["missing".to_string()],
+        }
+    }
+
+    fn backend() -> InferenceBackendView {
+        InferenceBackendView {
+            backend_id: "backend".to_string(),
+            name: Some("Local inference".to_string()),
+            provider_kind: None,
+            openai_wire_api: None,
+            endpoint: None,
+            api_key_configured: false,
+            api_key_env_var: None,
+            max_concurrent: None,
+            max_queue_depth: None,
+            enabled: Some(true),
+            models: vec!["gpt-test".to_string()],
+            probe_status: None,
+        }
+    }
+
+    fn profile() -> InferenceProfileView {
+        InferenceProfileView {
+            profile_id: "profile".to_string(),
+            display_name: Some("Long context".to_string()),
+            context_window: None,
+            max_output_tokens: None,
+            max_turns: None,
+            temperature: None,
+            reasoning_effort: None,
+            stream_batch_ms: None,
+            stream_liveness_timeout_secs: None,
+            deadline_duration_secs: None,
+        }
+    }
+
+    fn tool_selection() -> ToolSelectionView {
+        ToolSelectionView {
+            selection_id: "tools".to_string(),
+            agent_did: None,
+            display_name: Some("Workspace tools".to_string()),
+            enable_file_tools: Some(true),
+            file_tools_mode: Some("ReadWrite".to_string()),
+            file_tool_root: Some("/work/amygdala".to_string()),
+            enable_bash: Some(true),
+            bash_mode: Some("ReadOnly".to_string()),
+            command_execution_policy: None,
+            command_allowed_argv_prefixes: vec![],
+            command_forbidden_argv_prefixes: vec![],
+            command_network_mode: Some("Disabled".to_string()),
+            cli_tool_names: vec![],
+            enable_meta_tools: None,
+            allowed_mcp_service_ids: vec![],
+            delegate_to: vec![],
+            backgroundable_tool_names: vec![],
+            subagent_targets: vec![],
+            subagent_spawn_enabled: None,
+            subagent_steering_enabled: None,
+            subagent_background_enabled: None,
+            subagent_allow_cross_deployment: None,
+            cross_deployment_spawn_timeout_seconds: None,
+            enable_memory: None,
+            enable_session_history_tool: None,
+            enable_context_budget: None,
+            enable_defra_query: None,
+            defra_query_collections: vec![],
+            write_tools: vec![],
+            tool_policy_version: None,
+            subagent_default_await_mode: None,
+        }
+    }
+
+    fn skill() -> SkillView {
+        SkillView {
+            skill_id: "diagnostics".to_string(),
+            agent_did: None,
+            scope: None,
+            name: Some("diagnostics".to_string()),
+            description: None,
+            instructions: None,
+            tool_refs: vec![],
+            display_name: Some("Host diagnostics".to_string()),
+            enabled: Some(true),
+            created_at: None,
+        }
+    }
+
+    fn conversation(
+        session_id: &str,
+        behavior_id: Option<&str>,
+        turn_state: Option<&str>,
+    ) -> ConversationSummary {
+        ConversationSummary {
+            session_id: session_id.to_string(),
+            title: None,
+            preview_text: None,
+            status: None,
+            behavior_id: behavior_id.map(str::to_string),
+            latest_request_id: None,
+            task_id: None,
+            task_name: None,
+            trigger_id: None,
+            trigger_kind: None,
+            created_at: None,
+            updated_at: None,
+            turn_state: turn_state.map(str::to_string),
+            message_count: 0,
+            tool_call_count: 0,
+        }
+    }
+
+    #[test]
+    fn resolves_runnable_environment_once_for_clients() {
+        let mut status_only_active = conversation("status-active", Some("default"), None);
+        status_only_active.status = Some("active".to_string());
+        let unassigned = conversation("unassigned", None, Some("processing"));
+        let environments = resolve_behavior_environments(
+            &[behavior()],
+            &[backend()],
+            &[profile()],
+            &[tool_selection()],
+            &[skill()],
+            &[
+                conversation("active", Some("default"), Some("processing")),
+                conversation("complete", Some("default"), Some("completed")),
+                status_only_active,
+                unassigned,
+            ],
+        );
+
+        let environment = &environments[0];
+        assert_eq!(environment.display_name, "Amy");
+        assert_eq!(environment.model_name.as_deref(), Some("gpt-test"));
+        assert_eq!(
+            environment.inference_profile_name.as_deref(),
+            Some("Long context")
+        );
+        assert_eq!(
+            environment.workspace_root.as_deref(),
+            Some("/work/amygdala")
+        );
+        assert_eq!(environment.file_access, "read / write");
+        assert_eq!(environment.bash_access, "read-only");
+        assert_eq!(environment.skill_names, vec!["Host diagnostics"]);
+        assert_eq!(environment.session_count, 3);
+        assert_eq!(environment.active_session_count, 2);
+    }
+
+    #[test]
+    fn invalid_tool_modes_are_visible_instead_of_misreported() {
+        let mut selection = tool_selection();
+        selection.file_tools_mode = Some("FutureFileMode".to_string());
+        selection.bash_mode = Some("FutureBashMode".to_string());
+
+        assert_eq!(file_access_label(Some(&selection)), "unknown");
+        assert_eq!(bash_access_label(Some(&selection)), "unknown");
     }
 }

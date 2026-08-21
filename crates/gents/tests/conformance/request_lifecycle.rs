@@ -3,6 +3,7 @@ use super::*;
 fn rust_request_transition_action(from: &str, to: &str) -> Option<&'static str> {
     match (from, to) {
         ("pending", "claimed") => Some("claim"),
+        ("pending", "failed") => Some("admissionReject"),
         ("pending", "superseded") => Some("dedupLose"),
         ("claimed", "processing") => Some("beginInference"),
         ("processing", "processing") => Some("advance"),
@@ -141,13 +142,206 @@ async fn ordinary_complete_also_takes_the_claimed_to_completed_edge() {
 
     // No begin_execution: the row stays persisted `claimed`.
     assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-    lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.complete().await.unwrap();
 
     let snap = fetch_request_snapshot(&db.node, &doc_id).await;
     assert_eq!(
         snap.lifecycle_state, "completed",
         "complete() from a persisted claimed row should still complete it"
+    );
+    let session_id = escape_graphql_string(&session_id);
+    let response = db
+        .node
+        .execute(&format!(
+            r#"{{ AgentConversation(filter: {{ session_id: {{ _eq: "{session_id}" }} }}, limit: 1) {{
+                latest_request_id status
+            }} }}"#
+        ))
+        .await;
+    let conversation = support::first_row::<serde_json::Value>(&response, "AgentConversation");
+    assert_eq!(
+        conversation["latest_request_id"].as_str(),
+        Some(request_id.as_str())
+    );
+    assert_eq!(conversation["status"].as_str(), Some("completed"));
+}
+
+#[tokio::test]
+async fn claim_atomically_projects_the_request_owned_session() {
+    let db = test_db("claim-atomically-projects-session").await;
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let created_at = chrono::Utc::now().to_rfc3339();
+    let doc_id = create_request(&db.node, &request_id, &session_id, "pending", &created_at).await;
+    let mut lifecycle = request_lifecycle_for_case(
+        &db,
+        doc_id,
+        request_id.clone(),
+        session_id.clone(),
+        created_at,
+    );
+
+    assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
+
+    let session_id = gents::graphql::escape_graphql_string(&session_id);
+    let response = db
+        .node
+        .execute(&format!(
+            r#"{{
+                AgentSession(filter: {{ session_id: {{ _eq: "{session_id}" }} }}, limit: 2) {{
+                    session_id behavior_id status
+                }}
+                AgentConversation(filter: {{ session_id: {{ _eq: "{session_id}" }} }}, limit: 2) {{
+                    session_id latest_request_id status
+                }}
+            }}"#
+        ))
+        .await;
+    assert!(
+        !response.has_errors(),
+        "projection query: {:?}",
+        response.errors
+    );
+    let data = response.data.expect("projection data");
+    let sessions = data["AgentSession"].as_array().expect("session rows");
+    let conversations = data["AgentConversation"]
+        .as_array()
+        .expect("conversation rows");
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["behavior_id"].as_str(), Some(AGENT_NAME));
+    assert_eq!(sessions[0]["status"].as_str(), Some("active"));
+    assert_eq!(conversations.len(), 1);
+    assert_eq!(
+        conversations[0]["latest_request_id"].as_str(),
+        Some(request_id.as_str())
+    );
+    assert_eq!(conversations[0]["status"].as_str(), Some("processing"));
+}
+
+#[tokio::test]
+async fn admission_rejection_is_terminal_and_does_not_mint_a_session() {
+    let db = test_db("admission-rejection-terminal").await;
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let created_at = chrono::Utc::now().to_rfc3339();
+    let doc_id = create_request(&db.node, &request_id, &session_id, "pending", &created_at).await;
+    let mut lifecycle = request_lifecycle_for_case(
+        &db,
+        doc_id.clone(),
+        request_id.clone(),
+        session_id.clone(),
+        created_at,
+    );
+
+    lifecycle
+        .reject_admission("session projection rejected")
+        .await
+        .unwrap();
+
+    let request = fetch_request_snapshot(&db.node, &doc_id).await;
+    assert_eq!(request.status, "error");
+    assert_eq!(request.lifecycle_state, "failed");
+    assert!(fetch_session_snapshot(&db.node, &session_id)
+        .await
+        .is_none());
+    assert!(fetch_conversation_snapshot(&db.node, &session_id)
+        .await
+        .is_none());
+    let response_doc_id = lifecycle
+        .response_doc_id()
+        .expect("admission rejection response doc id");
+    assert_eq!(
+        fetch_response_snapshot(&db.node, response_doc_id)
+            .await
+            .status,
+        "error"
+    );
+}
+
+#[tokio::test]
+async fn terminalizing_an_older_request_preserves_the_latest_projection() {
+    let db = test_db("older-request-terminal-preserves-latest").await;
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let created_at = chrono::Utc::now().to_rfc3339();
+    let first_request_id = uuid::Uuid::new_v4().to_string();
+    let first_doc_id = create_request(
+        &db.node,
+        &first_request_id,
+        &session_id,
+        "pending",
+        &created_at,
+    )
+    .await;
+    let mut first = request_lifecycle_for_case(
+        &db,
+        first_doc_id.clone(),
+        first_request_id,
+        session_id.clone(),
+        created_at.clone(),
+    );
+    assert_eq!(first.claim().await.unwrap(), ClaimOutcome::Claimed);
+
+    let second_request_id = uuid::Uuid::new_v4().to_string();
+    create_request(
+        &db.node,
+        &second_request_id,
+        &session_id,
+        "pending",
+        &created_at,
+    )
+    .await;
+    // Model a newer replicated projection while the older executor is still
+    // finishing. The terminal writer must only update the conversation when it
+    // still owns `latest_request_id`.
+    let session_id_escaped = escape_graphql_string(&session_id);
+    let second_request_id_escaped = escape_graphql_string(&second_request_id);
+    let response = db
+        .node
+        .execute(&format!(
+            r#"mutation {{
+                update_AgentConversation(
+                    filter: {{
+                        session_id: {{ _eq: "{session_id_escaped}" }}
+                    }},
+                    input: {{
+                        latest_request_id: "{second_request_id_escaped}",
+                        status: "processing"
+                    }}
+                ) {{ _docID }}
+            }}"#
+        ))
+        .await;
+    assert!(
+        !response.has_errors(),
+        "advance conversation projection: {:?}",
+        response.errors
+    );
+    assert!(
+        response
+            .data
+            .as_ref()
+            .and_then(|data| data.get("update_AgentConversation"))
+            .is_some_and(gents::graphql::response_has_documents),
+        "advance conversation projection matched no document"
+    );
+
+    first.complete().await.unwrap();
+    assert_eq!(
+        fetch_request_snapshot(&db.node, &first_doc_id)
+            .await
+            .lifecycle_state,
+        "completed"
+    );
+    assert_eq!(
+        fetch_conversation_snapshot(&db.node, &session_id).await,
+        Some(ConversationSnapshot {
+            latest_request_id: second_request_id,
+            behavior_id: AGENT_NAME.into(),
+            status: "processing".into(),
+            forked_from_session_id: None,
+            fork_at_user_turn: None,
+            forked_at: None,
+        })
     );
 }
 
@@ -221,14 +415,18 @@ async fn drive_generated_request_legal_case(case: &LeanLifecycleTransitionCase) 
             .await
             .expect("coalesce reconcile must succeed");
         }
+        "admissionReject" => {
+            lifecycle
+                .reject_admission("session projection rejected")
+                .await
+                .unwrap();
+        }
         "beginInference" => {
             assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-            lifecycle.prepare_session_with_identity().await.unwrap();
             lifecycle.begin_execution().await.unwrap();
         }
         "advance" => {
             assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-            lifecycle.prepare_session_with_identity().await.unwrap();
             lifecycle.begin_execution().await.unwrap();
             let response_doc_id = create_response_with_status(
                 &db.node,
@@ -243,19 +441,16 @@ async fn drive_generated_request_legal_case(case: &LeanLifecycleTransitionCase) 
         }
         "finish" => {
             assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-            lifecycle.prepare_session_with_identity().await.unwrap();
             lifecycle.begin_execution().await.unwrap();
             lifecycle.complete().await.unwrap();
         }
         "fail" => {
             assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-            lifecycle.prepare_session_with_identity().await.unwrap();
             lifecycle.begin_execution().await.unwrap();
             lifecycle.fail().await.unwrap();
         }
         "failBeforeStream" => {
             assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-            lifecycle.prepare_session_with_identity().await.unwrap();
             lifecycle.fail().await.unwrap();
         }
         "expire" => {
@@ -276,7 +471,6 @@ async fn drive_generated_request_legal_case(case: &LeanLifecycleTransitionCase) 
         }
         "interruptProcessing" => {
             assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-            lifecycle.prepare_session_with_identity().await.unwrap();
             lifecycle.begin_execution().await.unwrap();
             let interrupt_at = chrono::Utc::now().to_rfc3339();
             set_interrupt_requested_at(&db.node, &doc_id, &interrupt_at).await;
@@ -393,8 +587,8 @@ pub(super) async fn generated_request_transition_cases_cover_lifecycle_policy() 
         }
     }
 
-    assert_eq!(legal_count, 11);
-    assert_eq!(illegal_count, 50);
+    assert_eq!(legal_count, 12);
+    assert_eq!(illegal_count, 49);
     assert_eq!(product_unreachable_count, 17);
     assert_eq!(recovery_reachable_count, 3);
 }
@@ -590,8 +784,9 @@ async fn production_request_writers_only_reach_contracted_edges() {
         "dead",
         "interrupted",
     ];
-    const WRITERS: [&str; 9] = [
+    const WRITERS: [&str; 10] = [
         "claim",
+        "admission_reject",
         "claim_after_ttl_lapse",
         "begin_execution",
         "complete",
@@ -635,13 +830,13 @@ async fn production_request_writers_only_reach_contracted_edges() {
             //   repair_terminal_requests      -> associated fn, no local state
             match writer {
                 "claim"
+                | "admission_reject"
                 | "claim_after_ttl_lapse"
                 | "repair_terminal_requests"
                 | "coalesce_pending"
                 | "subagent_liveness" => {}
                 _ => {
                     assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-                    lifecycle.prepare_session_with_identity().await.unwrap();
                 }
             }
 
@@ -715,6 +910,9 @@ async fn production_request_writers_only_reach_contracted_edges() {
                 "claim" => {
                     let _ = lifecycle.claim().await;
                 }
+                "admission_reject" => {
+                    let _ = lifecycle.reject_admission("projection rejected").await;
+                }
                 "claim_after_ttl_lapse" => {
                     // The expiry writer is reached THROUGH claim(): a pre-claim
                     // request whose TTL has lapsed terminalizes to `dead`.
@@ -767,6 +965,7 @@ async fn production_request_writers_only_reach_contracted_edges() {
     // vacuously by a fixture that silently stopped driving its writer.
     let expected: std::collections::BTreeSet<(String, String)> = [
         ("pending", "claimed"),
+        ("pending", "failed"),
         ("pending", "dead"),
         ("pending", "interrupted"),
         ("pending", "superseded"),
@@ -837,8 +1036,9 @@ async fn production_request_writers_only_reach_contracted_edges() {
 #[tokio::test]
 async fn terminal_persisted_requests_reject_request_mutating_lifecycle_writers() {
     const TERMINAL_STATES: [&str; 5] = ["completed", "failed", "superseded", "dead", "interrupted"];
-    const WRITERS: [&str; 6] = [
+    const WRITERS: [&str; 7] = [
         "claim",
+        "admission_reject",
         "begin_execution",
         "complete",
         "fail",
@@ -869,7 +1069,6 @@ async fn terminal_persisted_requests_reject_request_mutating_lifecycle_writers()
             // itself rather than a re-claim.
             if writer != "claim" {
                 assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-                lifecycle.prepare_session_with_identity().await.unwrap();
             }
 
             // `repair_terminal_requests` only acts on a request whose durable
@@ -901,6 +1100,9 @@ async fn terminal_persisted_requests_reject_request_mutating_lifecycle_writers()
                             "claim() reported success against a persisted {terminal} request"
                         );
                     }
+                }
+                "admission_reject" => {
+                    let _ = lifecycle.reject_admission("projection rejected").await;
                 }
                 "begin_execution" => {
                     let _ = lifecycle.begin_execution().await;
@@ -986,16 +1188,11 @@ async fn interactive_claim_snapshot_matches_claimed_waiting() {
             failure_reason: "".into(),
         }
     );
-    assert_eq!(
-        fetch_conversation_snapshot(&db.node, &session_id).await,
-        None
-    );
-    assert_eq!(fetch_session_snapshot(&db.node, &session_id).await, None);
 }
 
 #[tokio::test]
-async fn interactive_prepare_session_pins_behavior() {
-    let db = test_db("interactive-prepare-session").await;
+async fn interactive_claim_atomically_pins_session_behavior() {
+    let db = test_db("interactive-claim-session-projection").await;
     let request_id = uuid::Uuid::new_v4().to_string();
     let session_id = uuid::Uuid::new_v4().to_string();
     let created_at = chrono::Utc::now().to_rfc3339();
@@ -1018,7 +1215,6 @@ async fn interactive_prepare_session_pins_behavior() {
     );
 
     assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-    lifecycle.prepare_session_with_identity().await.unwrap();
 
     assert_eq!(
         fetch_session_snapshot(&db.node, &session_id).await,
@@ -1066,7 +1262,6 @@ async fn interactive_admission_and_progress_snapshots_match_execution_flow() {
     );
 
     assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-    lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.begin_execution().await.unwrap();
     assert_lean_transition_is_legal("Request", "claimed", "processing");
     let response_doc_id = create_response_with_status(
@@ -1154,7 +1349,6 @@ async fn interactive_fail_before_stream_snapshot_matches_failed_released() {
     );
 
     assert_eq!(lifecycle.claim().await.unwrap(), ClaimOutcome::Claimed);
-    lifecycle.prepare_session_with_identity().await.unwrap();
     lifecycle.fail().await.unwrap();
     assert_lean_transition_is_legal("Request", "claimed", "failed");
 

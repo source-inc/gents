@@ -133,6 +133,13 @@ async fn setup_fixture(test_name: &str) -> (crate::support::TestDb, String, Stri
     let session_id = format!("{test_name}-parent-session");
     let request_id = format!("{test_name}-parent-request");
     create_parent_request(db.node.as_ref(), &request_id, &session_id).await;
+    crate::support::create_agent_session(
+        db.node.as_ref(),
+        &session_id,
+        PARENT_BEHAVIOR_ID,
+        "2026-05-12T00:00:00Z",
+    )
+    .await;
     (db, session_id, request_id)
 }
 
@@ -718,7 +725,7 @@ async fn background_notification_sorts_after_reserved_spawn_tool_result() {
         PARENT_BEHAVIOR_ID,
         CHILD_BEHAVIOR_ID,
     );
-    let hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    let hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &session_id,
         PARENT_BEHAVIOR_ID,
@@ -1060,7 +1067,7 @@ async fn recovery_terminalizes_expired_background_child_before_projection() {
 async fn stale_hook_sequence_does_not_overwrite_background_notification() {
     let (db, session_id, parent_request_id) =
         setup_fixture("background_completion_hook_sequence").await;
-    let hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    let hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &session_id,
         PARENT_BEHAVIOR_ID,

@@ -32,7 +32,7 @@ use crate::tool_call_lifecycle::{AwaitMode, ChildTerminal, FailureClass, ToolCal
 
 const AGENT_REQUEST_COLLECTION: &str = "AgentRequest";
 pub const BACKGROUND_COMPLETION_WAKE_PROMPT: &str =
-    "Review pending subagent completion notifications in this session and continue the task if needed.";
+    "Review the new background completion results and continue the task if needed.";
 const BACKGROUND_COMPLETION_NOTIFICATION_MESSAGE_PREFIX: &str =
     "background-completion-notification:";
 

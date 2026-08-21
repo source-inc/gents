@@ -402,22 +402,6 @@ if (
   );
 }
 
-const operationsIndex = readFileSync(
-  join(root, "packages/gents-desktop-operations/src/index.ts"),
-  "utf8",
-);
-if (
-  statSync(
-    join(root, "packages/gents-desktop-operations/src/railRegistry.ts"),
-    { throwIfNoEntry: false },
-  ) ||
-  operationsIndex.includes("createOperationsRailRegistry")
-) {
-  failures.push(
-    "operations must expose one live rail composition API through its provider and descriptors",
-  );
-}
-
 const semanticPath = join(root, "packages/gents-desktop-tokens/semantic.css");
 const semanticSource = readFileSync(semanticPath, "utf8");
 const semanticTokens = new Set(
@@ -549,7 +533,6 @@ if (
 for (const path of [
   "packages/gents-desktop-chat/styles/chat.css",
   "packages/gents-desktop-fleet/styles/layout/responsive.css",
-  "packages/gents-desktop-operations/styles/rail.css",
 ]) {
   const css = readFileSync(join(root, path), "utf8");
   const values = [...css.matchAll(/@media\s*\(max-width:\s*(\d+)px\)/g)].map(
@@ -585,52 +568,7 @@ for (const [path, maximumLines] of [
     "packages/gents-desktop-fleet/src/components/addPeer/useManualPeerDiscovery.ts",
     160,
   ],
-  [
-    "packages/gents-desktop-operations/src/components/backgroundedTools/BackgroundedToolsPanel.tsx",
-    140,
-  ],
-  [
-    "packages/gents-desktop-operations/src/components/backgroundedTools/BackgroundedToolsFilters.tsx",
-    160,
-  ],
-  [
-    "packages/gents-desktop-operations/src/components/backgroundedTools/BackgroundedToolsSummary.tsx",
-    80,
-  ],
-  [
-    "packages/gents-desktop-operations/src/components/backgroundedTools/StuckDiagnostics.tsx",
-    100,
-  ],
-  [
-    "packages/gents-desktop-operations/src/components/backgroundedTools/BackgroundedToolsTable.tsx",
-    220,
-  ],
-  [
-    "packages/gents-desktop-operations/src/components/backgroundedTools/useBackgroundedToolsModel.ts",
-    200,
-  ],
-  [
-    "packages/gents-desktop-operations/src/components/subagentLineage/SubagentLineageView.tsx",
-    120,
-  ],
-  [
-    "packages/gents-desktop-operations/src/components/subagentLineage/SubagentLineageBody.tsx",
-    120,
-  ],
-  [
-    "packages/gents-desktop-operations/src/components/subagentLineage/SubagentLineageFilters.tsx",
-    100,
-  ],
-  [
-    "packages/gents-desktop-operations/src/components/subagentLineage/useSubagentLineageData.ts",
-    190,
-  ],
-  [
-    "packages/gents-desktop-operations/src/components/subagentLineage/useSubagentLineageNavigation.ts",
-    180,
-  ],
   ["packages/gents-desktop-chat/src/components/Transcript.tsx", 100],
-  ["packages/gents-desktop-chat/src/components/codeTools/codeTools.ts", 100],
   ["packages/gents-desktop-fleet/styles/layout.css", 20],
   ["packages/gents-desktop-fleet/styles/layout/dashboard.css", 180],
   ["packages/gents-desktop-fleet/styles/layout/network.css", 120],

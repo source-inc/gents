@@ -170,6 +170,23 @@ async fn thread_goal_round_trip_survives_shim_restart() -> Result<()> {
     let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{shim_port}/")).await?;
     initialize_config_and_thread(&mut ws, &home_dir).await?;
     let thread_id = start_thread(&mut ws, &home_dir).await?;
+    send_client_request(
+        &mut ws,
+        codex::ClientRequest::TurnStart {
+            request_id: request_id(119),
+            params: codex::TurnStartParams {
+                thread_id: thread_id.clone(),
+                input: vec![codex::UserInput::Text {
+                    text: "materialize the canonical session".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        },
+    )
+    .await?;
+    let _: codex::TurnStartResponse = read_typed_response(&mut ws, request_id(119)).await?;
+    let _ = read_turn_capture(&mut ws).await?;
     let objective = format!("survive restart {}", Uuid::new_v4().simple());
     send_client_request(
         &mut ws,
@@ -509,6 +526,56 @@ async fn codex_shim_protocol_turn_streams_gents_response() -> Result<()> {
     Uuid::parse_str(&thread_id)
         .with_context(|| format!("Codex TUI requires UUID thread ids, got {thread_id}"))?;
 
+    let prompt = format!("Reply with exactly {}.", Uuid::new_v4().simple());
+    send_client_request(
+        &mut ws,
+        codex::ClientRequest::TurnStart {
+            request_id: request_id(4),
+            params: codex::TurnStartParams {
+                thread_id: thread_id.clone(),
+                input: vec![codex::UserInput::Text {
+                    text: prompt.clone(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        },
+    )
+    .await?;
+    let turn_start: codex::TurnStartResponse = read_typed_response(&mut ws, request_id(4)).await?;
+    assert_eq!(turn_start.turn.status, codex::TurnStatus::InProgress);
+
+    let turn_capture = read_turn_capture(&mut ws).await?;
+    let final_text = turn_capture.text.clone();
+    let completed_turn = turn_capture.turn.clone();
+    assert_eq!(
+        completed_turn.status,
+        codex::TurnStatus::Completed,
+        "completed_turn={completed_turn:?}; final_text={final_text}"
+    );
+    assert!(
+        final_text.contains(&expected_reply),
+        "expected streamed Codex text to contain {expected_reply}, got:\n{final_text}"
+    );
+
+    let turn_usage = turn_capture
+        .token_usage
+        .as_ref()
+        .expect("turn completion should emit a ThreadTokenUsageUpdated notification");
+    assert!(
+        turn_usage.total.total_tokens > 0,
+        "expected non-zero cumulative token usage on turn completion, got {turn_usage:?}"
+    );
+    assert!(
+        turn_usage.last.total_tokens > 0,
+        "expected non-zero last-turn token usage on turn completion, got {turn_usage:?}"
+    );
+    assert_eq!(
+        turn_usage.model_context_window,
+        Some(gents::DEFAULT_CONTEXT_WINDOW as i64),
+        "context capacity should come from the bound GENTS inference profile"
+    );
+
     let session_response = serve
         .capturing(graphql_query(
             &graphql,
@@ -823,56 +890,6 @@ async fn codex_shim_protocol_turn_streams_gents_response() -> Result<()> {
             .await
             .context("reading thread/unarchive response")?;
     assert_eq!(thread_unarchive.thread.id, thread_id);
-
-    let prompt = format!("Reply with exactly {}.", Uuid::new_v4().simple());
-    send_client_request(
-        &mut ws,
-        codex::ClientRequest::TurnStart {
-            request_id: request_id(4),
-            params: codex::TurnStartParams {
-                thread_id: thread_id.clone(),
-                input: vec![codex::UserInput::Text {
-                    text: prompt.clone(),
-                    text_elements: Vec::new(),
-                }],
-                ..Default::default()
-            },
-        },
-    )
-    .await?;
-    let turn_start: codex::TurnStartResponse = read_typed_response(&mut ws, request_id(4)).await?;
-    assert_eq!(turn_start.turn.status, codex::TurnStatus::InProgress);
-
-    let turn_capture = read_turn_capture(&mut ws).await?;
-    let final_text = turn_capture.text.clone();
-    let completed_turn = turn_capture.turn.clone();
-    assert_eq!(
-        completed_turn.status,
-        codex::TurnStatus::Completed,
-        "completed_turn={completed_turn:?}; final_text={final_text}"
-    );
-    assert!(
-        final_text.contains(&expected_reply),
-        "expected streamed Codex text to contain {expected_reply}, got:\n{final_text}"
-    );
-
-    let turn_usage = turn_capture
-        .token_usage
-        .as_ref()
-        .expect("turn completion should emit a ThreadTokenUsageUpdated notification");
-    assert!(
-        turn_usage.total.total_tokens > 0,
-        "expected non-zero cumulative token usage on turn completion, got {turn_usage:?}"
-    );
-    assert!(
-        turn_usage.last.total_tokens > 0,
-        "expected non-zero last-turn token usage on turn completion, got {turn_usage:?}"
-    );
-    assert_eq!(
-        turn_usage.model_context_window,
-        Some(gents::DEFAULT_CONTEXT_WINDOW as i64),
-        "context capacity should come from the bound GENTS inference profile"
-    );
 
     send_client_request(
         &mut ws,
@@ -1345,7 +1362,8 @@ async fn codex_shim_thread_list_reconstructs_turned_threads_from_durable_data() 
         format!(
             r#"mutation {{ create_AgentConversation(input: {{
                 session_id: "{s}", agent_name: "{behavior_id}", agent_did: "{agent_did}",
-                behavior_id: "{behavior_id}", title: "Earlier Codex thread", title_source: "user",
+                behavior_id: "{behavior_id}",
+                title: "Earlier Codex thread", title_source: "user",
                 status: "active", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z"
             }}) {{ _docID }} }}"#,
             s = escape_graphql_string(&turned_session_id),
@@ -1368,6 +1386,26 @@ async fn codex_shim_thread_list_reconstructs_turned_threads_from_durable_data() 
                 s = escape_graphql_string(&zero_turn_session_id),
                 behavior_id = escape_graphql_string(&behavior_id),
                 agent_did = escape_graphql_string(&agent_did),
+            ),
+        ))
+        .await?;
+
+    let pending_session_id = Uuid::new_v4().to_string();
+    serve
+        .capturing(graphql_query(
+            &graphql,
+            &format!(
+                r#"mutation {{ create_AgentRequest(input: {{
+                    request_id: "{request}", agent_did: "{agent_did}",
+                    behavior_id: "{behavior_id}", session_id: "{session}",
+                    content: "pending projection", status: "pending",
+                    lifecycle_state: "pending", execution_origin: "interactive",
+                    created_at: "2026-01-01T00:00:01Z"
+                }}) {{ _docID }} }}"#,
+                request = escape_graphql_string(&Uuid::new_v4().to_string()),
+                agent_did = escape_graphql_string(&agent_did),
+                behavior_id = escape_graphql_string(&behavior_id),
+                session = escape_graphql_string(&pending_session_id),
             ),
         ))
         .await?;
@@ -1433,6 +1471,13 @@ async fn codex_shim_thread_list_reconstructs_turned_threads_from_durable_data() 
         "a never-turned session holds no durable Codex data and must not be surfaced \
          after restart: {listed:?}"
     );
+    assert!(
+        listed
+            .data
+            .iter()
+            .any(|thread| thread.id == pending_session_id),
+        "a durable request must remain visible while claim has not projected its conversation: {listed:?}"
+    );
 
     let turned = listed
         .data
@@ -1449,7 +1494,7 @@ async fn codex_shim_thread_list_reconstructs_turned_threads_from_durable_data() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn codex_shim_derives_git_info_and_persists_early_rename() -> Result<()> {
+async fn codex_shim_derives_git_info_and_keeps_empty_thread_ephemeral() -> Result<()> {
     let tempdir = tempfile::tempdir().context("creating tempdir")?;
     let home_dir = tempdir.path().join("home");
     fs::create_dir_all(&home_dir)?;
@@ -1589,7 +1634,55 @@ async fn codex_shim_derives_git_info_and_persists_early_rename() -> Result<()> {
     assert_eq!(
         renamed.thread.name.as_deref(),
         Some("Named before first turn"),
-        "rename before the first turn should persist to the conversation title"
+        "the adapter should retain an empty thread's presentation state"
+    );
+    let empty_projection = serve
+        .capturing(graphql_query(
+            &graphql,
+            &format!(
+                r#"{{
+                    AgentSession(filter: {{ session_id: {{ _eq: "{}" }} }}) {{ _docID }}
+                    AgentConversation(filter: {{ session_id: {{ _eq: "{}" }} }}) {{ _docID }}
+                }}"#,
+                escape_graphql_string(&git_thread_id),
+                escape_graphql_string(&git_thread_id),
+            ),
+        ))
+        .await?;
+    assert_eq!(empty_projection.pointer("/data/AgentSession/0"), None);
+    assert_eq!(empty_projection.pointer("/data/AgentConversation/0"), None);
+
+    send_client_request(
+        &mut ws,
+        codex::ClientRequest::TurnStart {
+            request_id: request_id(4),
+            params: codex::TurnStartParams {
+                thread_id: git_thread_id.clone(),
+                input: vec![codex::UserInput::Text {
+                    text: "materialize this session".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        },
+    )
+    .await?;
+    let _: codex::TurnStartResponse = read_typed_response(&mut ws, request_id(4)).await?;
+    let _ = read_turn_capture(&mut ws).await?;
+    let canonical = serve
+        .capturing(graphql_query(
+            &graphql,
+            &format!(
+                r#"{{ AgentConversation(filter: {{ session_id: {{ _eq: "{}" }} }}) {{ title }} }}"#,
+                escape_graphql_string(&git_thread_id),
+            ),
+        ))
+        .await?;
+    assert_eq!(
+        canonical
+            .pointer("/data/AgentConversation/0/title")
+            .and_then(Value::as_str),
+        Some("Named before first turn")
     );
 
     let plain_dir = tempdir.path().join("plain");
@@ -1617,11 +1710,9 @@ async fn codex_shim_derives_git_info_and_persists_early_rename() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn codex_shim_thread_list_excludes_non_codex_sessions() -> Result<()> {
-    // Regression guard for #494: ordinary CLI/chat/runtime sessions share the
-    // shim's (agent_did, behavior_id) and create AgentSession rows, but they are
-    // NOT Codex threads (no codex_shim request, not shim-created) and must not
-    // appear in thread/list.
+async fn codex_shim_thread_list_projects_canonical_gents_sessions() -> Result<()> {
+    // Codex is a view over canonical Gents sessions. The source of the request
+    // does not create a second class of persisted conversation.
     let tempdir = tempfile::tempdir().context("creating tempdir")?;
     let home_dir = tempdir.path().join("home");
     fs::create_dir_all(&home_dir)?;
@@ -1670,6 +1761,7 @@ async fn codex_shim_thread_list_excludes_non_codex_sessions() -> Result<()> {
         .await?;
 
     let foreign_session_id = Uuid::new_v4().to_string();
+    let foreign_request_id = Uuid::new_v4().to_string();
     serve
         .capturing(graphql_query(
             &graphql,
@@ -1706,10 +1798,37 @@ async fn codex_shim_thread_list_excludes_non_codex_sessions() -> Result<()> {
                     created_at: "2026-01-01T00:00:00Z"
                 }}) {{ _docID }}
             }}"#,
-                request = escape_graphql_string(&Uuid::new_v4().to_string()),
+                request = escape_graphql_string(&foreign_request_id),
                 agent_did = escape_graphql_string(&agent_did),
                 behavior_id = escape_graphql_string(&behavior_id),
                 session = escape_graphql_string(&foreign_session_id),
+            ),
+        ))
+        .await?;
+    serve
+        .capturing(graphql_query(
+            &graphql,
+            &format!(
+                r#"mutation {{
+                create_AgentConversation(input: {{
+                    session_id: "{session}",
+                    agent_name: "{agent_name}",
+                    agent_did: "{agent_did}",
+                    behavior_id: "{behavior_id}",
+                    title: "Shared Gents session",
+                    title_source: "user",
+                    preview_text: "shared",
+                    status: "active",
+                    created_at: "2026-01-01T00:00:00Z",
+                    updated_at: "2026-01-01T00:00:00Z",
+                    latest_request_id: "{request}"
+                }}) {{ _docID }}
+            }}"#,
+                session = escape_graphql_string(&foreign_session_id),
+                request = escape_graphql_string(&foreign_request_id),
+                agent_name = escape_graphql_string(&agent_name),
+                agent_did = escape_graphql_string(&agent_did),
+                behavior_id = escape_graphql_string(&behavior_id),
             ),
         ))
         .await?;
@@ -1739,7 +1858,7 @@ async fn codex_shim_thread_list_excludes_non_codex_sessions() -> Result<()> {
     let _: codex::InitializeResponse = read_typed_response(&mut ws, request_id(1)).await?;
     send_client_notification(&mut ws, codex::ClientNotification::Initialized).await?;
 
-    // A genuine Codex thread (created by the shim) must be listed.
+    // An empty shim-created thread is visible from the process-local adapter.
     send_client_request(
         &mut ws,
         codex::ClientRequest::ThreadStart {
@@ -1783,11 +1902,11 @@ async fn codex_shim_thread_list_excludes_non_codex_sessions() -> Result<()> {
         "the shim-created Codex thread should be listed: {listed:?}"
     );
     assert!(
-        !listed
+        listed
             .data
             .iter()
             .any(|thread| thread.id == foreign_session_id),
-        "a non-Codex session sharing the bound identity must not be listed as a Codex thread: {listed:?}"
+        "a canonical Gents session must be visible through the Codex projection: {listed:?}"
     );
 
     Ok(())
@@ -5129,7 +5248,7 @@ async fn codex_shim_does_not_clobber_session_behavior_id() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn codex_shim_rejects_resume_with_mismatched_behavior() -> Result<()> {
+async fn codex_shim_does_not_adopt_a_session_from_another_behavior() -> Result<()> {
     let tempdir = tempfile::tempdir().context("creating tempdir")?;
     let home_dir = tempdir.path().join("home");
     fs::create_dir_all(&home_dir)?;
@@ -5227,13 +5346,25 @@ async fn codex_shim_rejects_resume_with_mismatched_behavior() -> Result<()> {
     .await?;
     let error = read_error_response(&mut ws, request_id(2)).await?;
     assert!(
-        error.message.contains(&foreign_behavior_id),
-        "expected mismatch error to name the foreign behavior id; got: {}",
+        error.message.contains("unknown Codex thread"),
+        "a session outside the bound behavior must not enter the projection: {}",
         error.message
     );
+
+    send_client_request(
+        &mut ws,
+        codex::ClientRequest::ThreadArchive {
+            request_id: request_id(3),
+            params: codex::ThreadArchiveParams {
+                thread_id: session_id,
+            },
+        },
+    )
+    .await?;
+    let error = read_error_response(&mut ws, request_id(3)).await?;
     assert!(
-        error.message.contains("pinned"),
-        "expected error to use 'pinned' wording; got: {}",
+        error.message.contains("unknown Codex thread"),
+        "archiving a session outside the bound behavior must fail explicitly: {}",
         error.message
     );
     Ok(())

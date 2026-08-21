@@ -72,8 +72,8 @@ pub fn is_retryable_streaming_error(error: &rig::agent::StreamingError) -> bool 
 /// recognized transaction-conflict string. Terminal request/response writes
 /// are idempotent and guarded by source state, so retrying an ambiguous or
 /// transient local-storage failure is safe. The bound prevents one request
-/// from monopolizing its behavior executor; durable live/startup repair takes
-/// over after exhaustion.
+/// from monopolizing its behavior executor; after exhaustion the caller gets
+/// the storage error and the transaction has no partially committed projection.
 pub(crate) async fn retry_terminal_persistence_operation<T, F, Fut>(
     operation: &str,
     max_retries: u32,
@@ -107,7 +107,7 @@ where
                     attempts = retry_index + 1,
                     max_retries,
                     error = %error,
-                    "terminal persistence retries exhausted; durable repair remains pending"
+                    "terminal persistence retries exhausted"
                 );
                 return Err(error);
             }

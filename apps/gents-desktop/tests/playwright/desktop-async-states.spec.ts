@@ -1,7 +1,6 @@
 import {
   expect,
   gotoHarness,
-  openChat,
   openConfig,
   openConfigTab,
   PEER_ID,
@@ -9,10 +8,8 @@ import {
   test,
 } from "./desktopTest";
 
-// Exercises the three harness scenarios that were defined but never driven:
-// `loading`, `save-error`, `backend-health-error`. Assertions go deeper than the
-// existing single-banner sad-path check — convergence, recovery, and failure
-// isolation — so a regression in async/error handling can't ship unseen.
+// Exercises async shell scenarios with convergence and recovery assertions so
+// regressions in client-side state handling cannot ship unseen.
 test.describe("desktop async states", () => {
   test("loading scenario converges from a busy fleet-empty to the dashboard", async ({
     page,
@@ -54,33 +51,6 @@ test.describe("desktop async states", () => {
     await expect(page.getByTestId("config-tab-backends")).toHaveClass(/selected/);
     await page.getByTestId("backend-name").fill("OpenAI Harness Recovered");
     await saveConfig(page, "backend-save");
-    await expect(page.getByTestId("error-banner")).toHaveCount(0);
-  });
-
-  test("backend-health-error is isolated to the Backends tab; other ops tabs still work", async ({
-    page,
-  }) => {
-    await gotoHarness(page, "backend-health-error");
-    await openChat(page);
-
-    await page.getByRole("button", { name: /open operations drawer/i }).click();
-    await expect(page.getByRole("complementary", { name: "Operations" })).toBeVisible();
-
-    await page.getByRole("tab", { name: /Backends/ }).click();
-    await expect(page.getByRole("heading", { name: "Backend health" })).toBeVisible();
-    await expect(page.locator(".backend-health__error")).toHaveText(
-      "Failed to load backend health: Harness backend health bridge unavailable.",
-    );
-
-    await page.getByRole("tab", { name: /MCP health/ }).click();
-    await expect(
-      page.getByRole("heading", { name: "MCP services / health" }),
-    ).toBeVisible();
-    await expect(page.getByText("mcp-observability")).toBeVisible();
-
-    await page.getByRole("tab", { name: /Lineage/ }).click();
-    await expect(page.getByRole("tree", { name: "Subagent lineage" })).toBeVisible();
-
     await expect(page.getByTestId("error-banner")).toHaveCount(0);
   });
 });

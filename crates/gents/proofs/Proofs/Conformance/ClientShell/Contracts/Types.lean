@@ -107,7 +107,6 @@ def selectionHealthName : SelectionHealth → String
 
 def workflowKind : SubmissionWorkflow → String
   | .idle           => "idle"
-  | .creating _     => "creating"
   | .submitting _ _ => "submitting"
   | .awaiting _ _   => "awaiting"
   | .blocked _      => "blocked"
@@ -173,7 +172,6 @@ def inputName : ShellInput → String
   | .user .startSubmit                => "startSubmit"
   | .user .acknowledgeBlocker         => "acknowledgeBlocker"
   | .snapshot _                       => "snapshot"
-  | .mutation (.created _)            => "mutation.created"
   | .mutation (.submitted _ _)        => "mutation.submitted"
   | .mutation (.failed _)             => "mutation.failed"
   | .transport .healthy               => "transport.healthy"

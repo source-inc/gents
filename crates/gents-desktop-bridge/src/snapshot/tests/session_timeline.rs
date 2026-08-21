@@ -60,7 +60,7 @@ fn make_streaming_store_with_response_content(content: &str) -> ClientStore {
         messages: vec![AgentMessageRow {
             message_key: "msg-1".to_string(),
             session_id: Some("sess-1".to_string()),
-            request_id: None,
+            request_id: Some("req-1".to_string()),
             requester_did: None,
             sequence: Some(1),
             role: Some("user".to_string()),
@@ -148,6 +148,89 @@ fn background_notification_is_control_by_message_key_with_honest_request_binding
 }
 
 #[test]
+fn versioned_background_wake_never_projects_as_a_user_turn() {
+    let mut rows = make_streaming_store_with_response_content("").to_rows();
+    rows.responses.clear();
+    rows.requests[0].content =
+        Some(gents::background_completion::BACKGROUND_COMPLETION_WAKE_PROMPT.to_string());
+    rows.requests[0].status = Some("completed".to_string());
+    rows.requests[0].lifecycle_state = Some("completed".to_string());
+    rows.requests[0].execution_origin = Some("scheduled".to_string());
+    rows.requests[0].metadata = Some(
+        r#"{"queue":{"source":"background_completion","policy":"coalesce","key":"background_completion:sess-1","queued_after_request_id":"parent-1"},"background_completion_wake_version":1}"#
+            .to_string(),
+    );
+    rows.messages[0].content = Some(user_message_json(
+        gents::background_completion::BACKGROUND_COMPLETION_WAKE_PROMPT,
+    ));
+
+    let store = ClientStore::from_rows(rows);
+    let snapshot = build_session_snapshot_from_store(&store, "sess-1", Some("req-1"))
+        .expect("session snapshot");
+
+    assert!(snapshot.messages[0].runtime_control);
+    assert!(snapshot.pending_turn.is_none());
+    assert!(snapshot.timeline_items.iter().all(|item| !matches!(
+        item,
+        RenderedTimelineItem::UserMessage { .. } | RenderedTimelineItem::PendingUserTurn { .. }
+    )));
+}
+
+#[test]
+fn steering_projects_the_input_once_without_rendering_its_control_prompt() {
+    let mut rows = make_streaming_store_with_response_content("").to_rows();
+    rows.responses.clear();
+    rows.requests[0].content = Some("Continue with the new steering message.".to_string());
+    rows.requests[0].metadata = Some(
+        r#"{"queue":{"source":"steering","policy":"append","key":null,"queued_after_request_id":"parent-1"}}"#
+            .to_string(),
+    );
+    rows.messages[0].message_key = "steering-input:req-1".to_string();
+    rows.messages[0].content = Some(user_message_json("also check the staging config"));
+
+    let store = ClientStore::from_rows(rows);
+    let snapshot = build_session_snapshot_from_store(&store, "sess-1", Some("req-1"))
+        .expect("session snapshot");
+
+    assert!(!snapshot.messages[0].runtime_control);
+    assert!(snapshot.pending_turn.is_none());
+    assert_eq!(
+        snapshot
+            .timeline_items
+            .iter()
+            .filter_map(|item| match item {
+                RenderedTimelineItem::UserMessage { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec!["also check the staging config"]
+    );
+}
+
+#[test]
+fn durable_goal_continuation_never_projects_as_user_authored_input() {
+    let mut rows = make_streaming_store_with_response_content("").to_rows();
+    rows.responses.clear();
+    rows.requests[0].content = Some("Continue pursuing the durable goal.".to_string());
+    rows.requests[0].metadata = Some(
+        r#"{"queue":{"source":"goal","policy":"append","key":null,"queued_after_request_id":"parent-1"}}"#
+            .to_string(),
+    );
+    rows.messages[0].content = Some(user_message_json("Continue pursuing the durable goal."));
+
+    let store = ClientStore::from_rows(rows);
+    let snapshot = build_session_snapshot_from_store(&store, "sess-1", Some("req-1"))
+        .expect("session snapshot");
+
+    assert!(snapshot.messages[0].runtime_control);
+    assert!(snapshot.pending_turn.is_none());
+    assert!(snapshot
+        .timeline_items
+        .iter()
+        .all(|item| !matches!(item, RenderedTimelineItem::UserMessage { .. })));
+}
+
+#[test]
 fn session_snapshot_deduplicates_persisted_rows_from_multiple_sources() {
     let mut rows = make_streaming_store_with_response_content("").to_rows();
     rows.responses.clear();
@@ -161,7 +244,7 @@ fn session_snapshot_deduplicates_persisted_rows_from_multiple_sources() {
     let assistant = AgentMessageRow {
         message_key: "msg-2".to_string(),
         session_id: Some("sess-1".to_string()),
-        request_id: None,
+        request_id: Some("req-1".to_string()),
         requester_did: None,
         sequence: Some(2),
         role: Some("assistant".to_string()),
@@ -224,7 +307,7 @@ fn session_snapshot_hides_live_overlay_matching_last_materialized_assistant() {
     rows.messages.push(AgentMessageRow {
         message_key: "msg-2".to_string(),
         session_id: Some("sess-1".to_string()),
-        request_id: None,
+        request_id: Some("req-1".to_string()),
         requester_did: None,
         sequence: Some(2),
         role: Some("assistant".to_string()),
@@ -862,21 +945,15 @@ fn session_snapshot_renders_structured_tool_payloads_in_timeline() {
     let tool = &tools[0];
     assert_eq!(tool.tool_name, "glob");
     assert_eq!(tool.status_kind, "success");
-    assert_eq!(
-        tool.args.as_ref().map(|value| value
-            .fields
-            .iter()
-            .map(|field| field.key.as_str())
-            .collect::<Vec<_>>()),
-        Some(vec!["pattern", "recursive"])
-    );
-    assert_eq!(
-        tool.result
-            .as_ref()
-            .and_then(|value| value.fields.iter().find(|field| field.key == "matches"))
-            .map(|field| field.value.as_str()),
-        Some("12")
-    );
+    assert!(matches!(
+        &tool.presentation,
+        crate::types::ToolPresentationView::FileRead {
+            operation,
+            target: Some(target),
+            fallback_output: Some(output),
+            ..
+        } if operation == "glob" && target == "**/*.rs" && output == "{\"matches\":12}"
+    ));
 }
 
 #[test]

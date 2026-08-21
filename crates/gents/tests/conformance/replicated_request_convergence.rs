@@ -41,6 +41,11 @@ async fn create_owned_request(
     .await
 }
 
+async fn seed_owned_request_projection(node: &EmbeddedNode, session_id: &str, request_id: &str) {
+    create_agent_session(node, session_id, AGENT_NAME, CONVERGENCE_CREATED_AT).await;
+    upsert_conversation(node, session_id, request_id, "hello", "processing").await;
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn create_owned_request_with_times(
     node: &EmbeddedNode,
@@ -485,6 +490,7 @@ pub(super) async fn durable_response_repairs_request_after_terminal_write_gap() 
         "processing",
     )
     .await;
+    seed_owned_request_projection(&db.node, session_id, request_id).await;
     let request_commits_before_repair = composite_commit_count(&db.node, &request_doc_id).await;
     let response_doc_id =
         create_response_with_status(&db.node, request_id, request_id, session_id, "error").await;
@@ -540,6 +546,7 @@ pub(super) async fn durable_response_repairs_request_after_terminal_write_gap() 
         "processing",
     )
     .await;
+    seed_owned_request_projection(&db.node, provider_session_id, provider_request_id).await;
     let provider_response_doc_id = create_response_with_status(
         &db.node,
         provider_request_id,
@@ -584,6 +591,12 @@ pub(super) async fn durable_response_repairs_request_after_terminal_write_gap() 
         OWNER_DID,
         "processing",
         "processing",
+    )
+    .await;
+    seed_owned_request_projection(
+        &db.node,
+        runtime_interrupt_session_id,
+        runtime_interrupt_request_id,
     )
     .await;
     let runtime_interrupt_response_doc_id = create_response_with_status(
@@ -639,6 +652,12 @@ pub(super) async fn recover_stuck_requests_recovers_claimed_lifecycle_state() {
         OWNER_DID,
         "claimed",
         "claimed",
+    )
+    .await;
+    seed_owned_request_projection(
+        &db.node,
+        "convergence-stuck-claimed-session",
+        "convergence-stuck-claimed",
     )
     .await;
     create_response_with_status(

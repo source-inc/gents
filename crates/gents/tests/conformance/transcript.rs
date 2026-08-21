@@ -48,7 +48,14 @@ fn transcript_tool_result_message(result_id: &str, text: &str) -> Message {
 async fn transcript_hook_fixture(test_name: &str) -> (support::TestDb, DefraSessionHook, String) {
     let db = test_db(test_name).await;
     let session_id = format!("{test_name}-session");
-    let hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    support::create_agent_session(
+        db.node.as_ref(),
+        &session_id,
+        AGENT_NAME,
+        "2026-05-01T00:00:00Z",
+    )
+    .await;
+    let hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &session_id,
         AGENT_NAME,
@@ -670,7 +677,7 @@ pub(super) async fn generated_transcript_cases_drive_agent_message_ordering_cont
     )
     .await;
     drop(hook);
-    let observer = DefraSessionHook::resume_or_create_with_identity_policy(
+    let observer = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &session_id,
         AGENT_NAME,

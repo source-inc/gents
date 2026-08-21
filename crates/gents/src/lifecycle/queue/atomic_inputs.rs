@@ -99,27 +99,6 @@ pub(crate) async fn enqueue_background_completion_with_message(
         .unwrap_or_else(|| enqueued.request.clone());
         enqueued.created_request = active_request.doc_id == created_request_doc_id;
 
-        if let Err(error) =
-            session::upsert_conversation_from_request_with_identity_and_requester_did(
-                node,
-                &parent.session_id,
-                &behavior_id,
-                &parent.agent_did,
-                &behavior_id,
-                &active_request.request_id,
-                wake_content,
-                "pending",
-                parent.requester_did.as_deref(),
-            )
-            .await
-        {
-            tracing::warn!(
-                request_id = %active_request.request_id,
-                session_id = %parent.session_id,
-                error = %error,
-                "failed to update conversation for background-completion request"
-            );
-        }
         enqueued.request = active_request;
     }
 
@@ -247,6 +226,7 @@ pub(super) async fn steering_transaction_attempt(
     let request_response = txn.execute(request_mutation).await?;
     let request_doc_id = transaction_created_doc_id(&request_response, "AgentRequest")?;
     let sequence = next_append_sequence_in_transaction(txn, &parent.session_id).await?;
+    let message_key = steering_input_message_key(request_id);
     let message_mutation = session::create_message_mutation(
         &parent.session_id,
         &parent.agent_did,
@@ -257,7 +237,7 @@ pub(super) async fn steering_transaction_attempt(
         None,
         Some(request_id),
         Some(&request_doc_id),
-        None,
+        Some(&message_key),
     );
     txn.execute(&message_mutation).await?;
 

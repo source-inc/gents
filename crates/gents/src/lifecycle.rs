@@ -30,6 +30,23 @@ pub fn is_background_completion_request(metadata: Option<&str>) -> bool {
     queue::is_automated_wakeup(metadata)
 }
 
+/// Classify transcript rows that exist only to drive an internal continuation.
+///
+/// Steering is the exception: its keyed input row is user-visible, while the
+/// request prompt that consumes it is control machinery. Background-completion
+/// notifications and durable-goal controller prompts are entirely internal.
+pub fn is_runtime_control_message(metadata: Option<&str>, message_key: &str) -> bool {
+    if crate::background_completion::is_background_completion_notification_message_key(message_key)
+    {
+        return true;
+    }
+    queue::parse_queue_hints(metadata).is_some_and(|hints| match hints.source {
+        queue::QueueSource::BackgroundCompletion | queue::QueueSource::Goal => true,
+        queue::QueueSource::Steering => !queue::is_steering_input_message_key(message_key),
+        queue::QueueSource::User => false,
+    })
+}
+
 /// Legacy runtimes persisted unversioned background-completion wakeups as
 /// scheduled requests. They remain durable audit rows but must be ignored;
 /// current versioned completion wakes are authoritative continuation turns.
@@ -94,6 +111,24 @@ pub enum ClaimOutcome {
     Queued,
     Interrupted,
     Expired,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ClaimAdmissionError {
+    #[error(
+        "session {session_id} is pinned to behavior {existing_behavior_id} and cannot switch to {requested_behavior_id}"
+    )]
+    SessionBehaviorMismatch {
+        session_id: String,
+        existing_behavior_id: String,
+        requested_behavior_id: String,
+    },
+    #[error("session {session_id} has multiple AgentSession projections")]
+    DuplicateSessionProjection { session_id: String },
+}
+
+pub(crate) fn is_claim_admission_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ClaimAdmissionError>().is_some()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,9 +389,6 @@ pub struct RecoveryReport {
     pub requests_recovered: usize,
     pub background_wakes_redriven: usize,
     pub responses_recovered: usize,
-    pub conversations_recovered: usize,
-    pub conversations_failed: usize,
-    pub duplicate_conversation_sessions: usize,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]

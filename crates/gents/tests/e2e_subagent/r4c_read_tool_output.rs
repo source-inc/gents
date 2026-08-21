@@ -72,8 +72,15 @@ async fn setup_hook(
         "2026-05-14T00:00:00Z",
     )
     .await;
+    crate::support::create_agent_session(
+        db.node.as_ref(),
+        &session_id,
+        "r4c-read-tool-output",
+        "2026-05-14T00:00:00Z",
+    )
+    .await;
 
-    let hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    let hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &session_id,
         "r4c-read-tool-output",
@@ -103,7 +110,14 @@ async fn setup_hook_on_db(
         "2026-05-14T00:00:00Z",
     )
     .await;
-    let hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    crate::support::create_agent_session(
+        db.node.as_ref(),
+        session_id,
+        "r4c-read-tool-output",
+        "2026-05-14T00:00:00Z",
+    )
+    .await;
+    let hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         session_id,
         "r4c-read-tool-output",

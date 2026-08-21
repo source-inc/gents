@@ -4,7 +4,6 @@ import { createDesktopClient } from "@source-inc/gents-desktop-client";
 import { ConfirmDialog } from "@source-inc/gents-desktop-ui";
 import { listen } from "@tauri-apps/api/event";
 import { ChatWorkspace } from "./components/ChatWorkspace";
-import { CodeContextHeader } from "./components/code/CodeContextHeader";
 import { ConfigWorkspace } from "./components/ConfigWorkspace";
 import { useConfigNavigationController } from "./components/config/ConfigNavigationGuard";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -62,9 +61,9 @@ function AppShell({ bridge: explicitBridge }: { bridge?: DesktopShellBridge }) {
     });
     return () => unlisten?.();
   }, [bridge.api]);
-  const [workspaceView, setWorkspaceView] = useState<
-    "fleet" | "chat" | "config" | "code"
-  >("fleet");
+  const [workspaceView, setWorkspaceView] = useState<"fleet" | "chat" | "config">(
+    "fleet",
+  );
   const [mobileChatPane, setMobileChatPane] = useState<"navigation" | "conversation">(
     "navigation",
   );
@@ -94,11 +93,6 @@ function AppShell({ bridge: explicitBridge }: { bridge?: DesktopShellBridge }) {
       });
       return;
     }
-    if (workspaceView === "code") {
-      setWorkspaceView("chat");
-      setMobileChatPane("navigation");
-      return;
-    }
     if (workspaceView === "chat" && mobileChatPane === "conversation") {
       setMobileChatPane("navigation");
       return;
@@ -119,7 +113,7 @@ function AppShell({ bridge: explicitBridge }: { bridge?: DesktopShellBridge }) {
         return;
       }
       requestWorkspaceNavigation(() => {
-        if (view === "chat" || view === "code") {
+        if (view === "chat") {
           setMobileChatPane("conversation");
         }
         setWorkspaceView(view);
@@ -160,16 +154,6 @@ function AppShell({ bridge: explicitBridge }: { bridge?: DesktopShellBridge }) {
       // pane here made it impossible to reach that navigation from Fleet.
       setMobileChatPane("navigation");
       setWorkspaceView("chat");
-    });
-  }
-
-  function openCode(agentDid?: string) {
-    requestWorkspaceNavigation(() => {
-      if (agentDid) {
-        shell.setSelectedAgentDid(agentDid);
-      }
-      setMobileChatPane("conversation");
-      setWorkspaceView("code");
     });
   }
 
@@ -230,7 +214,6 @@ function AppShell({ bridge: explicitBridge }: { bridge?: DesktopShellBridge }) {
               : undefined
           }
           onOpenChat={openChat}
-          onOpenCode={openCode}
           onOpenConfig={openConfig}
           onRemovePeer={shell.onRemovePeer}
           onRenamePeer={shell.onRenamePeer}
@@ -243,17 +226,15 @@ function AppShell({ bridge: explicitBridge }: { bridge?: DesktopShellBridge }) {
           onGrokLogin={shell.onGrokLogin}
           onCancelGrokLogin={shell.onCancelGrokLogin}
         />
-      ) : workspaceView === "chat" || workspaceView === "code" ? (
+      ) : workspaceView === "chat" ? (
         <section
           className={`workspace mobile-chat-pane-${mobileChatPane}`}
           data-mobile-chat-pane={mobileChatPane}
         >
           <Sidebar
-            behaviorOptions={shell.behaviorOptions}
             conversations={shell.selectedDeployment?.conversations ?? []}
             deployments={shell.deployments}
             onConfigureDeployment={(agentDid) => openConfig(agentDid)}
-            onOpenCode={(agentDid) => openCode(agentDid)}
             onOpenFleet={() => setWorkspaceView("fleet")}
             onSelectBehavior={shell.setSelectedBehaviorId}
             onSelectAgent={(agentDid) => {
@@ -265,9 +246,8 @@ function AppShell({ bridge: explicitBridge }: { bridge?: DesktopShellBridge }) {
               shell.onSelectSession(sessionId);
               setMobileChatPane("conversation");
             }}
-            onRenameConversationTitle={shell.onRenameConversationTitle}
-            onSyncConversations={shell.onRepairP2P}
-            syncingConversations={shell.repairingP2P}
+            onRepairP2P={shell.onRepairP2P}
+            repairingP2P={shell.repairingP2P}
             onStartNewConversation={(behaviorId) => {
               shell.onStartNewConversation(behaviorId);
               setMobileChatPane("conversation");
@@ -278,13 +258,6 @@ function AppShell({ bridge: explicitBridge }: { bridge?: DesktopShellBridge }) {
           />
 
           <section className="chat-column">
-            {workspaceView === "code" ? (
-              <CodeContextHeader
-                deployment={shell.selectedDeployment ?? null}
-                selectedBehaviorId={shell.selectedBehaviorId}
-                onBackToChat={() => setWorkspaceView("chat")}
-              />
-            ) : null}
             <ChatWorkspace
               api={bridge.api}
               activeRequestId={
@@ -315,9 +288,9 @@ function AppShell({ bridge: explicitBridge }: { bridge?: DesktopShellBridge }) {
               selectedSessionId={shell.selectedSessionId}
               sending={shell.sending}
               session={shell.session}
+              optimisticPendingTurn={shell.optimisticPendingTurn}
               turnState={shell.turnState ?? shell.session?.turnState ?? null}
               onOpenMobileNavigation={() => setMobileChatPane("navigation")}
-              onForkedConversation={shell.onSelectSession}
               onInterruptAccepted={async () => {
                 await shell.refreshSession(shell.selectedSessionId);
               }}

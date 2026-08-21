@@ -13,22 +13,19 @@ use super::super::types::{
     DesktopSessionSnapshot, GoalView, MessageView, PendingTurnView, ResponseView,
     RetryEligibilityView, ToolCallView, ToolResultView,
 };
-use super::timeline::{build_rendered_timeline, materialized_user_turn_count};
+use super::timeline::{build_rendered_timeline, has_materialized_user_owner};
 use super::{request_matches_agent, source_matches_agent};
 
 fn message_is_runtime_control(
     message: &AgentMessageRow,
     requests_by_id: &HashMap<&str, &AgentRequestRow>,
 ) -> bool {
-    gents::background_completion::is_background_completion_notification_message_key(
-        &message.message_key,
-    ) || message
+    let request_metadata = message
         .request_id
         .as_deref()
         .and_then(|request_id| requests_by_id.get(request_id))
-        .is_some_and(|request| {
-            gents::lifecycle::is_background_completion_request(request.metadata.as_deref())
-        })
+        .and_then(|request| request.metadata.as_deref());
+    gents::lifecycle::is_runtime_control_message(request_metadata, &message.message_key)
 }
 
 fn request_is_deprecated_background_completion(request: &AgentRequestRow) -> bool {
@@ -316,6 +313,7 @@ pub fn build_session_snapshot_from_store_for_agent(
 
             MessageView {
                 message_key: row.message_key.clone(),
+                request_id: row.request_id.clone(),
                 sequence: row.sequence,
                 role,
                 content,
@@ -393,7 +391,9 @@ pub fn build_session_snapshot_from_store_for_agent(
                 lifecycle_state: normalize_optional(row.lifecycle_state.as_deref()),
                 child_request_id: normalize_optional(row.child_request_id.as_deref()),
                 await_mode: normalize_optional(row.await_mode.as_deref()),
+                cancel_policy: normalize_optional(row.cancel_policy.as_deref()),
                 started_at: normalize_optional(row.started_at.as_deref()),
+                deadline_at: normalize_optional(row.deadline_at.as_deref()),
                 completed_at: normalize_optional(row.completed_at.as_deref()),
                 denial: command_denial_from_row(&row),
                 cancel_cause,
@@ -502,55 +502,6 @@ fn project_retry_eligibility(request: Option<&AgentRequestRow>) -> RetryEligibil
     }
 }
 
-fn request_turn_root_id(request: &gents_protocol::row::AgentRequestRow) -> String {
-    normalize_optional(request.retry_root_request.as_deref())
-        .unwrap_or_else(|| request.request_id.clone())
-}
-
-fn logical_turn_roots_for_session(
-    store: &gents_desktop_core::client::ClientStore,
-    agent_did: Option<&str>,
-    session_id: &str,
-) -> Vec<String> {
-    let mut requests = agent_did.map_or_else(
-        || store.requests_for_session(session_id),
-        |agent_did| store.requests_for_session_for_agent(session_id, agent_did),
-    );
-    requests.sort_by(|left, right| {
-        normalize_optional(left.created_at.as_deref())
-            .cmp(&normalize_optional(right.created_at.as_deref()))
-            .then_with(|| left.request_id.cmp(&right.request_id))
-    });
-
-    let mut roots = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for request in requests {
-        let root_id = request_turn_root_id(request);
-        if seen.insert(root_id.clone()) {
-            roots.push(root_id);
-        }
-    }
-
-    roots
-}
-
-fn logical_turn_index_for_request(
-    store: &gents_desktop_core::client::ClientStore,
-    agent_did: Option<&str>,
-    session_id: &str,
-    request_id: &str,
-) -> Option<usize> {
-    let request = store.requests.iter().find(|row| {
-        row.request_id == request_id
-            && row.session_id.as_deref() == Some(session_id)
-            && agent_did.is_none_or(|agent_did| request_matches_agent(row, agent_did, false))
-    })?;
-    let root_id = request_turn_root_id(request);
-    logical_turn_roots_for_session(store, agent_did, session_id)
-        .iter()
-        .position(|candidate| candidate == &root_id)
-}
-
 fn selected_skill_ids_from_metadata(metadata: Option<&str>) -> Vec<String> {
     let Some(metadata) = metadata.map(str::trim).filter(|value| !value.is_empty()) else {
         return Vec::new();
@@ -583,11 +534,12 @@ fn build_pending_turn(
             && row.session_id.as_deref() == Some(session_id)
             && agent_did.is_none_or(|agent_did| request_matches_agent(row, agent_did, false))
     })?;
+    if gents::lifecycle::is_runtime_control_message(request.metadata.as_deref(), "") {
+        return None;
+    }
 
     let lifecycle_state = normalize_optional(request.lifecycle_state.as_deref());
     let content = normalize_optional(request.content.as_deref())?;
-    let active_turn_index =
-        logical_turn_index_for_request(store, agent_did, session_id, request_id)?;
     let transcript = agent_did.map_or_else(
         || store.transcript(session_id),
         |agent_did| store.transcript_for_agent(session_id, agent_did),
@@ -610,6 +562,7 @@ fn build_pending_turn(
 
             MessageView {
                 message_key: row.message_key.clone(),
+                request_id: row.request_id.clone(),
                 sequence: row.sequence,
                 role,
                 content: body,
@@ -628,7 +581,7 @@ fn build_pending_turn(
         })
         .collect::<Vec<_>>();
 
-    if materialized_user_turn_count(&messages) > active_turn_index {
+    if has_materialized_user_owner(&messages, request_id) {
         return None;
     }
 

@@ -31,13 +31,11 @@ fn session_state_for_test() -> SessionState {
         current_requester_did: None,
         request_deadline_at: None,
         approval_required_tools: Vec::new(),
-        agent_name: "agent".to_string(),
         sequence: 0,
         transcript_turn: TranscriptTurnState::Idle,
         persisted_tool_result_keys: std::collections::HashSet::new(),
         persisted_tool_result_message_sequences: std::collections::HashMap::new(),
         tool_result_identities: std::collections::HashMap::new(),
-        initialized: true,
     }
 }
 
@@ -920,6 +918,16 @@ async fn context_and_prompt_deduped_across_retry_attempts() {
         "did:test:general",
         FailurePolicy::default(),
     );
+    let session_id = hook1.session_id().await.expect("session id");
+    crate::session::create_session_with_behavior_id(
+        node.as_ref(),
+        &session_id,
+        "general",
+        "did:test:general",
+        "general",
+    )
+    .await
+    .unwrap();
     hook1
         .set_active_request_binding(
             Some("req-retry".to_string()),
@@ -933,11 +941,9 @@ async fn context_and_prompt_deduped_across_retry_attempts() {
             .await,
         HookAction::Continue
     ));
-    let session_id = hook1.session_id().await.expect("session id");
-
     // Attempt 2 (retry): a brand-new hook resuming the same session with the
     // same request id re-runs turn 1, as the daemon retry loop would.
-    let hook2 = DefraSessionHook::resume_or_create_with_identity_policy(
+    let hook2 = DefraSessionHook::resume_with_identity_policy(
         node.clone(),
         &session_id,
         "general",

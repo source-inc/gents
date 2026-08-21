@@ -8,7 +8,6 @@ import type {
 import { ConfirmDialog } from "@source-inc/gents-desktop-ui";
 import {
   ChatIcon,
-  CodeIcon,
   ConfigIcon,
   PencilIcon,
   ToolIconGlyph,
@@ -37,7 +36,6 @@ export type FleetRowProps = {
   bootstrap: BootstrapSummary | null;
   deployment: DeploymentView;
   onOpenChat: (agentDid: string) => void;
-  onOpenCode?: (agentDid: string) => void;
   onOpenConfig: (agentDid: string) => void;
   onRemovePeer?: (peerId: string) => Promise<unknown> | void;
   onRenamePeer?: (peerId: string, label: string) => Promise<unknown> | void;
@@ -48,7 +46,6 @@ export function FleetRow({
   bootstrap,
   deployment,
   onOpenChat,
-  onOpenCode,
   onOpenConfig,
   onRemovePeer,
   onRenamePeer,
@@ -254,18 +251,6 @@ export function FleetRow({
           >
             <ChatIcon />
           </button>
-          {onOpenCode ? (
-            <button
-              aria-label={`Open ${deployment.label} in Code mode`}
-              className="ghost-button fleet-table-action fleet-open-code-action"
-              data-testid={`fleet-code-${deployment.peerId}`}
-              onClick={() => onOpenCode(deployment.agentDid)}
-              title="Open Code mode"
-              type="button"
-            >
-              <CodeIcon />
-            </button>
-          ) : null}
           <button
             aria-label={`Configure ${deployment.label}`}
             className="ghost-button fleet-table-action"

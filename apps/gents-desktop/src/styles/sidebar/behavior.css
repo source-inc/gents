@@ -1,65 +1,106 @@
 @layer sidebar {
-  .behavior-list-row {
+  .behavior-environment-section {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    gap: var(--space-3);
+    overflow: hidden;
+  }
+
+  .behavior-environment-intro {
+    margin: 0;
+    font-size: var(--text-sm);
+    line-height: 1.45;
+  }
+
+  .behavior-environment-list {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 42px;
+    gap: var(--space-3);
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .behavior-environment-card {
+    display: grid;
+    border: 1px solid var(--border-subtle);
+    background: var(--color-surface-row);
+  }
+
+  .behavior-environment-card.selected {
+    border-color: var(--border-selected);
+    box-shadow: inset 3px 0 0 var(--color-accent);
+  }
+
+  .behavior-environment-select {
+    display: grid;
+    gap: var(--space-2);
     min-width: 0;
-    border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .behavior-list-row:last-of-type {
-    border-bottom: 0;
-  }
-
-  .behavior-list-row .list-item {
-    border-bottom: 0;
-  }
-
-  .behavior-select-button {
-    align-content: center;
-  }
-
-  .behavior-new-chat-button {
-    position: relative;
-    isolation: isolate;
-    display: grid;
-    place-items: center;
-    width: 42px;
-    min-width: 42px;
-    min-height: 44px;
     border: 0;
-    border-left: 1px solid var(--border-subtle);
     border-radius: 0;
     background: transparent;
-    color: var(--color-text-muted);
-    padding: 0;
-    transition:
-      background-color var(--motion-fast) ease,
-      border-color var(--motion-fast) ease,
-      box-shadow var(--motion-fast) ease,
-      color var(--motion-fast) ease;
-  }
-
-  .behavior-new-chat-button:hover {
-    border-left-color: rgb(var(--source-green-rgb) / 0.44);
-    background: rgb(var(--source-green-rgb) / 0.1);
-    box-shadow: inset 2px 0 0 var(--color-accent);
     color: var(--color-text);
+    padding: var(--space-4);
+    text-align: left;
   }
 
-  .behavior-new-chat-button:focus-visible {
-    z-index: 1;
-    outline: 2px solid rgb(var(--source-green-rgb) / 0.36);
-    outline-offset: -2px;
+  .behavior-environment-heading {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
   }
 
-  .behavior-new-chat-button svg {
-    display: block;
-    width: 18px;
-    height: 18px;
-    fill: none;
-    stroke: currentColor;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-width: 1.8;
+  .behavior-environment-heading strong {
+    overflow: hidden;
+    font-size: var(--text-md);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .environment-tag {
+    flex: 0 0 auto;
+    border: 1px solid rgb(var(--source-green-rgb) / 0.22);
+    color: var(--color-accent);
+    padding: 2px var(--space-2);
+    font-size: var(--text-2xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .environment-tag-muted {
+    border-color: var(--border-subtle);
+    color: var(--color-text-muted);
+  }
+
+  .behavior-environment-workspace,
+  .behavior-environment-summary,
+  .behavior-environment-skills {
+    overflow: hidden;
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .behavior-environment-workspace {
+    color: var(--color-text-soft);
+  }
+
+  .behavior-environment-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    border-top: 1px solid var(--border-subtle);
+    padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4);
+    font-size: var(--text-xs);
+  }
+
+  .behavior-start-session {
+    min-height: 36px;
+    padding: 0 var(--space-3);
+    font-size: var(--text-xs);
   }
 }

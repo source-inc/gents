@@ -1,16 +1,14 @@
-import { parseCommandDenial } from "@source-inc/gents-desktop-client";
 import type {
   RenderedToolCallView,
-  ToolDetailValueView,
+  ToolPresentationView,
 } from "@source-inc/gents-desktop-client";
+import { CopyButton } from "@source-inc/gents-desktop-ui";
 
 import { CancelCauseBadge, CancelCauseDetails } from "../cancelUx/index.js";
-import { CodeToolItem } from "../codeTools/CodeToolItem.js";
-import { toCodeToolView } from "../codeTools/codeTools.js";
 import { CommandDenialToolItem } from "../commandDenial/index.js";
 
-function toolStatusClass(statusKind?: string | null) {
-  switch ((statusKind ?? "").toLowerCase()) {
+function statusClass(statusKind: string) {
+  switch (statusKind.toLowerCase()) {
     case "success":
       return "tool-item-dot tool-item-dot-success";
     case "error":
@@ -22,197 +20,354 @@ function toolStatusClass(statusKind?: string | null) {
   }
 }
 
-function ToolDetailSection({
-  label,
-  value,
-}: {
-  label: string;
-  value?: ToolDetailValueView | null;
-}) {
-  if (!value?.rawText.trim()) {
-    return null;
+function statusLabel(tool: RenderedToolCallView) {
+  switch (tool.statusKind.toLowerCase()) {
+    case "success":
+      return "completed";
+    case "error":
+      return tool.status?.trim() || "failed";
+    case "awaitingapproval":
+      return "awaiting approval";
+    default:
+      return tool.status?.trim() || "working";
   }
+}
 
+function compact(value: string | null | undefined, maxLength = 80) {
+  const flat = value?.replace(/\s+/g, " ").trim();
+  if (!flat) return null;
+  return flat.length > maxLength ? `${flat.slice(0, maxLength)}…` : flat;
+}
+
+function formatPayload(value: string) {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
+}
+
+function Payload({ label, value }: { label: string; value?: string | null }) {
+  if (!value?.trim()) return null;
+  const formatted = formatPayload(value);
   return (
-    <div className="tool-detail">
+    <div className="tool-payload-section">
       <div className="tool-detail-label">{label}</div>
-      {value.fields.length > 0 ? (
-        <div className="tool-detail-grid">
-          {value.fields.map((field) => (
-            <div className="tool-detail-row" key={field.key}>
-              <div className="tool-detail-key">{field.key}</div>
-              <div className="tool-detail-value">{field.value}</div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <pre className="tool-block">{value.rawText}</pre>
-      )}
+      <div className="tool-payload-wrap">
+        <CopyButton className="tool-payload-copy" getText={() => formatted} />
+        <pre className="tool-payload">{formatted}</pre>
+      </div>
     </div>
   );
 }
 
-const SAFE_TOOL_ARG_PREVIEW_FIELDS = new Set([
-  "path",
-  "file_path",
-  "directory",
-  "cwd",
-  "pattern",
-  "query",
-  "command",
-]);
-
-const SENSITIVE_TOOL_ARG_PREVIEW =
-  /(?:^|[^a-z0-9])(?:api[-_]?key|access[-_]?token|refresh[-_]?token|token|password|passwd|secret|authorization|cookie)(?:[^a-z0-9]|$)|\bbearer\s+\S+|\b(?:sk|gh[pousr]|xox[baprs])[-_][a-z0-9_-]{8,}/i;
-
-function toolArgsPreview(args?: ToolDetailValueView | null): string | null {
-  if (!args) {
-    return null;
-  }
-  const source = args.fields.find((field) => {
-    const key = field.key.trim().toLowerCase().replace(/-/g, "_");
-    return SAFE_TOOL_ARG_PREVIEW_FIELDS.has(key) && field.value.trim();
-  })?.value;
-  const flat = source?.replace(/\s+/g, " ").trim();
-  if (!flat || SENSITIVE_TOOL_ARG_PREVIEW.test(flat)) {
-    return null;
-  }
-  return flat.length > 64 ? `${flat.slice(0, 64)}…` : flat;
-}
-
-function normalizedFieldKey(key: string) {
-  return key
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-}
-
-function toolDetailField(
-  value: ToolDetailValueView | null | undefined,
-  keys: string[],
-): string | null {
-  const normalizedKeys = new Set(keys.map(normalizedFieldKey));
-  const field = value?.fields.find((candidate) =>
-    normalizedKeys.has(normalizedFieldKey(candidate.key)),
-  );
-  return field?.value.trim() || null;
-}
-
-function safeSubagentPreview(value: string | null, maxLength: number) {
-  const flat = value?.replace(/\s+/g, " ").trim();
-  if (!flat || SENSITIVE_TOOL_ARG_PREVIEW.test(flat)) {
-    return null;
-  }
-  return flat.length > maxLength ? `${flat.slice(0, maxLength)}…` : flat;
-}
-
-function isSubagentSpawnTool(toolName: string) {
-  const normalized = toolName.trim().toLowerCase();
+function LiveOutput({ tool }: { tool: RenderedToolCallView }) {
+  const tail =
+    tool.statusKind.toLowerCase() === "running"
+      ? (tool.partialOutputTail ?? null)
+      : null;
+  if (!tail) return null;
   return (
-    normalized === "spawn_subagent" || normalized.endsWith(".spawn_subagent")
+    <div className="tool-live-tail" data-testid={`tool-live-${tool.itemKey}`}>
+      <span className="tool-live-tail-label">
+        live output
+        <span aria-hidden="true" className="tool-live-dot" />
+      </span>
+      <pre>{tail}</pre>
+    </div>
   );
 }
 
-function subagentStatusLabel(
-  statusKind?: string | null,
-  status?: string | null,
-) {
-  switch ((statusKind ?? "").toLowerCase()) {
-    case "success":
-      return "completed";
-    case "error":
-      return status?.trim() || "failed";
-    case "awaitingapproval":
-      return "awaiting approval";
-    default:
-      return "working";
-  }
+function commonBadges(tool: RenderedToolCallView) {
+  return (
+    <>
+      {tool.awaitMode ? (
+        <span className="tool-item-mode">{tool.awaitMode}</span>
+      ) : null}
+      <span
+        className={`tool-item-status tool-item-status-${tool.statusKind.toLowerCase()}`}
+      >
+        {statusLabel(tool)}
+      </span>
+      {tool.cancelCause ? (
+        <CancelCauseBadge
+          cause={tool.cancelCause}
+          className="tool-item-cause-badge"
+        />
+      ) : null}
+    </>
+  );
 }
 
-function SubagentToolItem({ tool }: { tool: RenderedToolCallView }) {
-  const statusKind = (tool.statusKind ?? "running").toLowerCase();
-  const name =
-    toolDetailField(tool.args, ["name", "behavior_id", "behaviorId"]) ??
-    "subagent";
-  const prompt = toolDetailField(tool.args, ["prompt", "task"]);
-  const promptPreview = safeSubagentPreview(prompt, 96);
-  const awaitMode =
-    tool.awaitMode ??
-    toolDetailField(tool.args, ["await_mode", "awaitMode"]) ??
-    null;
-  const childRequestId =
-    tool.childRequestId ??
-    toolDetailField(tool.result, ["child_request_id", "childRequestId"]) ??
-    null;
-  const liveTail =
-    statusKind === "running" ? (tool.partialOutputTail ?? null) : null;
-  const statusLabel = subagentStatusLabel(tool.statusKind, tool.status);
+function commandExit(
+  presentation: Extract<ToolPresentationView, { kind: "command" }>,
+) {
+  if (presentation.timedOut) return "timed out";
+  if (presentation.exitCode != null) return `exit ${presentation.exitCode}`;
+  if (presentation.failed) return "failed";
+  return null;
+}
 
+function readCount(
+  presentation: Extract<ToolPresentationView, { kind: "fileRead" }>,
+) {
+  if (presentation.returnedCount == null) return null;
+  const total =
+    presentation.totalCount != null &&
+    presentation.totalCount !== presentation.returnedCount
+      ? ` of ${presentation.totalCount}`
+      : "";
+  return `${presentation.returnedCount}${total}${presentation.truncated ? " · truncated" : ""}`;
+}
+
+function ToolSummary({ tool }: { tool: RenderedToolCallView }) {
+  const view = tool.presentation;
+  if (view.kind === "command") {
+    const exit = commandExit(view);
+    return (
+      <>
+        <span aria-hidden="true" className="tool-command-prompt mono">
+          $
+        </span>
+        <span className="tool-primary mono">{view.command}</span>
+        {commonBadges(tool)}
+        {exit ? (
+          <span className={view.failed ? "tool-exit is-error" : "tool-exit"}>
+            {exit}
+          </span>
+        ) : null}
+      </>
+    );
+  }
+  if (view.kind === "fileRead") {
+    return (
+      <>
+        <span className="tool-kind">{view.operation.replace("_file", "")}</span>
+        <span className="tool-primary mono">
+          {view.target ?? tool.toolName}
+        </span>
+        {readCount(view) ? (
+          <span className="tool-secondary">{readCount(view)}</span>
+        ) : null}
+        {commonBadges(tool)}
+      </>
+    );
+  }
+  if (view.kind === "fileEdit") {
+    const verb =
+      view.created === true
+        ? "created"
+        : view.created === false && view.operation === "write_file"
+          ? "overwrote"
+          : tool.statusKind === "running"
+            ? view.operation === "write_file"
+              ? "writing"
+              : "editing"
+            : "edited";
+    return (
+      <>
+        <span className="tool-kind">{verb}</span>
+        <span className="tool-primary mono">{view.path ?? tool.toolName}</span>
+        {view.replacementsApplied != null && view.replacementsApplied > 1 ? (
+          <span className="tool-secondary">×{view.replacementsApplied}</span>
+        ) : null}
+        {commonBadges(tool)}
+      </>
+    );
+  }
+  if (view.kind === "subagent") {
+    return (
+      <>
+        <span className="tool-kind">subagent · {view.action}</span>
+        <span className="tool-primary">
+          {view.name ?? view.childRequestId ?? "subagent"}
+        </span>
+        {commonBadges(tool)}
+        {compact(view.description) ? (
+          <span className="tool-secondary tool-summary-preview">
+            {compact(view.description)}
+          </span>
+        ) : null}
+      </>
+    );
+  }
+  if (view.kind === "process") {
+    return (
+      <>
+        <span className="tool-kind">process · {view.action}</span>
+        <span className="tool-primary mono">
+          {view.target ?? "background work"}
+        </span>
+        {commonBadges(tool)}
+      </>
+    );
+  }
+  if (view.kind === "mcp") {
+    return (
+      <>
+        <span className="tool-kind">MCP</span>
+        <span className="tool-primary">
+          {view.selectedToolName ?? tool.toolName}
+        </span>
+        {view.serviceId ? (
+          <span className="tool-secondary">{view.serviceId}</span>
+        ) : null}
+        {commonBadges(tool)}
+      </>
+    );
+  }
+  return (
+    <>
+      <span className="tool-primary">{tool.toolName}</span>
+      {compact(view.summary) ? (
+        <span className="tool-secondary tool-summary-preview">
+          {compact(view.summary)}
+        </span>
+      ) : null}
+      {commonBadges(tool)}
+    </>
+  );
+}
+
+function ToolBody({ tool }: { tool: RenderedToolCallView }) {
+  const view = tool.presentation;
+  return (
+    <div className="tool-item-body">
+      {tool.cancelCause ? (
+        <CancelCauseDetails cause={tool.cancelCause} />
+      ) : null}
+      {tool.awaitMode || tool.cancelPolicy || tool.deadlineAt ? (
+        <div
+          className="tool-meta muted small"
+          data-testid={`tool-lifecycle-${tool.itemKey}`}
+        >
+          {tool.awaitMode ? <span>await: {tool.awaitMode}</span> : null}
+          {tool.cancelPolicy ? <span>cancel: {tool.cancelPolicy}</span> : null}
+          {tool.deadlineAt ? <span>deadline: {tool.deadlineAt}</span> : null}
+        </div>
+      ) : null}
+      {view.kind === "command" ? (
+        <>
+          {view.durationMs != null ||
+          view.cwd ||
+          view.executionMode ||
+          view.networkMode ? (
+            <div className="tool-meta muted small">
+              {view.durationMs != null ? (
+                <span>{formatDuration(view.durationMs)}</span>
+              ) : null}
+              {view.cwd ? <span className="mono">{view.cwd}</span> : null}
+              {view.executionMode ? (
+                <span>sandbox: {view.executionMode}</span>
+              ) : null}
+              {view.networkMode ? (
+                <span>network: {view.networkMode}</span>
+              ) : null}
+            </div>
+          ) : null}
+          <Payload label="stdout" value={view.stdout} />
+          <Payload label="stderr" value={view.stderr} />
+          <Payload label="output" value={view.fallbackOutput} />
+        </>
+      ) : null}
+      {view.kind === "fileRead" ? (
+        <>
+          <Payload label="contents" value={view.body} />
+          <Payload label="output" value={view.fallbackOutput} />
+        </>
+      ) : null}
+      {view.kind === "fileEdit" ? (
+        <>
+          {view.diff.length > 0 ? (
+            <div className="tool-payload-wrap">
+              <CopyButton
+                className="tool-payload-copy"
+                getText={() =>
+                  view.diff
+                    .map(
+                      (line) =>
+                        `${line.kind === "add" ? "+" : "-"}${line.text}`,
+                    )
+                    .join("\n")
+                }
+              />
+              <pre className="tool-diff">
+                {view.diff.map((line, index) => (
+                  <span
+                    className={`tool-diff-line is-${line.kind}`}
+                    key={`${line.kind}-${index}`}
+                  >
+                    <span aria-hidden="true">
+                      {line.kind === "add" ? "+" : "-"}
+                    </span>
+                    <span>{line.text}</span>
+                  </span>
+                ))}
+              </pre>
+            </div>
+          ) : null}
+          <Payload label="output" value={view.fallbackOutput} />
+        </>
+      ) : null}
+      {view.kind === "subagent" ? (
+        <>
+          <Payload
+            label={view.action === "spawn" ? "assignment" : "instruction"}
+            value={view.description}
+          />
+          {view.childRequestId ? (
+            <div className="tool-identity">
+              <span className="tool-detail-label">child request</span>
+              <code>{view.childRequestId}</code>
+            </div>
+          ) : null}
+          <Payload label="result" value={view.output} />
+        </>
+      ) : null}
+      {view.kind === "process" ? (
+        <>
+          <Payload label="arguments" value={view.description} />
+          <Payload label="result" value={view.output} />
+        </>
+      ) : null}
+      {view.kind === "mcp" ? (
+        <>
+          <Payload label="arguments" value={view.arguments} />
+          <Payload label="result" value={view.output} />
+        </>
+      ) : null}
+      {view.kind === "generic" ? (
+        <>
+          <Payload label="input" value={view.input} />
+          <Payload label="result" value={view.output} />
+        </>
+      ) : null}
+      <LiveOutput tool={tool} />
+    </div>
+  );
+}
+
+function UnifiedToolItem({ tool }: { tool: RenderedToolCallView }) {
+  const live =
+    tool.statusKind.toLowerCase() === "running" &&
+    Boolean(tool.partialOutputTail);
   return (
     <details
-      className="tool-item subagent-tool-item"
-      data-child-request-id={childRequestId ?? undefined}
-      data-testid={`subagent-tool-${tool.itemKey}`}
-      open={liveTail != null || statusKind === "running"}
+      className={`tool-item tool-item-${tool.presentation.kind}`}
+      data-child-request-id={tool.childRequestId ?? undefined}
+      data-testid={`tool-${tool.itemKey}`}
+      open={live}
     >
-      <summary className="tool-item-summary subagent-tool-summary">
-        <span className="tool-item-summary-left subagent-tool-summary-left">
-          <span
-            aria-hidden="true"
-            className={toolStatusClass(tool.statusKind)}
-          />
-          <span className="subagent-tool-kind">subagent</span>
-          <span className="tool-item-name">{name}</span>
-          {awaitMode ? (
-            <span className="subagent-tool-mode">{awaitMode}</span>
-          ) : null}
-          <span
-            className={`subagent-tool-status subagent-tool-status-${statusKind}`}
-          >
-            {statusLabel}
-          </span>
-          {promptPreview ? (
-            <span className="tool-item-preview subagent-tool-preview">
-              {promptPreview}
-            </span>
-          ) : null}
+      <summary className="tool-item-summary">
+        <span className={statusClass(tool.statusKind)} aria-hidden="true" />
+        <span className="tool-item-summary-content">
+          <ToolSummary tool={tool} />
         </span>
         <span aria-hidden="true" className="tool-item-action">
           ▸
         </span>
       </summary>
-      <div className="tool-item-body subagent-tool-body">
-        {tool.cancelCause ? (
-          <CancelCauseDetails cause={tool.cancelCause} />
-        ) : null}
-        {prompt ? (
-          <div className="subagent-tool-assignment">
-            <div className="tool-detail-label">assignment</div>
-            <div>{prompt}</div>
-          </div>
-        ) : (
-          <ToolDetailSection label="args" value={tool.args} />
-        )}
-        {childRequestId ? (
-          <div className="subagent-tool-child">
-            <span className="tool-detail-label">child request</span>
-            <code>{childRequestId}</code>
-          </div>
-        ) : null}
-        {liveTail != null ? (
-          <div
-            className="tool-live-tail"
-            data-testid={`subagent-live-${tool.itemKey}`}
-          >
-            <span className="tool-live-tail-label">
-              child activity
-              <span aria-hidden="true" className="tool-live-dot" />
-            </span>
-            <pre>{liveTail}</pre>
-          </div>
-        ) : null}
-        <ToolDetailSection label="result" value={tool.result} />
-      </div>
+      <ToolBody tool={tool} />
     </details>
   );
 }
@@ -222,94 +377,25 @@ export function ToolGroup({ tools }: { tools: RenderedToolCallView[] }) {
     <section className="tool-group">
       {tools.map((tool) => {
         const denial =
-          (tool.statusKind ?? "").toLowerCase() === "error"
-            ? (tool.denial ?? parseCommandDenial(tool.result?.rawText))
-            : null;
-        if (denial) {
-          return (
-            <CommandDenialToolItem
-              denial={denial}
-              key={tool.itemKey}
-              tool={tool}
-            />
-          );
-        }
-
-        if (isSubagentSpawnTool(tool.toolName)) {
-          return <SubagentToolItem key={tool.itemKey} tool={tool} />;
-        }
-
-        const codeView =
-          (tool.statusKind ?? "").toLowerCase() === "success" &&
-          !tool.cancelCause
-            ? toCodeToolView(tool)
-            : null;
-        if (codeView) {
-          return <CodeToolItem key={tool.itemKey} view={codeView} />;
-        }
-        const argsPreview = toolArgsPreview(tool.args);
-        const liveTail =
-          (tool.statusKind ?? "").toLowerCase() === "running"
-            ? (tool.partialOutputTail ?? null)
-            : null;
-        return (
-          <details
-            className="tool-item"
+          tool.statusKind.toLowerCase() === "error" ? tool.denial : null;
+        return denial ? (
+          <CommandDenialToolItem
+            denial={denial}
             key={tool.itemKey}
-            open={liveTail != null}
-          >
-            <summary className="tool-item-summary">
-              <span className="tool-item-summary-left">
-                <span
-                  aria-hidden="true"
-                  className={toolStatusClass(tool.statusKind)}
-                />
-                <span className="tool-item-name">{tool.toolName}</span>
-                {argsPreview ? (
-                  <span className="tool-item-preview">{argsPreview}</span>
-                ) : null}
-                {tool.cancelCause ? (
-                  <CancelCauseBadge
-                    cause={tool.cancelCause}
-                    className="tool-item-cause-badge"
-                  />
-                ) : null}
-                {(tool.statusKind ?? "").toLowerCase() ===
-                "awaitingapproval" ? (
-                  <span
-                    className="tool-item-held-badge"
-                    data-testid={`tool-held-${tool.itemKey}`}
-                  >
-                    awaiting approval
-                  </span>
-                ) : null}
-              </span>
-              <span aria-hidden="true" className="tool-item-action">
-                ▸
-              </span>
-            </summary>
-            <div className="tool-item-body">
-              {tool.cancelCause ? (
-                <CancelCauseDetails cause={tool.cancelCause} />
-              ) : null}
-              <ToolDetailSection label="args" value={tool.args} />
-              {liveTail != null ? (
-                <div
-                  className="tool-live-tail"
-                  data-testid={`tool-live-${tool.itemKey}`}
-                >
-                  <span className="tool-live-tail-label">
-                    live output
-                    <span aria-hidden="true" className="tool-live-dot" />
-                  </span>
-                  <pre>{liveTail}</pre>
-                </div>
-              ) : null}
-              <ToolDetailSection label="result" value={tool.result} />
-            </div>
-          </details>
+            tool={tool}
+          />
+        ) : (
+          <UnifiedToolItem key={tool.itemKey} tool={tool} />
         );
       })}
     </section>
   );
+}
+
+function formatDuration(ms: number) {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1).replace(/\.0$/, "")}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }

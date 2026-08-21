@@ -687,11 +687,6 @@ def caseCoverage : List CoverageEntry :=
       "conformance::generated_recovery_equivalence_cases_pin_uninterrupted_convergence_contract")
       "recovery" [Surface.runtimeInternal]
   , tagged (consumerCoverage
-      "recovery_outcome_cases"
-      "RecoveryOutcomeCases"
-      "conformance::generated_recovery_outcome_cases_fence_duplicate_tolerant_counting")
-      "recovery" [Surface.runtimeInternal]
-  , tagged (consumerCoverage
       "restart_disposition_cases"
       "RestartDispositionCases"
       "conformance::generated_restart_disposition_cases_drive_recover_all")

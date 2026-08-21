@@ -60,7 +60,8 @@ pub(super) async fn start_gents_turn(
     }
 
     let cwd = state.thread_cwd(&thread_id).await;
-    let metadata = codex_turn_metadata(&cwd, &selected_skill_ids);
+    let thread_name = state.thread_name(&thread_id).await;
+    let metadata = codex_turn_metadata(&cwd, &selected_skill_ids, Some(&thread_name));
 
     let submitted = match create_agent_request_with_retry(
         state,

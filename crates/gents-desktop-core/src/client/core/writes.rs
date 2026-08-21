@@ -11,9 +11,7 @@ use gents_protocol::row::{
 use p2p::iroh::parse_public_peer_addr;
 use tokio::time::{sleep, Instant};
 
-use super::super::mutations::{
-    self, CreatedConversation, PeerMutationResult, SubmitRequestOptions, SubmittedRequest,
-};
+use super::super::mutations::{self, PeerMutationResult, SubmitRequestOptions, SubmittedRequest};
 use super::super::observe::ObservedStore;
 use super::super::peer_directory::PeerRecord;
 use super::super::query::load_chat_patch;
@@ -111,40 +109,6 @@ fn ensure_peer_chat_ready(peer_record: Option<&PeerRecord>) -> Result<()> {
 }
 
 impl ClientCore {
-    pub async fn create_conversation(
-        &self,
-        agent_did: &str,
-        behavior_id: Option<&str>,
-    ) -> Result<CreatedConversation> {
-        let snapshot = self.store.snapshot();
-        let peer_record = self.peer_record_for_agent(agent_did).await;
-        ensure_peer_chat_ready(peer_record.as_ref())?;
-        let behavior_id = behavior_id_for_write(behavior_id, peer_record.as_ref());
-        match mutations::create_conversation(
-            self.node.as_ref(),
-            snapshot.as_ref(),
-            agent_did,
-            self.principal.did(),
-            behavior_id.as_deref(),
-        )
-        .await
-        {
-            Ok(result) => {
-                self.store.set_focused_request_id(None);
-                self.refresh_store().await?;
-                self.clear_mutation_error();
-                tracing::info!(
-                    target: "gents_desktop_core::writes",
-                    action = "chat_create",
-                    row_id = %result.session_id,
-                    "desktop write saved"
-                );
-                Ok(result)
-            }
-            Err(error) => Err(self.record_mutation_error("create conversation", error)),
-        }
-    }
-
     pub async fn submit_request(
         &self,
         session_id: &str,
@@ -200,41 +164,6 @@ impl ClientCore {
                 Ok(result)
             }
             Err(error) => Err(self.record_mutation_error("submit request", error)),
-        }
-    }
-
-    pub async fn fork_session(
-        &self,
-        agent_did: &str,
-        source_session_id: &str,
-        at_user_turn: u32,
-        target_behavior_id: Option<&str>,
-    ) -> Result<gents::ForkOutcome> {
-        let agent_did = normalize_required("agent_did", agent_did)?;
-        let source_session_id = normalize_required("source_session_id", source_session_id)?;
-        let params = gents::ForkParams {
-            source_session_id,
-            fork_at_user_turn: at_user_turn,
-            caller_agent_did: agent_did,
-            target_behavior_id,
-        };
-        let result = gents::fork(self.node(), params).await;
-        match result {
-            Ok(outcome) => {
-                self.refresh_store().await?;
-                self.clear_mutation_error();
-                tracing::info!(
-                    target: "gents_desktop_core::writes",
-                    action = "session_fork",
-                    row_id = %outcome.session_id,
-                    source_session_id,
-                    "desktop write saved"
-                );
-                Ok(outcome)
-            }
-            Err(error) => {
-                Err(self.record_mutation_error("fork session", anyhow::Error::from(error)))
-            }
         }
     }
 
@@ -396,12 +325,14 @@ impl ClientCore {
             return Ok(None);
         }
 
-        let mut patch = load_chat_patch(self.node.as_ref(), request_id).await?;
+        let patch = load_chat_patch(self.node.as_ref(), request_id).await?;
         let rows = patch.row_count();
         if rows == 0 {
             return Ok(None);
         }
-        patch.stamp_source_agent_did(agent_did);
+        // This patch came from the embedded replica, just like the observer's
+        // baseline snapshot. Keep its source untagged so both paths address a
+        // durable document by the same identity.
         let signature = chat_patch_signature(&patch);
         let cache_key = format!("local\0{agent_did}\0{request_id}");
         {

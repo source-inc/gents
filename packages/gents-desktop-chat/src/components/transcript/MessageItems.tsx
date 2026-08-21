@@ -3,6 +3,7 @@ import type {
   RenderedTimelineItem,
 } from "@source-inc/gents-desktop-client";
 import { CopyButton } from "@source-inc/gents-desktop-ui";
+import { requestProgressPresentation } from "../../chat-shell.js";
 
 import { CancelCauseBadge, CancelCauseDetails } from "../cancelUx/index.js";
 import {
@@ -111,10 +112,21 @@ export function AssistantMessageItem({
 }
 
 export function PendingUserTurnItem({ item }: { item: PendingUserTurn }) {
+  const progress = requestProgressPresentation(item.lifecycleState);
   return (
     <div className="turn-block">
       <article className="message-card pending-card">
-        <div className="message-role">user</div>
+        <div className="message-role">
+          user
+          {progress ? (
+            <span
+              className={`request-progress${progress.animated ? " is-active" : ""}`}
+              data-testid="request-progress"
+            >
+              {progress.label}
+            </span>
+          ) : null}
+        </div>
         <div className="message-content">
           <MarkdownContent value={normalizeTranscriptText(item.content)} />
         </div>

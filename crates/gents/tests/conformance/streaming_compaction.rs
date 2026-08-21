@@ -562,6 +562,15 @@ async fn drive_streaming_response_case(case: &lean_vocab_test::LeanResponseTrans
         &created_at,
     )
     .await;
+    create_agent_session(&db.node, &session_id, AGENT_NAME, &created_at).await;
+    upsert_conversation(
+        &db.node,
+        &session_id,
+        &request_id,
+        "streaming request",
+        "processing",
+    )
+    .await;
     let writer = DefraStreamWriter::new(db.node.clone(), AGENT_DID, Duration::from_millis(0));
 
     let doc_id = if case.pre_status == "complete" {
@@ -881,7 +890,14 @@ async fn create_manual_response(
 }
 
 async fn mark_materialized(node: std::sync::Arc<EmbeddedNode>, request_id: &str, sequence: u32) {
-    let hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    support::create_agent_session(
+        node.as_ref(),
+        "streaming-materialized-session",
+        AGENT_NAME,
+        "2026-05-01T00:00:00Z",
+    )
+    .await;
+    let hook = DefraSessionHook::resume_with_identity_policy(
         node,
         "streaming-materialized-session",
         AGENT_NAME,

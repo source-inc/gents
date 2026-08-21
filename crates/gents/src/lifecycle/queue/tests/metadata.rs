@@ -154,3 +154,39 @@ fn automated_wakeup_is_true_only_for_keyed_subagent_completion_coalesce() {
         }
     ))));
 }
+
+#[test]
+fn runtime_control_projection_keeps_only_the_steering_input_visible() {
+    let metadata = |source| {
+        queue_metadata_json(&QueueHints {
+            source,
+            policy: QueuePolicy::Append,
+            key: None,
+            queued_after_request_id: None,
+            interrupted_request_id: None,
+        })
+    };
+    let steering = metadata(QueueSource::Steering);
+    let steering_input = steering_input_message_key("request-1");
+
+    assert!(!crate::lifecycle::is_runtime_control_message(
+        Some(&steering),
+        &steering_input
+    ));
+    assert!(crate::lifecycle::is_runtime_control_message(
+        Some(&steering),
+        ""
+    ));
+    assert!(crate::lifecycle::is_runtime_control_message(
+        Some(&metadata(QueueSource::Goal)),
+        ""
+    ));
+    assert!(crate::lifecycle::is_runtime_control_message(
+        None,
+        "background-completion-notification:child-1:subagent"
+    ));
+    assert!(!crate::lifecycle::is_runtime_control_message(
+        Some(&metadata(QueueSource::User)),
+        ""
+    ));
+}

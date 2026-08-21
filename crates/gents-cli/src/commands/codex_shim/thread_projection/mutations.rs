@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use gents::graphql::escape_graphql_string;
+use gents::graphql::{escape_graphql_string, response_has_documents};
 use gents_codex_protocol as codex;
 
 use crate::commands::codex_shim::store::query_node_json;
@@ -27,15 +27,12 @@ pub(in crate::commands::codex_shim) async fn set_codex_thread_archived(
     state: &ShimState,
     thread_id: &str,
     archived: bool,
-) -> Result<()> {
-    if super::storage::load_scoped_session(state, thread_id)
-        .await?
-        .is_none()
-    {
-        return Ok(());
+) -> Result<bool> {
+    if load_codex_thread(state, thread_id).await?.is_none() {
+        return Ok(false);
     }
     state.set_thread_archived(thread_id, archived).await;
-    Ok(())
+    Ok(true)
 }
 
 pub(in crate::commands::codex_shim) async fn set_codex_thread_name(
@@ -43,40 +40,33 @@ pub(in crate::commands::codex_shim) async fn set_codex_thread_name(
     thread_id: &str,
     name: &str,
 ) -> Result<bool> {
-    if super::storage::load_scoped_session(state, thread_id)
+    let has_session = super::storage::load_scoped_session(state, thread_id)
         .await?
-        .is_none()
-    {
+        .is_some();
+    if !has_session && load_codex_thread(state, thread_id).await?.is_none() {
         return Ok(false);
+    }
+
+    let name = name.trim();
+    if !has_session {
+        state.set_thread_name(thread_id, name).await;
+        return Ok(true);
     }
 
     let now = chrono::Utc::now().to_rfc3339();
     let escaped_session_id = escape_graphql_string(thread_id);
-    let escaped_name = escape_graphql_string(name.trim());
+    let escaped_name = escape_graphql_string(name);
     let escaped_agent_did = escape_graphql_string(state.agent_did.as_ref());
     let escaped_behavior_id = escape_graphql_string(state.behavior_id.as_ref());
     let mutation = format!(
         r#"mutation {{
-            upsert_AgentConversation(
+            update_AgentConversation(
                 filter: {{
                     session_id: {{ _eq: "{escaped_session_id}" }},
                     agent_did: {{ _eq: "{escaped_agent_did}" }},
                     behavior_id: {{ _eq: "{escaped_behavior_id}" }}
                 }},
-                add: {{
-                    session_id: "{escaped_session_id}",
-                    agent_name: "{escaped_behavior_id}",
-                    agent_did: "{escaped_agent_did}",
-                    behavior_id: "{escaped_behavior_id}",
-                    title: "{escaped_name}",
-                    title_source: "user",
-                    preview_text: "",
-                    status: "active",
-                    created_at: "{now}",
-                    updated_at: "{now}",
-                    latest_request_id: ""
-                }},
-                update: {{
+                input: {{
                     title: "{escaped_name}",
                     title_source: "user",
                     updated_at: "{now}"
@@ -84,8 +74,14 @@ pub(in crate::commands::codex_shim) async fn set_codex_thread_name(
             ) {{ _docID }}
         }}"#
     );
-    query_node_json(&state.node, &mutation).await?;
-    Ok(true)
+    let response = query_node_json(&state.node, &mutation).await?;
+    let updated = response
+        .pointer("/data/update_AgentConversation")
+        .is_some_and(response_has_documents);
+    if updated {
+        state.set_thread_name(thread_id, name).await;
+    }
+    Ok(updated)
 }
 
 pub(in crate::commands::codex_shim) async fn set_codex_thread_memory_mode(
@@ -93,10 +89,7 @@ pub(in crate::commands::codex_shim) async fn set_codex_thread_memory_mode(
     thread_id: &str,
     mode: codex::ThreadMemoryMode,
 ) -> Result<()> {
-    if super::storage::load_scoped_session(state, thread_id)
-        .await?
-        .is_none()
-    {
+    if load_codex_thread(state, thread_id).await?.is_none() {
         return Ok(());
     }
     state.set_thread_memory_mode(thread_id, mode.as_str()).await;
@@ -108,10 +101,7 @@ pub(in crate::commands::codex_shim) async fn set_codex_thread_settings(
     thread_id: &str,
     settings: &codex::ThreadSettingsUpdateParams,
 ) -> Result<()> {
-    if super::storage::load_scoped_session(state, thread_id)
-        .await?
-        .is_none()
-    {
+    if load_codex_thread(state, thread_id).await?.is_none() {
         return Ok(());
     }
     let settings_json =

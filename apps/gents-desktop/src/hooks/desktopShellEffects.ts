@@ -297,7 +297,8 @@ export function useDesktopShellEffects({
             defaultBehaviorId,
           ),
       ) ||
-        (localWorkflow.kind === "awaitingObservation" &&
+        ((localWorkflow.kind === "awaitingObservation" ||
+          localWorkflow.kind === "turnInProgress") &&
           localWorkflow.agentDid === selectedDeployment.agentDid &&
           localWorkflow.sessionId === selectedSessionId))
     ) {

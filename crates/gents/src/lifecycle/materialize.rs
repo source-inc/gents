@@ -158,24 +158,33 @@ pub(crate) async fn write_pending_agent_request_with_lineage_and_conversation_ti
     let escaped_created_at = escape_graphql_string(&now);
     let execution_origin = execution_origin.as_str();
     let lineage_fields = trigger_lineage_graphql_fields(&trigger_lineage)?;
-    let metadata_field = if prompt_selection.selected_skill_ids.is_empty() {
+    let conversation_title = conversation_title.and_then(|title| {
+        let title = title.trim();
+        (!title.is_empty()).then(|| title.to_string())
+    });
+    let mut metadata = serde_json::Map::new();
+    if !prompt_selection.selected_skill_ids.is_empty() {
+        metadata.insert(
+            "selected_skill_ids".to_string(),
+            serde_json::json!(prompt_selection.selected_skill_ids),
+        );
+    }
+    if let Some(title) = conversation_title.as_deref() {
+        metadata.insert(
+            "conversation_title".to_string(),
+            serde_json::Value::String(title.to_string()),
+        );
+    }
+    let metadata_field = if metadata.is_empty() {
         String::new()
     } else {
-        let metadata = serde_json::json!({
-            "selected_skill_ids": prompt_selection.selected_skill_ids,
-        })
-        .to_string();
+        let metadata = serde_json::Value::Object(metadata).to_string();
         format!(
             r#"
                 metadata: "{}","#,
             escape_graphql_string(&metadata)
         )
     };
-    let conversation_title = conversation_title.and_then(|title| {
-        let title = title.trim();
-        (!title.is_empty()).then(|| title.to_string())
-    });
-
     let mutation = format!(
         r#"mutation {{
             create_AgentRequest(input: {{
@@ -218,43 +227,6 @@ pub(crate) async fn write_pending_agent_request_with_lineage_and_conversation_ti
         "pending AgentRequest create returned no _docID",
     )
     .await?;
-
-    if let Some(title) = conversation_title {
-        let seed_result = async {
-            session::ensure_session_with_behavior_id(
-                node,
-                &session_id,
-                behavior_id,
-                agent_did,
-                behavior_id,
-            )
-            .await?;
-            session::upsert_conversation_from_request_with_identity_and_title(
-                node,
-                &session_id,
-                behavior_id,
-                agent_did,
-                behavior_id,
-                &request_id,
-                content,
-                "pending",
-                None,
-                Some((&title, session::CONVERSATION_TITLE_SOURCE_TASK)),
-            )
-            .await
-        }
-        .await;
-
-        if let Err(error) = seed_result {
-            tracing::warn!(
-                request_id = %request_id,
-                session_id = %session_id,
-                title = %title,
-                error = %error,
-                "failed to seed task conversation title"
-            );
-        }
-    }
 
     Ok(EnqueuedAgentRequest {
         doc_id,
@@ -334,15 +306,6 @@ impl RequestLifecycle {
         let deadline = deadline_at.to_rfc3339();
         let lineage_fields = trigger_lineage_graphql_fields(&trigger_lineage)?;
 
-        session::create_session_with_behavior_id(
-            node.as_ref(),
-            &session_id,
-            agent_name,
-            agent_did,
-            &behavior_id,
-        )
-        .await?;
-
         let escaped_request_id = escape_graphql_string(&request_id);
         let escaped_agent_did = escape_graphql_string(agent_did);
         let escaped_behavior_id = escape_graphql_string(&behavior_id);
@@ -384,12 +347,45 @@ impl RequestLifecycle {
             max_retries = DEFAULT_REQUEST_MAX_RETRIES,
         );
 
-        let resp = crate::graphql::graphql_mutation_with_transaction_retry(
-            node.as_ref(),
-            &mutation,
-            "materialize_claimed_agent_request",
-        )
-        .await?;
+        let request = AgentRequest {
+            doc_id: String::new(),
+            request_id: request_id.clone(),
+            agent_did: agent_did.to_string(),
+            requester_did: None,
+            behavior_id: Some(behavior_id.clone()),
+            session_id: session_id.clone(),
+            content: content.to_string(),
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            seed: None,
+            max_tokens: None,
+            max_total_tokens: None,
+            metadata: None,
+            execution_origin: Some(execution_origin_str.to_string()),
+            created_at: created_at.clone(),
+            deadline: Some(deadline.clone()),
+            subagent_depth: 0,
+            caused_by_parent_request_id: None,
+            caused_by_parent_request_doc_id: None,
+            caused_by_parent_tool_call_id: None,
+            caused_by_parent_tool_call_doc_id: None,
+            caused_by_trigger_id: None,
+            caused_by_trigger_kind: None,
+            caused_by_source_doc_id: None,
+            caused_by_correlation: None,
+            caused_by_trigger_context: None,
+        };
+        let projection = request_session_projection_mutation(
+            &request,
+            agent_name,
+            agent_did,
+            &behavior_id,
+            &claimed_at,
+        );
+        let resp =
+            materialize_claimed_request_with_projection(node.as_ref(), &mutation, &projection)
+                .await?;
 
         let doc_id = resolve_created_agent_request_doc_id(
             node.as_ref(),
@@ -409,47 +405,7 @@ impl RequestLifecycle {
                 })?
                 .cid;
 
-        let request = AgentRequest {
-            doc_id,
-            request_id: request_id.clone(),
-            agent_did: agent_did.to_string(),
-            requester_did: None,
-            behavior_id: Some(behavior_id.clone()),
-            session_id: session_id.clone(),
-            content: content.to_string(),
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            seed: None,
-            max_tokens: None,
-            max_total_tokens: None,
-            metadata: None,
-            execution_origin: Some(execution_origin_str.to_string()),
-            created_at,
-            deadline: Some(deadline),
-            subagent_depth: 0,
-            caused_by_parent_request_id: None,
-            caused_by_parent_request_doc_id: None,
-            caused_by_parent_tool_call_id: None,
-            caused_by_parent_tool_call_doc_id: None,
-            caused_by_trigger_id: None,
-            caused_by_trigger_kind: None,
-            caused_by_source_doc_id: None,
-            caused_by_correlation: None,
-            caused_by_trigger_context: None,
-        };
-
-        session::upsert_conversation_from_request_with_identity(
-            node.as_ref(),
-            &session_id,
-            agent_name,
-            agent_did,
-            &behavior_id,
-            &request_id,
-            content,
-            "processing",
-        )
-        .await?;
+        let request = AgentRequest { doc_id, ..request };
 
         Ok(Self {
             node,
@@ -486,29 +442,95 @@ impl RequestLifecycle {
     pub fn behavior_id(&self) -> &str {
         &self.behavior_id
     }
+}
 
-    pub async fn prepare_session_with_identity(&self) -> Result<()> {
-        self.ensure_state(&[LocalLifecycleState::Claimed], "prepare_session")?;
-        session::ensure_session_with_behavior_id_and_requester_did(
-            &self.node,
-            &self.request.session_id,
-            &self.agent_name,
-            &self.agent_did,
-            &self.behavior_id,
-            self.request.requester_did.as_deref(),
-        )
-        .await?;
-        session::upsert_conversation_from_request_with_identity_and_requester_did(
-            &self.node,
-            &self.request.session_id,
-            &self.agent_name,
-            &self.agent_did,
-            &self.behavior_id,
-            &self.request.request_id,
-            &self.request.content,
-            "processing",
-            self.request.requester_did.as_deref(),
-        )
-        .await
+fn conversation_title_from_metadata(metadata: Option<&str>) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(metadata?)
+        .ok()?
+        .get("conversation_title")?
+        .as_str()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_string)
+}
+
+pub(super) fn request_session_projection_mutation(
+    request: &AgentRequest,
+    agent_name: &str,
+    agent_did: &str,
+    behavior_id: &str,
+    started: &str,
+) -> String {
+    let session_field = session::request_session_projection_field(
+        &request.session_id,
+        agent_name,
+        agent_did,
+        behavior_id,
+        request.requester_did.as_deref(),
+        started,
+    );
+    let title = conversation_title_from_metadata(request.metadata.as_deref());
+    let conversation_field = session::request_conversation_projection_field(
+        &request.session_id,
+        agent_name,
+        agent_did,
+        behavior_id,
+        &request.request_id,
+        &request.content,
+        "processing",
+        request.requester_did.as_deref(),
+        title
+            .as_deref()
+            .map(|title| (title, session::CONVERSATION_TITLE_SOURCE_TASK)),
+        started,
+    );
+    format!("mutation {{ {session_field} {conversation_field} }}")
+}
+
+async fn materialize_claimed_request_with_projection(
+    node: &EmbeddedNode,
+    request_mutation: &str,
+    projection_mutation: &str,
+) -> Result<defra_node::QueryResponse> {
+    let mut last_error = None;
+    for retry_index in 0..=crate::graphql::DEFRA_DB_CONFLICT_MAX_RETRIES {
+        let txn = crate::config_client::ConfigApplyTxn::begin_local(node, None).await?;
+        let attempt = async {
+            let created = txn.execute_local_response(request_mutation).await?;
+            if !created
+                .data
+                .as_ref()
+                .and_then(|data| data.get("add_AgentRequest"))
+                .is_some_and(response_has_documents)
+            {
+                anyhow::bail!("materialized AgentRequest mutation returned no document");
+            }
+            txn.execute_local_response(projection_mutation).await?;
+            Ok::<_, anyhow::Error>(created)
+        }
+        .await;
+        let result = match attempt {
+            Ok(created) => txn.commit().await.map(|()| created),
+            Err(error) => {
+                let _ = txn.discard().await;
+                Err(error)
+            }
+        };
+        match result {
+            Ok(created) => return Ok(created),
+            Err(error)
+                if retry_index < crate::graphql::DEFRA_DB_CONFLICT_MAX_RETRIES
+                    && crate::graphql::is_defradb_transaction_conflict_text(
+                        &error.to_string().to_ascii_lowercase(),
+                    ) =>
+            {
+                last_error = Some(error);
+                tokio::time::sleep(crate::graphql::defradb_conflict_retry_backoff(retry_index))
+                    .await;
+            }
+            Err(error) => return Err(error),
+        }
     }
+    Err(last_error
+        .unwrap_or_else(|| anyhow::anyhow!("materialize claimed request transaction exhausted")))
 }

@@ -117,6 +117,8 @@ structure RuntimeState where
   routerObservedGeneration : Generation
   readyGenerations : Finset Generation
   liveGenerations : Finset Generation
+  /-- Requests whose claim and request-owned session projection committed atomically. -/
+  accepted : Finset RequestId
   inFlight : Finset RequestId
   requestGeneration : RequestId → Generation
   requestSession : RequestId → SessionId
@@ -174,7 +176,8 @@ def CanAdmitRequest
     (s : RuntimeState)
     (sessionId : SessionId)
     (requestId : RequestId) : Prop :=
-  requestId ∉ s.inFlight ∧
+  requestId ∉ s.accepted ∧
+    requestId ∉ s.inFlight ∧
     s.routerObservedGeneration = s.active.generation ∧
     s.routerObservedGeneration ∈ s.readyGenerations ∧
     s.selectedBehavior sessionId ∈ s.active.dispatchers
@@ -215,6 +218,7 @@ def bootState (resolved : ResolvedSnapshot) : RuntimeState :=
   , routerObservedGeneration := 1
   , readyGenerations := {1}
   , liveGenerations := {1}
+  , accepted := ∅
   , inFlight := ∅
   , requestGeneration := fun _ => 0
   , requestSession := fun _ => 0

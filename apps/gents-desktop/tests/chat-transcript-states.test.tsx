@@ -26,6 +26,7 @@ const pendingTurn: RenderedTimelineItem = {
   requestId: "req_1",
   content: "do the thing",
   selectedSkillIds: [],
+  lifecycleState: "processing",
 };
 
 function expectReasoningBeforeAnswer() {
@@ -88,6 +89,76 @@ describe("ChatTranscriptPanel states", () => {
     render(<ChatTranscriptPanel selectedSessionId={null} session={null} />);
     expect(screen.getByText("Send the first message")).toBeInTheDocument();
     expect(screen.queryByTestId("transcript-loading")).not.toBeInTheDocument();
+  });
+
+  it("shows the acknowledged send immediately while the session snapshot catches up", () => {
+    render(
+      <ChatTranscriptPanel
+        selectedSessionId="s1"
+        session={null}
+        optimisticPendingTurn={{
+          sessionId: "s1",
+          requestId: "req_2",
+          content: "check the upgrade",
+          selectedSkillIds: [],
+          lifecycleState: "pending",
+          createdAt: "2026-08-20T19:40:12Z",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("check the upgrade")).toBeInTheDocument();
+    expect(screen.getByTestId("request-progress")).toHaveTextContent("Queued");
+    expect(screen.queryByTestId("transcript-loading")).not.toBeInTheDocument();
+  });
+
+  it("hands the optimistic turn to the matching durable request without duplicating it", () => {
+    render(
+      <ChatTranscriptPanel
+        selectedSessionId="s1"
+        session={makeSession({ timelineItems: [pendingTurn] })}
+        optimisticPendingTurn={{
+          sessionId: "s1",
+          requestId: "req_1",
+          content: "do the thing",
+          selectedSkillIds: [],
+          lifecycleState: "pending",
+          createdAt: null,
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText("do the thing")).toHaveLength(1);
+    expect(screen.getByTestId("request-progress")).toHaveTextContent("Working");
+  });
+
+  it("hands the optimistic turn to the matching durable user message", () => {
+    render(
+      <ChatTranscriptPanel
+        selectedSessionId="s1"
+        session={makeSession({
+          timelineItems: [
+            {
+              kind: "userMessage",
+              itemKey: "user_2",
+              requestId: "req_2",
+              content: "check the upgrade",
+            },
+          ],
+        })}
+        optimisticPendingTurn={{
+          sessionId: "s1",
+          requestId: "req_2",
+          content: "check the upgrade",
+          selectedSkillIds: [],
+          lifecycleState: "pending",
+          createdAt: null,
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText("check the upgrade")).toHaveLength(1);
+    expect(screen.queryByTestId("request-progress")).not.toBeInTheDocument();
   });
 
   it("shows the thinking indicator while the turn runs and the assistant is silent", () => {
@@ -205,6 +276,63 @@ describe("ChatTranscriptPanel states", () => {
             },
           ],
         })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(scrollSpy).toHaveBeenCalledWith({
+        block: "end",
+        behavior: "instant",
+      }),
+    );
+  });
+
+  it("re-engages follow from the optimistic request before latestRequestId catches up", async () => {
+    const scrollSpy = vi
+      .spyOn(HTMLElement.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+
+    const staleSession = makeSession({
+      latestRequestId: "req_old",
+      timelineItems: [
+        {
+          kind: "userMessage",
+          itemKey: "user_old",
+          requestId: "req_old",
+          content: "earlier",
+        },
+      ],
+    });
+    const { rerender } = render(
+      <ChatTranscriptPanel selectedSessionId="s1" session={staleSession} />,
+    );
+
+    const panel = screen.getByTestId("transcript-panel");
+    Object.defineProperties(panel, {
+      scrollHeight: { configurable: true, value: 1000 },
+      scrollTop: { configurable: true, value: 100 },
+      clientHeight: { configurable: true, value: 400 },
+    });
+    fireEvent.scroll(panel);
+    scrollSpy.mockClear();
+
+    rerender(
+      <ChatTranscriptPanel
+        selectedSessionId="s1"
+        session={staleSession}
+        optimisticPendingTurn={{
+          sessionId: "s1",
+          requestId: "req_new",
+          content: "follow up",
+          selectedSkillIds: [],
+          lifecycleState: "pending",
+          createdAt: "2026-08-20T20:00:00Z",
+        }}
       />,
     );
 

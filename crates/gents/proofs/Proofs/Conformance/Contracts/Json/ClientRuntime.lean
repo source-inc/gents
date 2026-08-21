@@ -13,12 +13,30 @@ def liveOverlayCaseJson (witness : LiveOverlayCase) : String :=
     ++ "\"name\":" ++ jsonString witness.name ++ ","
     ++ "\"responseStatus\":" ++ jsonString witness.responseStatus ++ ","
     ++ "\"materialized\":" ++ boolString witness.materialized ++ ","
+    ++ "\"hasDurableOwner\":" ++ boolString witness.hasDurableOwner ++ ","
     ++ "\"precedingToolCalls\":" ++ toString witness.precedingToolCalls ++ ","
     ++ "\"turnTerminal\":" ++ boolString witness.turnTerminal ++ ","
     ++ "\"turnLabel\":" ++ jsonString witness.turnLabel ++ ","
     ++ "\"hasContent\":" ++ boolString witness.hasContent ++ ","
     ++ "\"hasReasoning\":" ++ boolString witness.hasReasoning ++ ","
     ++ "\"expectOverlay\":" ++ boolString witness.expectOverlay
+    ++ "}"
+
+def requestProgressCaseJson (witness : RequestProgressCase) : String :=
+  "{"
+    ++ "\"name\":" ++ jsonString witness.name ++ ","
+    ++ "\"lifecycleState\":" ++ jsonString witness.lifecycleState ++ ","
+    ++ "\"label\":" ++ jsonString witness.label ++ ","
+    ++ "\"animated\":" ++ boolString witness.animated
+    ++ "}"
+
+def pendingUserTurnCaseJson (witness : PendingUserTurnCase) : String :=
+  "{"
+    ++ "\"name\":" ++ jsonString witness.name ++ ","
+    ++ "\"hasDurableUserOwner\":"
+      ++ boolString witness.hasDurableUserOwner ++ ","
+    ++ "\"unrelatedUserTurns\":" ++ toString witness.unrelatedUserTurns ++ ","
+    ++ "\"expectPendingTurn\":" ++ boolString witness.expectPendingTurn
     ++ "}"
 
 def responseTransitionCaseJson
@@ -129,22 +147,6 @@ def recoverySweepCaseJson (witness : RecoverySweepCase) : String :=
       ++ jsonOptionalString witness.notificationReason ++ ","
     ++ "\"deadline_audit_ref\":"
     ++ jsonString witness.deadlineAuditRef
-    ++ "}"
-
-def recoveryOutcomeCaseJson (witness : RecoveryOutcomeCase) : String :=
-  "{"
-    ++ "\"name\":" ++ jsonString witness.name ++ ","
-    ++ "\"sweep_id\":" ++ jsonString witness.sweepId ++ ","
-    ++ "\"collection\":" ++ jsonString witness.collection ++ ","
-    ++ "\"rust_function\":" ++ jsonString witness.rustFunction ++ ","
-    ++ "\"doc_count\":" ++ toString witness.docCount ++ ","
-    ++ "\"duplicated\":" ++ boolString witness.duplicated ++ ","
-    ++ "\"write_succeeds\":" ++ boolString witness.writeSucceeds ++ ","
-    ++ "\"expected_recovered\":" ++ toString witness.expectedRecovered ++ ","
-    ++ "\"expected_failed\":" ++ toString witness.expectedFailed ++ ","
-    ++ "\"measure_after\":" ++ toString witness.measureAfter ++ ","
-    ++ "\"target_selector\":" ++ jsonString witness.targetSelector ++ ","
-    ++ "\"theorem\":" ++ jsonString witness.theoremName
     ++ "}"
 
 def restartDispositionCaseJson (witness : RestartDispositionCase) : String :=

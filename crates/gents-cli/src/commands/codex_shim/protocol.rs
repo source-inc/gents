@@ -301,7 +301,11 @@ pub(super) fn selected_skill_ids_from_input(input: &[codex::UserInput]) -> Vec<S
         .collect()
 }
 
-pub(super) fn codex_turn_metadata(cwd: &Path, selected_skill_ids: &[String]) -> String {
+pub(super) fn codex_turn_metadata(
+    cwd: &Path,
+    selected_skill_ids: &[String],
+    conversation_title: Option<&str>,
+) -> String {
     let mut metadata = json!({
         "codex_shim": {
             "cwd": absolute_path(cwd)
@@ -309,6 +313,9 @@ pub(super) fn codex_turn_metadata(cwd: &Path, selected_skill_ids: &[String]) -> 
     });
     if !selected_skill_ids.is_empty() {
         metadata["selected_skill_ids"] = json!(selected_skill_ids);
+    }
+    if let Some(title) = conversation_title.filter(|title| !title.trim().is_empty()) {
+        metadata["conversation_title"] = json!(title.trim());
     }
     metadata.to_string()
 }

@@ -1,8 +1,5 @@
-@import "./styles/rail.css";
-@import "./styles/backgrounded-tools.css";
 @import "./styles/holds.css";
 @import "./styles/mcp-health.css";
-@import "./styles/subagent-lineage.css";
 @import "./styles/backend-health.css";
 @import "./styles/trace.css";
 @import "./styles/workspace-tree.css";

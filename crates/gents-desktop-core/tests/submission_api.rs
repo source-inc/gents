@@ -6,26 +6,7 @@ use gents_desktop_core::client::{
 };
 use serde::Deserialize;
 use tokio::time::{sleep, Instant};
-
-#[derive(Debug, Deserialize)]
-struct SessionRow {
-    session_id: String,
-    agent_name: String,
-    behavior_id: String,
-    status: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ConversationRow {
-    session_id: String,
-    agent_name: String,
-    agent_did: String,
-    behavior_id: String,
-    title: String,
-    preview_text: String,
-    status: String,
-    latest_request_id: String,
-}
+use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
 struct RequestRow {
@@ -45,7 +26,7 @@ struct RequestRow {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn create_conversation_writes_session_and_conversation() -> Result<()> {
+async fn submit_request_does_not_create_runtime_projections() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let core = ClientCore::start_with_paths_and_options(
         DesktopPaths::from_root(tempdir.path()),
@@ -53,65 +34,38 @@ async fn create_conversation_writes_session_and_conversation() -> Result<()> {
     )
     .await?;
 
-    let created = core
-        .create_conversation("did:test:amy", Some("amy-code"))
+    let session_id = Uuid::new_v4().to_string();
+    core.submit_request(&session_id, "did:test:amy", "hello", Some("amy-code"))
         .await?;
-
-    let session: SessionRow = query_single(
-        core.node(),
-        &format!(
+    let response = core
+        .node()
+        .execute(&format!(
             r#"{{
-                AgentSession(filter: {{ session_id: {{ _eq: "{}" }} }}, limit: 1) {{
-                    session_id
-                    agent_name
-                    behavior_id
-                    status
-                }}
-            }}"#,
-            created.session_id
-        ),
-        "AgentSession",
-    )
-    .await?;
-    assert_eq!(session.session_id, created.session_id);
-    assert_eq!(session.agent_name, "amy");
-    assert_eq!(session.behavior_id, "amy-code");
-    assert_eq!(session.status, "active");
-
-    let conversation: ConversationRow = query_single(
-        core.node(),
-        &format!(
-            r#"{{
-                AgentConversation(filter: {{ session_id: {{ _eq: "{}" }} }}, limit: 1) {{
-                    session_id
-                    agent_name
-                    agent_did
-                    behavior_id
-                    title
-                    preview_text
-                    status
-                    latest_request_id
-                }}
-            }}"#,
-            created.session_id
-        ),
-        "AgentConversation",
-    )
-    .await?;
-    assert_eq!(conversation.session_id, created.session_id);
-    assert_eq!(conversation.agent_name, "amy");
-    assert_eq!(conversation.agent_did, "did:test:amy");
-    assert_eq!(conversation.behavior_id, "amy-code");
-    assert!(conversation.title.is_empty());
-    assert!(conversation.preview_text.is_empty());
-    assert_eq!(conversation.status, "active");
-    assert!(conversation.latest_request_id.is_empty());
+                AgentSession(filter: {{ session_id: {{ _eq: "{session_id}" }} }}) {{ _docID }}
+                AgentConversation(filter: {{ session_id: {{ _eq: "{session_id}" }} }}) {{ _docID }}
+            }}"#
+        ))
+        .await;
+    assert!(
+        !response.has_errors(),
+        "projection query failed: {:?}",
+        response.errors
+    );
+    let data = response.data.context("projection query data")?;
+    for collection in ["AgentSession", "AgentConversation"] {
+        assert!(
+            data.get(collection)
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(Vec::is_empty),
+            "client submission must not create {collection}"
+        );
+    }
     core.shutdown().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn submit_request_writes_request_and_updates_conversation_summary() -> Result<()> {
+async fn submit_request_writes_request_as_the_only_durable_input() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let core = ClientCore::start_with_paths_and_options(
         DesktopPaths::from_root(tempdir.path()),
@@ -119,12 +73,10 @@ async fn submit_request_writes_request_and_updates_conversation_summary() -> Res
     )
     .await?;
 
-    let created = core
-        .create_conversation("did:test:amy", Some("amy-code"))
-        .await?;
+    let session_id = Uuid::new_v4().to_string();
     let submitted = core
         .submit_request(
-            &created.session_id,
+            &session_id,
             "did:test:amy",
             "  hello   there\noperator  ",
             None,
@@ -158,8 +110,8 @@ async fn submit_request_writes_request_and_updates_conversation_summary() -> Res
     .await?;
     assert_eq!(request.request_id, submitted.request_id);
     assert_eq!(request.agent_did, "did:test:amy");
-    assert_eq!(request.behavior_id, "amy-code");
-    assert_eq!(request.session_id, created.session_id);
+    assert_eq!(request.behavior_id, "did:test:amy:default");
+    assert_eq!(request.session_id, session_id);
     assert_eq!(request.content, "hello   there\noperator");
     assert_eq!(request.status, "pending");
     assert_eq!(request.lifecycle_state, "pending");
@@ -170,30 +122,6 @@ async fn submit_request_writes_request_and_updates_conversation_summary() -> Res
     assert_eq!(request.retry_count, 0);
     assert_eq!(request.max_retries, 3);
 
-    let conversation: ConversationRow = query_single(
-        core.node(),
-        &format!(
-            r#"{{
-                AgentConversation(filter: {{ session_id: {{ _eq: "{}" }} }}, limit: 1) {{
-                    session_id
-                    agent_name
-                    agent_did
-                    behavior_id
-                    title
-                    preview_text
-                    status
-                    latest_request_id
-                }}
-            }}"#,
-            created.session_id
-        ),
-        "AgentConversation",
-    )
-    .await?;
-    assert_eq!(conversation.title, "hello there operator");
-    assert_eq!(conversation.preview_text, "hello there operator");
-    assert_eq!(conversation.status, "active");
-    assert_eq!(conversation.latest_request_id, submitted.request_id);
     assert_eq!(
         core.store().focused_request_id(),
         Some(submitted.request_id.clone())
@@ -212,9 +140,7 @@ async fn resend_preserves_request_overrides_and_metadata() -> Result<()> {
     )
     .await?;
 
-    let created = core
-        .create_conversation("did:test:amy", Some("amy-code"))
-        .await?;
+    let session_id = Uuid::new_v4().to_string();
 
     let metadata_value = r#"{"key":"preserve-me"}"#.to_string();
     let options = SubmitRequestOptions {
@@ -228,7 +154,7 @@ async fn resend_preserves_request_overrides_and_metadata() -> Result<()> {
     };
     let original = core
         .submit_request_with_options(
-            &created.session_id,
+            &session_id,
             "did:test:amy",
             "please preserve my overrides",
             None,

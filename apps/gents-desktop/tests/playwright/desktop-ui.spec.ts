@@ -33,6 +33,7 @@ test.describe("desktop UI harness", () => {
     await captureStableScreenshot(page, testInfo, "chat-with-transcript");
 
     await openChatNavigation(page);
+    await page.getByTestId("agent-actions").click();
     await page.getByRole("button", { name: "Configure" }).click();
     await expect(page.locator(".config-workspace")).toBeVisible();
     await expect(
@@ -52,6 +53,7 @@ test.describe("desktop UI harness", () => {
     await expect(adjacentDuplicateTranscriptRows(page)).resolves.toEqual([]);
 
     await openChatNavigation(page);
+    await page.getByTestId("agent-tab-behaviors").click();
     await page.getByTestId("sidebar-new-chat-ops").click();
     await expect(
       page.getByRole("heading", { name: "Start a conversation" }),
@@ -81,18 +83,22 @@ test.describe("desktop UI harness", () => {
 
     await page.getByTestId("composer-input").fill("existing conversation draft");
     await openChatNavigation(page);
+    await page.getByTestId("agent-tab-behaviors").click();
     await page.getByTestId("sidebar-new-chat-ops").click();
     await expect(page.getByTestId("composer-input")).toHaveValue("");
 
     await page.getByTestId("composer-input").fill("new ops conversation draft");
     await openChatNavigation(page);
+    await page.getByTestId("agent-tab-behaviors").click();
     await page.getByTestId("sidebar-behavior-default").click();
+    await page.getByTestId("agent-tab-sessions").click();
     await page.getByTestId("conversation-session-intro").click();
     await expect(page.getByTestId("composer-input")).toHaveValue(
       "existing conversation draft",
     );
 
     await openChatNavigation(page);
+    await page.getByTestId("agent-tab-behaviors").click();
     await page.getByTestId("sidebar-new-chat-ops").click();
     await expect(page.getByTestId("composer-input")).toHaveValue(
       "new ops conversation draft",
@@ -156,33 +162,16 @@ test.describe("desktop UI harness", () => {
     await saveConfig(page, "event-trigger-save");
   });
 
-  test("operations drawer exposes background, lineage, backend, and MCP health tabs", async ({
-    page,
-  }, testInfo) => {
+  test("conversation does not expose the operations drawer", async ({ page }) => {
     await gotoHarness(page);
     await openChat(page);
-    await page.getByRole("button", { name: /open operations drawer/i }).click();
-    await expect(page.getByRole("complementary", { name: "Operations" })).toBeVisible();
-    await captureStableScreenshot(page, testInfo, "operations-drawer-open");
-
-    await expect(page.getByRole("tab", { name: /Background/ })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    await expect(page.getByText("No backgrounded tools.")).toBeVisible();
-
-    await page.getByRole("tab", { name: /Lineage/ }).click();
-    await expect(page.getByRole("tree", { name: "Subagent lineage" })).toBeVisible();
-
-    await page.getByRole("tab", { name: /Backends/ }).click();
-    await expect(page.getByRole("heading", { name: "Backend health" })).toBeVisible();
-    await expect(page.getByText("OpenAI Harness")).toBeVisible();
-
-    await page.getByRole("tab", { name: /MCP health/ }).click();
     await expect(
-      page.getByRole("heading", { name: "MCP services / health" }),
-    ).toBeVisible();
-    await expect(page.getByText("mcp-observability")).toBeVisible();
+      page.getByRole("button", { name: /open operations drawer/i }),
+    ).toHaveCount(0);
+    await expect(page.getByRole("complementary", { name: "Operations" })).toHaveCount(
+      0,
+    );
+    await expect(page.getByTestId("transcript-panel")).toBeVisible();
   });
 
   test("interrupt cancellation handles direct and cascade flows", async ({ page }) => {
@@ -202,7 +191,7 @@ test.describe("desktop UI harness", () => {
     await expect(page.getByTestId("chat-toast")).toContainText("Interrupt requested");
   });
 
-  test("sad path scenarios surface empty, bridge, save, and backend-health errors", async ({
+  test("sad path scenarios surface empty, bridge, and save errors", async ({
     page,
   }, testInfo) => {
     await gotoHarness(page, "empty-fleet");
@@ -227,14 +216,6 @@ test.describe("desktop UI harness", () => {
 
     await page.getByTestId("error-banner-dismiss").click();
     await expect(page.getByTestId("error-banner")).toHaveCount(0);
-
-    await gotoHarness(page, "backend-health-error");
-    await openChat(page);
-    await page.getByRole("button", { name: /open operations drawer/i }).click();
-    await page.getByRole("tab", { name: /Backends/ }).click();
-    await expect(page.getByRole("alert")).toContainText(
-      "Harness backend health bridge unavailable",
-    );
   });
 
   test("long transcript content remains readable and keeps composer usable", async ({

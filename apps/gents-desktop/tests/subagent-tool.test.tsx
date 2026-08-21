@@ -19,19 +19,14 @@ describe("subagent transcript tool", () => {
             statusKind: "running",
             childRequestId: "child-request-123456789",
             awaitMode: "background",
-            args: {
-              rawText:
-                '{"name":"researcher","prompt":"Trace the completion control flow","await_mode":"background"}',
-              fields: [
-                { key: "name", value: "researcher" },
-                {
-                  key: "prompt",
-                  value: "Trace the completion control flow",
-                },
-                { key: "await_mode", value: "background" },
-              ],
+            presentation: {
+              kind: "subagent",
+              action: "spawn",
+              name: "researcher",
+              childRequestId: "child-request-123456789",
+              description: "Trace the completion control flow",
+              output: null,
             },
-            result: null,
             partialOutputTail: "Reading watcher.rs",
             partialOutputSeq: 18,
           },
@@ -42,14 +37,14 @@ describe("subagent transcript tool", () => {
     const { container, getAllByText, getByText } = render(
       <MessageList timelineItems={items} />,
     );
-    const card = container.querySelector('[data-testid="subagent-tool-spawn-1"]');
+    const card = container.querySelector('[data-testid="tool-spawn-1"]');
 
     expect(card).not.toBeNull();
     expect(card?.hasAttribute("open")).toBe(true);
     expect(card?.getAttribute("data-child-request-id")).toBe("child-request-123456789");
     expect(getByText("researcher")).toBeTruthy();
     expect(getByText("background")).toBeTruthy();
-    expect(getByText("working")).toBeTruthy();
+    expect(getByText("running")).toBeTruthy();
     expect(getAllByText("Trace the completion control flow")).toHaveLength(2);
     expect(getByText("Reading watcher.rs")).toBeTruthy();
   });
@@ -68,16 +63,13 @@ describe("subagent transcript tool", () => {
             statusKind: "success",
             childRequestId: "child-complete",
             awaitMode: "foreground",
-            args: {
-              rawText: '{"name":"reviewer","prompt":"Review the patch"}',
-              fields: [
-                { key: "name", value: "reviewer" },
-                { key: "prompt", value: "Review the patch" },
-              ],
-            },
-            result: {
-              rawText: "No blocking issues found.",
-              fields: [],
+            presentation: {
+              kind: "subagent",
+              action: "spawn",
+              name: "reviewer",
+              childRequestId: "child-complete",
+              description: "Review the patch",
+              output: "No blocking issues found.",
             },
           },
         ],

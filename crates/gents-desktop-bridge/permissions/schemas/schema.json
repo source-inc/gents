@@ -931,18 +931,6 @@
           "markdownDescription": "Denies the desktop_schedule_save command without any pre-configured scope."
         },
         {
-          "description": "Enables the desktop_session_fork command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-desktop-session-fork",
-          "markdownDescription": "Enables the desktop_session_fork command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the desktop_session_fork command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-desktop-session-fork",
-          "markdownDescription": "Denies the desktop_session_fork command without any pre-configured scope."
-        },
-        {
           "description": "Enables the desktop_session_snapshot command without any pre-configured scope.",
           "type": "string",
           "const": "allow-desktop-session-snapshot",
@@ -1147,10 +1135,10 @@
           "markdownDescription": "Tool-surface explain (config family)\n#### This permission set includes:\n\n- `allow-desktop-tool-surface-explain`"
         },
         {
-          "description": "Chat send, rename, fork\n#### This permission set includes:\n\n- `allow-desktop-chat-send`\n- `allow-desktop-conversation-rename`\n- `allow-desktop-session-fork`",
+          "description": "Chat send and rename\n#### This permission set includes:\n\n- `allow-desktop-chat-send`\n- `allow-desktop-conversation-rename`",
           "type": "string",
           "const": "chat-write",
-          "markdownDescription": "Chat send, rename, fork\n#### This permission set includes:\n\n- `allow-desktop-chat-send`\n- `allow-desktop-conversation-rename`\n- `allow-desktop-session-fork`"
+          "markdownDescription": "Chat send and rename\n#### This permission set includes:\n\n- `allow-desktop-chat-send`\n- `allow-desktop-conversation-rename`"
         },
         {
           "description": "Request resend / retry\n#### This permission set includes:\n\n- `allow-desktop-request-resend`\n- `allow-desktop-request-retry`",

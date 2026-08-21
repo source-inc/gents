@@ -59,7 +59,8 @@ inductive Transition : RuntimeState → RuntimeState → Prop where
       CanAdmitRequest pre sessionId requestId →
       post =
         { pre with
-          inFlight := insert requestId pre.inFlight
+          accepted := insert requestId pre.accepted
+        , inFlight := insert requestId pre.inFlight
         , requestGeneration := Function.update pre.requestGeneration requestId pre.routerObservedGeneration
         , requestSession := Function.update pre.requestSession requestId sessionId
         , requestBehavior := Function.update pre.requestBehavior requestId (pre.selectedBehavior sessionId)
@@ -88,6 +89,12 @@ theorem transition_generation_monotone
     pre.active.generation ≤ post.active.generation := by
   cases h_trans <;>
     simp_all [ResolvedSnapshot.activate, Nat.le_succ]
+
+theorem transition_accepted_monotone
+    {pre post : RuntimeState}
+    (h_trans : Transition pre post) :
+    pre.accepted ⊆ post.accepted := by
+  cases h_trans <;> simp_all
 
 theorem coherent_preserved
     {pre post : RuntimeState}
@@ -173,7 +180,7 @@ theorem coherent_preserved
       exact h_ready_live _ h_ready
   | accept_request sessionId requestId h_can h_post =>
       cases h_post
-      rcases h_can with ⟨h_fresh, h_router_eq, h_router_ready, _h_dispatch⟩
+      rcases h_can with ⟨_h_unaccepted, h_fresh, h_router_eq, h_router_ready, _h_dispatch⟩
       refine ⟨h_active, h_last, h_default, h_runnable, h_unavailable, h_generation_live,
         h_generation_ready, h_router_live, h_ready_live, h_live_bound, h_pending, ?_, ?_⟩
       · intro rid h_rid

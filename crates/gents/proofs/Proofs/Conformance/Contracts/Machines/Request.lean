@@ -16,6 +16,7 @@ def requestStateNames : List String :=
 def requestActions : List (String × RequestContext.Action) :=
   [ ("claim", .claim)
   , ("dedupLose", .dedupLose)
+  , ("admissionReject", .admissionReject)
   , ("beginInference", .beginInference)
   , ("advance", .advance)
   , ("finish", .finish)

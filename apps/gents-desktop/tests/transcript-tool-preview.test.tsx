@@ -2,12 +2,9 @@ import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { MessageList } from "@source-inc/gents-desktop-chat";
-import type {
-  RenderedTimelineItem,
-  ToolDetailValueView,
-} from "@source-inc/gents-desktop-client";
+import type { RenderedTimelineItem } from "@source-inc/gents-desktop-client";
 
-function renderToolArgs(args: ToolDetailValueView) {
+function renderGeneric(summary: string | null) {
   const items: RenderedTimelineItem[] = [
     {
       kind: "toolGroup",
@@ -16,57 +13,33 @@ function renderToolArgs(args: ToolDetailValueView) {
       tools: [
         {
           itemKey: "tool-1",
-          toolName: "call_tool",
+          toolName: "web_request",
+          status: "completed",
           statusKind: "success",
-          args,
-          result: null,
+          presentation: {
+            kind: "generic",
+            summary,
+            input: '{"large":"payload remains collapsed"}',
+            output: null,
+          },
         },
       ],
     },
   ];
-
   return render(<MessageList timelineItems={items} />).container;
 }
 
-describe("Transcript tool argument previews", () => {
-  it("uses an allowlisted field instead of the first arbitrary field", () => {
-    const container = renderToolArgs({
-      rawText: '{"api_key":"sk-supersecret","path":"src/main.rs"}',
-      fields: [
-        { key: "api_key", value: "sk-supersecret" },
-        { key: "path", value: "src/main.rs" },
-      ],
-    });
-
-    expect(container.querySelector(".tool-item-preview")).toHaveTextContent(
+describe("generic tool summaries", () => {
+  it("shows only the bridge-projected safe summary", () => {
+    const container = renderGeneric("src/main.rs");
+    expect(container.querySelector(".tool-summary-preview")).toHaveTextContent(
       "src/main.rs",
     );
-    expect(container.querySelector(".tool-item-preview")).not.toHaveTextContent(
-      "sk-supersecret",
-    );
+    expect(container.querySelector("details")).not.toHaveAttribute("open");
   });
 
-  it("does not fall back to raw arguments when no field is allowlisted", () => {
-    const container = renderToolArgs({
-      rawText: '{"api_key":"sk-supersecret"}',
-      fields: [{ key: "api_key", value: "sk-supersecret" }],
-    });
-
-    expect(container.querySelector(".tool-item-preview")).toBeNull();
-  });
-
-  it("suppresses an allowlisted field when its value contains credentials", () => {
-    const container = renderToolArgs({
-      rawText:
-        '{"command":"curl -H \'Authorization: Bearer sk-supersecret\' example.com"}',
-      fields: [
-        {
-          key: "command",
-          value: "curl -H 'Authorization: Bearer sk-supersecret' example.com",
-        },
-      ],
-    });
-
-    expect(container.querySelector(".tool-item-preview")).toBeNull();
+  it("does not invent a preview when the bridge suppresses one", () => {
+    const container = renderGeneric(null);
+    expect(container.querySelector(".tool-summary-preview")).toBeNull();
   });
 });

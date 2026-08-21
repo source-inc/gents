@@ -100,8 +100,6 @@ struct RequestRow {
     #[serde(default)]
     behavior_id: Option<String>,
     #[serde(default)]
-    metadata: Option<String>,
-    #[serde(default)]
     lifecycle_state: Option<String>,
     #[serde(default)]
     superseded_by_request: Option<String>,
@@ -177,7 +175,6 @@ const REQUEST_ROW_FIELDS: &str = r#"
     session_id
     agent_did
     behavior_id
-    metadata
     lifecycle_state
     superseded_by_request
     failure_reason
@@ -261,7 +258,7 @@ async fn load_authorized_subagent_threads_for_roots(
         );
         let mut frontier_sessions = requests
             .iter()
-            .filter(|row| is_codex_root(row, &state.agent_did, &state.behavior_id))
+            .filter(|row| is_projectable_root(row, &state.agent_did, &state.behavior_id))
             .map(|row| row.session_id.clone())
             .chain(links.iter().map(|link| link.session_id.clone()))
             .filter(|session_id| scanned_sessions.insert(session_id.clone()))
@@ -619,7 +616,7 @@ fn resolve_authorized_subagent_threads(
     let roots = requests
         .iter()
         .enumerate()
-        .filter(|(_, row)| is_codex_root(row, shim_agent_did, shim_behavior_id))
+        .filter(|(_, row)| is_projectable_root(row, shim_agent_did, shim_behavior_id))
         .map(|(row_index, row)| AuthorizedRequest {
             row_index,
             root_session_id: row.session_id.clone(),
@@ -829,17 +826,12 @@ fn request_context_key(row: &RequestRow) -> RequestContextKey {
     }
 }
 
-fn is_codex_root(row: &RequestRow, agent_did: &str, behavior_id: &str) -> bool {
+fn is_projectable_root(row: &RequestRow, agent_did: &str, behavior_id: &str) -> bool {
     row.agent_did == agent_did
         && nonempty(row.behavior_id.as_deref()) == Some(behavior_id)
         && row.subagent_depth.unwrap_or_default() == 0
         && nonempty(row.caused_by_parent_request_id.as_deref()).is_none()
         && nonempty(row.caused_by_parent_tool_call_id.as_deref()).is_none()
-        && row
-            .metadata
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-            .is_some_and(|metadata| metadata.get("codex_shim").is_some())
 }
 
 fn spawn_nickname(args: &str) -> Option<String> {
@@ -1079,7 +1071,6 @@ mod tests {
             session_id: session_id.to_string(),
             agent_did: if depth == 0 { "did:root" } else { "did:child" }.to_string(),
             behavior_id: Some(if depth == 0 { "root" } else { "reviewer" }.to_string()),
-            metadata: (depth == 0).then(|| r#"{"codex_shim":{"cwd":"/tmp"}}"#.to_string()),
             lifecycle_state: Some(
                 if depth == 0 {
                     "processing"

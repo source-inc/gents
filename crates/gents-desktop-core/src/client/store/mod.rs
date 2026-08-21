@@ -457,26 +457,6 @@ impl ClientStore {
         ClientStore::from_rows(rows)
     }
 
-    pub fn stamp_source_agent_did(&mut self, agent_did: &str) {
-        let source = Some(agent_did.to_string());
-        self.message_source_agent_dids = vec![source.clone(); self.messages.len()];
-        self.session_source_agent_dids = vec![source.clone(); self.sessions.len()];
-        self.tool_call_source_agent_dids = vec![source.clone(); self.tool_calls.len()];
-        self.tool_result_source_agent_dids = vec![source.clone(); self.tool_results.len()];
-        self.compaction_entry_source_agent_dids =
-            vec![source.clone(); self.compaction_entries.len()];
-        self.task_source_agent_dids = vec![source.clone(); self.tasks.len()];
-        self.schedule_source_agent_dids = vec![source.clone(); self.schedules.len()];
-        self.event_trigger_source_agent_dids = vec![source.clone(); self.event_triggers.len()];
-        self.skill_source_agent_dids = vec![source.clone(); self.skills.len()];
-        self.inference_backend_source_agent_dids =
-            vec![source.clone(); self.inference_backends.len()];
-        self.inference_profile_source_agent_dids =
-            vec![source.clone(); self.inference_profiles.len()];
-        self.tool_service_registry_source_agent_dids =
-            vec![source; self.tool_service_registries.len()];
-    }
-
     pub fn to_rows(&self) -> ClientStoreRows {
         ClientStoreRows {
             agent_principals: self.agent_principals.clone(),
@@ -1536,7 +1516,7 @@ mod tests {
 
     #[test]
     fn source_agent_dids_round_trip_with_rows() {
-        let mut store = ClientStore::from_rows(ClientStoreRows {
+        let store = ClientStore::from_rows(ClientStoreRows {
             tasks: vec![task_row("task-1", "default")],
             schedules: vec![schedule_row("schedule-1", "task-1", None, None, None, None)],
             event_triggers: vec![event_trigger_row(
@@ -1547,9 +1527,11 @@ mod tests {
                 None,
                 None,
             )],
+            task_source_agent_dids: vec![Some("did:test:mini-1".to_string())],
+            schedule_source_agent_dids: vec![Some("did:test:mini-1".to_string())],
+            event_trigger_source_agent_dids: vec![Some("did:test:mini-1".to_string())],
             ..ClientStoreRows::default()
         });
-        store.stamp_source_agent_did("did:test:mini-1");
 
         let restored = ClientStore::from_rows(store.to_rows());
 

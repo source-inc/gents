@@ -78,6 +78,9 @@ theorem transition_produces_coherent
   | dedup_lose _ h_release h_post =>
     rw [coherent, h_post]
     simp [coherentStateAdmission, h_release]
+  | admission_reject _ h_release h_post =>
+    rw [coherent, h_post]
+    simp [coherentStateAdmission, h_release]
   | begin_inference _ _ h_post =>
     rw [coherent, h_post]
     simp [coherentStateAdmission]
@@ -126,6 +129,8 @@ theorem claim_requires_ttl_open
       exact h_ttl
   | dedup_lose _ _ h_post =>
       simp [h_post] at h_claimed
+  | admission_reject _ _ h_post =>
+      simp [h_post] at h_claimed
   | begin_inference _ _ h_post =>
       simp [h_post] at h_claimed
   | advance h_state _ h_post =>
@@ -168,6 +173,8 @@ theorem claim_deadline_explicit
       simp [h_post, claimDeadline, h_requestDeadline]
   | dedup_lose _ _ h_post =>
       simp [h_post] at h_claimed
+  | admission_reject _ _ h_post =>
+      simp [h_post] at h_claimed
   | begin_inference _ _ h_post =>
       simp [h_post] at h_claimed
   | advance h_state _ h_post =>
@@ -197,6 +204,8 @@ theorem claim_deadline_default
   | claim _ _ _ h_post =>
       simp [h_post, claimDeadline, h_requestDeadline]
   | dedup_lose _ _ h_post =>
+      simp [h_post] at h_claimed
+  | admission_reject _ _ h_post =>
       simp [h_post] at h_claimed
   | begin_inference _ _ h_post =>
       simp [h_post] at h_claimed

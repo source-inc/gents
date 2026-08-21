@@ -4,10 +4,9 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use tokio::sync::watch;
 
-use crate::lifecycle::{ClaimOutcome, ExecutionOrigin, RequestLifecycle};
+use crate::lifecycle::{ExecutionOrigin, RequestLifecycle};
 use crate::runtime_snapshot::ActiveRuntimeSnapshot;
 use crate::runtime_status::RuntimeStatusHandle;
-use crate::streaming::{DefraStreamWriter, StreamWriter};
 use crate::watcher::{AgentRequest, DefraWatcher, Watcher};
 
 use super::context::BehaviorResolution;
@@ -260,53 +259,7 @@ async fn fail_routed_request(
         "",
     );
 
-    match lifecycle.claim_with_identity().await {
-        Ok(ClaimOutcome::Claimed) => {}
-        Ok(ClaimOutcome::Queued) => {
-            tracing::info!(
-                request_id = %request.request_id,
-                session_id = %request.session_id,
-                behavior_id = %behavior_id,
-                "rejected request queued behind an earlier same-session request"
-            );
-            return Ok(());
-        }
-        Ok(ClaimOutcome::Interrupted) | Ok(ClaimOutcome::Expired) => return Ok(()),
-        Err(error) => {
-            tracing::warn!(
-                request_id = %request.request_id,
-                session_id = %request.session_id,
-                behavior_id = %behavior_id,
-                error = %error,
-                "failed to claim rejected request"
-            );
-            return Ok(());
-        }
-    }
-
-    let stream_writer = DefraStreamWriter::new(node, agent_did, Duration::from_millis(0));
-    if lifecycle.response_exists().await.unwrap_or(false) {
-        stream_writer
-            .finalize_existing_request_error(&request.request_id, error_message)
-            .await?;
-        return Ok(());
-    }
-
-    let doc_id = stream_writer
-        .begin_with_requester_did(
-            &request.session_id,
-            &request.request_id,
-            Some(&request.doc_id),
-            behavior_id,
-            request.requester_did.as_deref(),
-        )
-        .await?;
-    let _ = stream_writer
-        .write_tokens(&doc_id, &format!("Error: {error_message}"))
-        .await?;
-    stream_writer.finalize_error(&doc_id, error_message).await?;
-    lifecycle.fail_with_reason(error_message).await?;
-    Ok(())
+    lifecycle.reject_admission(error_message).await
 }
 
 fn normalize_optional_string(value: Option<&str>) -> Option<&str> {

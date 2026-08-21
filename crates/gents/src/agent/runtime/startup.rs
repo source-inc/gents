@@ -733,37 +733,6 @@ async fn log_recovery(node: &defra_node::EmbeddedNode, agent_did: &str, default_
                     "recovered stuck responses"
                 );
             }
-            if report.conversations_recovered > 0 {
-                recovered_any = true;
-                tracing::info!(
-                    agent_did = %agent_did,
-                    count = report.conversations_recovered,
-                    "recovered stuck conversations"
-                );
-            }
-            // Failures are the OPPOSITE of a recovery and must never be folded
-            // into the recovered count (#693): a fully failed pass used to log
-            // "recovered stuck conversations count=2" and read as healthy.
-            if report.conversations_failed > 0 {
-                recovered_any = true;
-                tracing::warn!(
-                    agent_did = %agent_did,
-                    count = report.conversations_failed,
-                    "failed to recover stuck conversations; they remain stuck and will be \
-                     retried on the next startup"
-                );
-            }
-            if report.duplicate_conversation_sessions > 0 {
-                recovered_any = true;
-                tracing::warn!(
-                    agent_did = %agent_did,
-                    count = report.duplicate_conversation_sessions,
-                    "sessions carry duplicate AgentConversation documents; the canonical \
-                     document was recovered and the duplicates converged onto it. This store \
-                     predates the unique session_id index (DefraDB cannot add it retroactively) \
-                     or received duplicates over replication"
-                );
-            }
         }
         Err(error) => {
             tracing::warn!(agent_did = %agent_did, error = %error, "startup recovery failed");

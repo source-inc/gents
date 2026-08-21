@@ -131,15 +131,16 @@ def snapshotJson : String :=
       ++ jsonArray (CommandPolicy.commandEnvCases.map commandEnvCaseJson) ++ ","
     ++ "\"live_overlay_cases\":"
       ++ jsonArray (liveOverlayCases.map liveOverlayCaseJson) ++ ","
+    ++ "\"request_progress_cases\":"
+      ++ jsonArray (requestProgressCases.map requestProgressCaseJson) ++ ","
+    ++ "\"pending_user_turn_cases\":"
+      ++ jsonArray (pendingUserTurnCases.map pendingUserTurnCaseJson) ++ ","
     ++ "\"queue_deadline_conformance_cases\":"
       ++ jsonArray
         (queueDeadlineConformanceCases.map queueDeadlineConformanceCaseJson) ++ ","
     ++ "\"recovery_sweep_cases\":"
       ++ jsonArray
         (Recovery.recoverySweepCases.map recoverySweepCaseJson) ++ ","
-    ++ "\"recovery_outcome_cases\":"
-      ++ jsonArray
-        (Recovery.recoveryOutcomeCases.map recoveryOutcomeCaseJson) ++ ","
     ++ "\"recovery_equivalence_cases\":"
       ++ jsonArray
         (Recovery.recoveryEquivalenceCases.map recoveryEquivalenceCaseJson) ++ ","

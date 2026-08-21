@@ -31,7 +31,6 @@ export type FleetDashboardProps = {
   ) => Promise<BearerPairingResponse>;
   onProbePeerAddress: (serverAddress: string) => Promise<unknown>;
   onOpenChat: (agentDid: string) => void;
-  onOpenCode?: (agentDid: string) => void;
   onOpenConfig: (agentDid: string) => void;
   onRemovePeer?: (peerId: string) => Promise<unknown> | void;
   onRenamePeer?: (peerId: string, label: string) => Promise<unknown> | void;
@@ -66,7 +65,6 @@ export function FleetDashboard({
   onPairBearer,
   onProbePeerAddress,
   onOpenChat,
-  onOpenCode,
   onOpenConfig,
   onRemovePeer,
   onRenamePeer,
@@ -257,7 +255,6 @@ export function FleetDashboard({
                 deployment={deployment}
                 key={deployment.peerId}
                 onOpenChat={onOpenChat}
-                onOpenCode={onOpenCode}
                 onOpenConfig={onOpenConfig}
                 onRemovePeer={onRemovePeer}
                 onRenamePeer={onRenamePeer}

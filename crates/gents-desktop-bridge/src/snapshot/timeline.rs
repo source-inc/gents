@@ -1,46 +1,19 @@
-use serde_json::Value;
-
 use std::collections::BTreeMap;
 
 use gents_protocol::timeline::{
-    build_timeline_order, OverlayInput, OverlayPlacement, TimelineMessageInput, TimelineRole,
+    build_timeline_order, has_durable_user_owner, DurableUserOwnerInput, OverlayInput,
+    OverlayPlacement, PendingInput, PendingPlacement, TimelineMessageInput, TimelineRole,
     TimelineSlot,
 };
 
 use super::super::types::{
     normalize_optional, MessageView, PendingTurnView, RenderedTimelineItem, RenderedToolCallView,
-    ResponseView, ToolCallView, ToolDetailFieldView, ToolDetailValueView,
+    ResponseView, ToolCallView,
 };
+use super::tool_presentation::project_tool_presentation;
 
 pub(super) fn normalize_timeline_text(value: Option<&str>) -> String {
     value.map(str::trim).unwrap_or_default().to_string()
-}
-
-fn render_json_value(value: &Value) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::String(value) => value.clone(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        _ => serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()),
-    }
-}
-
-fn parse_tool_detail_value(value: Option<&str>) -> Option<ToolDetailValueView> {
-    let raw_text = normalize_optional(value)?;
-    let parsed = serde_json::from_str::<Value>(&raw_text).ok();
-    let fields = match parsed {
-        Some(Value::Object(map)) => map
-            .into_iter()
-            .map(|(key, value)| ToolDetailFieldView {
-                key,
-                value: render_json_value(&value),
-            })
-            .collect::<Vec<_>>(),
-        _ => Vec::new(),
-    };
-
-    Some(ToolDetailValueView { raw_text, fields })
 }
 
 fn tool_status_kind(status: Option<&str>) -> String {
@@ -53,6 +26,7 @@ fn tool_status_kind(status: Option<&str>) -> String {
 }
 
 fn render_tool_call(tool: ToolCallView) -> RenderedToolCallView {
+    let presentation = project_tool_presentation(&tool);
     RenderedToolCallView {
         item_key: tool.tool_call_key.clone(),
         tool_name: tool.tool_name.clone().unwrap_or_else(|| "tool".to_string()),
@@ -60,31 +34,37 @@ fn render_tool_call(tool: ToolCallView) -> RenderedToolCallView {
         status: tool.status.clone(),
         child_request_id: tool.child_request_id.clone(),
         await_mode: tool.await_mode.clone(),
-        args: parse_tool_detail_value(tool.args.as_deref()),
+        cancel_policy: tool.cancel_policy.clone(),
+        started_at: tool.started_at.clone(),
+        deadline_at: tool.deadline_at.clone(),
+        completed_at: tool.completed_at.clone(),
+        presentation,
         partial_output_tail: tool.partial_output_tail.clone(),
         partial_output_seq: tool.partial_output_seq,
-        result: parse_tool_detail_value(tool.result.as_deref()),
         denial: tool.denial.clone(),
         cancel_cause: tool.cancel_cause.clone(),
     }
 }
 
-pub(super) fn materialized_user_turn_count(messages: &[MessageView]) -> usize {
-    let mut ordered = messages.iter().collect::<Vec<_>>();
-    ordered.sort_by_key(|message| message.sequence.unwrap_or_default());
-    ordered
-        .into_iter()
-        .filter(|message| {
+pub(super) fn has_materialized_user_owner(messages: &[MessageView], request_id: &str) -> bool {
+    let ownership = messages
+        .iter()
+        .map(|message| {
             let role = message
                 .display_role
                 .as_deref()
                 .or(message.role.as_deref())
                 .unwrap_or_default();
-            role.eq_ignore_ascii_case("user")
-                && normalize_optional(message.display_content.as_deref()).is_some()
-                && !message.runtime_control
+            DurableUserOwnerInput {
+                request_id: message.request_id.as_deref(),
+                is_user: role.eq_ignore_ascii_case("user"),
+                has_visible_content: normalize_optional(message.display_content.as_deref())
+                    .is_some(),
+                runtime_control: message.runtime_control,
+            }
         })
-        .count()
+        .collect::<Vec<_>>();
+    has_durable_user_owner(&ownership, request_id)
 }
 
 fn message_presentation_key(
@@ -105,21 +85,31 @@ fn message_presentation_key(
     })
 }
 
-fn overlay_matches_latest_assistant(
-    timeline: &[RenderedTimelineItem],
+fn overlay_has_durable_owner(
+    messages: &[MessageView],
+    active_response_request_id: Option<&str>,
     overlay_content: &Option<String>,
     overlay_reasoning: &Option<String>,
 ) -> bool {
-    for item in timeline.iter().rev() {
-        match item {
-            RenderedTimelineItem::AssistantMessage {
-                content, reasoning, ..
-            } => return content == overlay_content && reasoning == overlay_reasoning,
-            RenderedTimelineItem::ToolGroup { .. } => continue,
-            _ => return false,
-        }
+    let Some(request_id) = active_response_request_id else {
+        return false;
+    };
+    if overlay_content.is_none() && overlay_reasoning.is_none() {
+        return false;
     }
-    false
+
+    messages.iter().any(|message| {
+        message.request_id.as_deref() == Some(request_id)
+            && message
+                .display_role
+                .as_deref()
+                .or(message.role.as_deref())
+                .is_some_and(|role| role.eq_ignore_ascii_case("assistant"))
+            && !message.has_tool_results
+            && !message.runtime_control
+            && normalize_optional(message.display_content.as_deref()) == *overlay_content
+            && normalize_optional(message.reasoning.as_deref()) == *overlay_reasoning
+    })
 }
 
 fn tool_is_nonterminal(tool: &ToolCallView) -> bool {
@@ -231,6 +221,7 @@ pub(super) fn build_rendered_timeline(
                     true,
                     Some(RenderedTimelineItem::UserMessage {
                         item_key: message.message_key.clone(),
+                        request_id: message.request_id.clone(),
                         sequence: message.sequence,
                         content,
                         timestamp: normalize_optional(message.timestamp.as_deref()),
@@ -281,20 +272,16 @@ pub(super) fn build_rendered_timeline(
     let overlay_reasoning = active_response_overlay
         .and_then(|overlay| normalize_optional(overlay.reasoning.as_deref()));
 
-    // First assemble the durable timeline so the adapter can reduce the rich
-    // content comparison to the neutral duplicate bit consumed by the shared
-    // ordering contract.
-    let base_order = build_timeline_order(&inputs, &group_sequences, pending_turn.is_some(), None);
-    let base_timeline = render_timeline_order(
-        base_order,
-        &rendered_message,
-        &tool_groups,
-        pending_turn,
+    // Reduce the rich request-scoped ownership check to the neutral bit used by
+    // the shared ordering contract. Do not infer ownership from the last item:
+    // P2P can expose message 32 while the response head still contains message
+    // 6's tail.
+    let has_durable_owner = overlay_has_durable_owner(
+        messages,
+        active_response_request_id,
         &overlay_content,
         &overlay_reasoning,
     );
-    let matches_trailing_assistant =
-        overlay_matches_latest_assistant(&base_timeline, &overlay_content, &overlay_reasoning);
 
     // A tool belonging to this active, unmaterialized response is an orphan
     // until its owning assistant message is persisted. Keep the live reasoning
@@ -315,12 +302,42 @@ pub(super) fn build_rendered_timeline(
     });
     let overlay =
         (overlay_content.is_some() || overlay_reasoning.is_some()).then_some(OverlayInput {
-            matches_trailing_assistant,
+            has_durable_owner,
             placement: target_orphan.map_or(OverlayPlacement::Tail, |message_sequence| {
                 OverlayPlacement::BeforeOrphan { message_sequence }
             }),
         });
-    let order = build_timeline_order(&inputs, &group_sequences, pending_turn.is_some(), overlay);
+    let pending = pending_turn.map(|pending_turn| {
+        let first_same_request_assistant = messages
+            .iter()
+            .filter(|message| {
+                message.request_id.as_deref() == Some(pending_turn.request_id.as_str())
+                    && message.sequence.is_some()
+                    && message
+                        .display_role
+                        .as_deref()
+                        .or(message.role.as_deref())
+                        .is_some_and(|role| role.eq_ignore_ascii_case("assistant"))
+                    && !message.has_tool_results
+                    && !message.runtime_control
+                    && (normalize_optional(message.display_content.as_deref()).is_some()
+                        || normalize_optional(message.reasoning.as_deref()).is_some()
+                        || message.has_tool_calls)
+            })
+            .min_by_key(|message| {
+                message
+                    .sequence
+                    .map_or((0_i8, 0_i64), |sequence| (1, sequence))
+            });
+        PendingInput {
+            placement: first_same_request_assistant
+                .and_then(|message| message.sequence)
+                .map_or(PendingPlacement::Tail, |message_sequence| {
+                    PendingPlacement::BeforeMessage { message_sequence }
+                }),
+        }
+    });
+    let order = build_timeline_order(&inputs, &group_sequences, pending, overlay);
     render_timeline_order(
         order,
         &rendered_message,
@@ -334,13 +351,14 @@ pub(super) fn build_rendered_timeline(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_rendered_timeline, materialized_user_turn_count, render_tool_call, tool_status_kind,
-        MessageView, RenderedTimelineItem, ToolCallView,
+        build_rendered_timeline, has_materialized_user_owner, render_tool_call, tool_status_kind,
+        MessageView, RenderedTimelineItem, ResponseView, ToolCallView,
     };
 
     fn user_message(key: &str, sequence: i64, content: &str) -> MessageView {
         MessageView {
             message_key: key.to_string(),
+            request_id: Some("request-1".to_string()),
             sequence: Some(sequence),
             role: Some("user".to_string()),
             content: Some(content.to_string()),
@@ -351,6 +369,39 @@ mod tests {
             has_tool_results: false,
             runtime_control: false,
             timestamp: None,
+        }
+    }
+
+    fn assistant_message(key: &str, request_id: &str, sequence: i64, content: &str) -> MessageView {
+        MessageView {
+            message_key: key.to_string(),
+            request_id: Some(request_id.to_string()),
+            sequence: Some(sequence),
+            role: Some("assistant".to_string()),
+            content: Some(content.to_string()),
+            display_role: Some("assistant".to_string()),
+            display_content: Some(content.to_string()),
+            reasoning: None,
+            has_tool_calls: false,
+            has_tool_results: false,
+            runtime_control: false,
+            timestamp: None,
+        }
+    }
+
+    fn streaming_response(content: &str) -> ResponseView {
+        ResponseView {
+            status: Some("streaming".to_string()),
+            content: Some(content.to_string()),
+            reasoning: None,
+            error_message: None,
+            token_count: None,
+            materialized_message_sequence: None,
+            materialized_at: None,
+            interrupted_at: None,
+            completed_at: None,
+            cancel_cause: None,
+            backend_id: None,
         }
     }
 
@@ -387,7 +438,9 @@ mod tests {
             lifecycle_state: Some("running".to_string()),
             child_request_id: Some("child-request-1".to_string()),
             await_mode: Some("background".to_string()),
+            cancel_policy: Some("detach".to_string()),
             started_at: None,
+            deadline_at: None,
             completed_at: None,
             denial: None,
             cancel_cause: None,
@@ -428,7 +481,7 @@ mod tests {
 
         let timeline = build_rendered_timeline(&messages, &[], None, None, None);
 
-        assert_eq!(materialized_user_turn_count(&messages), 1);
+        assert!(has_materialized_user_owner(&messages, "request-1"));
         assert_eq!(timeline.len(), 1);
         assert!(matches!(
             &timeline[0],
@@ -444,7 +497,7 @@ mod tests {
 
         let timeline = build_rendered_timeline(&messages, &[], None, None, None);
 
-        assert_eq!(materialized_user_turn_count(&messages), 1);
+        assert!(has_materialized_user_owner(&messages, "request-1"));
         assert!(matches!(
             &timeline[0],
             RenderedTimelineItem::UserMessage {
@@ -452,5 +505,59 @@ mod tests {
                 ..
             } if rendered == content
         ));
+    }
+
+    #[test]
+    fn stale_replicated_tail_is_hidden_when_earlier_turn_from_same_request_owns_it() {
+        let stale = "Good catch — inspect the current system prompt.";
+        let messages = vec![
+            user_message("user-1", 1, "Check fleet status"),
+            assistant_message("assistant-6", "request-1", 6, stale),
+            assistant_message(
+                "assistant-32",
+                "request-1",
+                32,
+                "Diff is clean and scoped — applying now.",
+            ),
+        ];
+        let response = streaming_response(stale);
+
+        let timeline =
+            build_rendered_timeline(&messages, &[], None, Some(&response), Some("request-1"));
+
+        assert_eq!(
+            timeline
+                .iter()
+                .filter(|item| matches!(item, RenderedTimelineItem::LiveAssistant { .. }))
+                .count(),
+            0,
+            "an old response head must not re-emit message 6 after message 32 is durable"
+        );
+        assert!(timeline.iter().any(|item| matches!(
+            item,
+            RenderedTimelineItem::AssistantMessage {
+                sequence: Some(32),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn identical_text_from_another_request_does_not_own_live_tail() {
+        let repeated = "I am checking now.";
+        let messages = vec![assistant_message("assistant-2", "request-old", 2, repeated)];
+        let response = streaming_response(repeated);
+
+        let timeline = build_rendered_timeline(
+            &messages,
+            &[],
+            None,
+            Some(&response),
+            Some("request-current"),
+        );
+
+        assert!(timeline
+            .iter()
+            .any(|item| matches!(item, RenderedTimelineItem::LiveAssistant { .. })));
     }
 }

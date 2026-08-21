@@ -1,4 +1,4 @@
-@layer tokens, primitives, chat, fleet, transcript, components, backend-health, backgrounded-tools, holds, mcp-health, utilities, trace, workspace, fixture;
+@layer tokens, primitives, chat, fleet, transcript, components, backend-health, holds, mcp-health, utilities, trace, workspace, fixture;
 
 @import "@source-inc/gents-desktop-tokens/semantic.css";
 @import "@source-inc/gents-desktop-ui/styles.css";

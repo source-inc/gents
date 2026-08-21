@@ -623,6 +623,8 @@ The key guarantees are:
 
 - generations only move forward
 - sessions stay pinned by behavior identity, not by mutable default selection
+- request acceptance and its owned session projection are one atomic transition
+- accepted request identities are monotone and cannot be admitted twice
 - publication is separate from resolution
 - a generation is not retired while in-flight work still depends on it
 - coherent snapshots stay coherent across transitions
@@ -865,6 +867,8 @@ desktop-style multi-session shell:
 - snapshots never mutate the user's selected deployment/session
 - transport health is a non-mutating input
 - local session switching is transport-independent
+- a new conversation is ephemeral until its first request is submitted
+- the submitted request selects the session returned by the runtime
 - follow-up submission safety is independent from transport health
 - an awaiting submission only retires after the matching tip is observed
 

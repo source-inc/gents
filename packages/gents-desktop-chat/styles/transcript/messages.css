@@ -96,6 +96,25 @@
     margin-bottom: var(--space-3);
   }
 
+  .request-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-left: var(--space-3);
+    color: var(--color-text-muted);
+    letter-spacing: normal;
+    text-transform: none;
+  }
+
+  .request-progress.is-active::before {
+    content: "";
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: var(--radius-pill);
+    background: var(--color-accent);
+    animation: thinking-pulse var(--motion-pulse) ease-in-out infinite;
+  }
+
   .message-content {
     word-break: break-word;
     overflow-wrap: anywhere;

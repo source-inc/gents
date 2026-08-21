@@ -37,6 +37,7 @@ theorem deriveAttempt_nonterminal_response_driven
 def LifecycleTransition : RequestState → RequestState → Prop
   | .pending,        .claimed         => True
   | .pending,        .superseded      => True
+  | .pending,        .failed          => True
   | .claimed,        .processing      => True
   | .processing,     .processing      => True
   | .processing,     .completed       => True
@@ -56,6 +57,8 @@ theorem transition_implies_lifecycle
   | claim h_state _ _ h_post =>
     subst h_post; simp [LifecycleTransition, h_state]
   | dedup_lose h_state _ h_post =>
+    subst h_post; simp [LifecycleTransition, h_state]
+  | admission_reject h_state _ h_post =>
     subst h_post; simp [LifecycleTransition, h_state]
   | begin_inference h_state _ h_post =>
     subst h_post; simp [LifecycleTransition, h_state]

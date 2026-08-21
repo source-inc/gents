@@ -61,6 +61,30 @@ pub struct BehaviorView {
     pub skill_excludes: Vec<String>,
 }
 
+/// Resolved, presentation-safe description of a configured behavior environment.
+///
+/// AgentBehavior stores references to shared configuration documents. Clients
+/// should not have to repeat those joins (or infer tool semantics), so the
+/// bridge materializes the environment once alongside the raw configuration
+/// projection.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BehaviorEnvironmentView {
+    pub behavior_id: String,
+    pub display_name: String,
+    pub enabled: bool,
+    pub is_default: bool,
+    pub model_name: Option<String>,
+    pub inference_profile_name: Option<String>,
+    pub workspace_root: Option<String>,
+    pub file_access: String,
+    pub bash_access: String,
+    pub network_access: Option<String>,
+    pub skill_names: Vec<String>,
+    pub session_count: usize,
+    pub active_session_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct InferenceBackendView {
@@ -270,6 +294,7 @@ pub struct DeploymentView {
     pub agent_principal: AgentPrincipalView,
     pub runtime: Option<RuntimeView>,
     pub behaviors: Vec<BehaviorView>,
+    pub behavior_environments: Vec<BehaviorEnvironmentView>,
     pub inference_backends: Vec<InferenceBackendView>,
     pub inference_profiles: Vec<InferenceProfileView>,
     pub tool_selections: Vec<ToolSelectionView>,

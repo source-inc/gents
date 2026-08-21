@@ -15,9 +15,7 @@ export type ChatHeaderProps = {
     sessionId: string,
     title: string,
   ) => void | Promise<void>;
-  onForkConversation?: (sessionId: string) => void | Promise<void>;
   onOpenMobileNavigation?: () => void;
-  forking?: boolean;
 };
 
 export function p2pConnectionDisplay(
@@ -60,9 +58,7 @@ export function ChatHeader({
   selectedConversationTitle,
   selectedSessionId,
   onRenameConversationTitle,
-  onForkConversation,
   onOpenMobileNavigation,
-  forking = false,
 }: ChatHeaderProps) {
   const p2pDisplay = p2pConnectionDisplay(
     runtimeHealth,
@@ -155,18 +151,6 @@ export function ChatHeader({
               >
                 Edit
               </button>
-              {onForkConversation && selectedSessionId ? (
-                <button
-                  className="icon-button"
-                  data-testid="conversation-fork"
-                  disabled={forking}
-                  onClick={() => void onForkConversation(selectedSessionId)}
-                  title="Fork this conversation from its current state into a new one"
-                  type="button"
-                >
-                  {forking ? "Forking..." : "Fork"}
-                </button>
-              ) : null}
             </div>
           )
         ) : (

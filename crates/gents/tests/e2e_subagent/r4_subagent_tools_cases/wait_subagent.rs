@@ -519,7 +519,7 @@ async fn wait_subagent_from_resumed_hook_cascades_parent_interrupt() {
         .to_string();
     wait_for_child_session_id(db.node.as_ref(), &child_request_id).await;
 
-    let resumed_hook = DefraSessionHook::resume_or_create_with_identity_policy(
+    let resumed_hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &session_id,
         PARENT_BEHAVIOR_ID,

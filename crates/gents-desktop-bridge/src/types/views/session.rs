@@ -7,6 +7,7 @@ use super::operations::DerivedCancelCauseView;
 #[serde(rename_all = "camelCase")]
 pub struct MessageView {
     pub message_key: String,
+    pub request_id: Option<String>,
     pub sequence: Option<i64>,
     pub role: Option<String>,
     pub content: Option<String>,
@@ -35,7 +36,9 @@ pub struct ToolCallView {
     pub lifecycle_state: Option<String>,
     pub child_request_id: Option<String>,
     pub await_mode: Option<String>,
+    pub cancel_policy: Option<String>,
     pub started_at: Option<String>,
+    pub deadline_at: Option<String>,
     pub completed_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     #[ts(optional = nullable)]
@@ -66,16 +69,75 @@ pub struct CommandDenialView {
 
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ToolDetailFieldView {
-    pub key: String,
-    pub value: String,
+pub struct ToolDiffLineView {
+    pub kind: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolDetailValueView {
-    pub raw_text: String,
-    pub fields: Vec<ToolDetailFieldView>,
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ToolPresentationView {
+    #[serde(rename_all = "camelCase")]
+    Command {
+        command: String,
+        exit_code: Option<i64>,
+        timed_out: bool,
+        failed: bool,
+        duration_ms: Option<i64>,
+        cwd: Option<String>,
+        execution_mode: Option<String>,
+        network_mode: Option<String>,
+        stdout: String,
+        stderr: String,
+        fallback_output: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    FileRead {
+        operation: String,
+        target: Option<String>,
+        returned_count: Option<i64>,
+        total_count: Option<i64>,
+        truncated: bool,
+        body: String,
+        fallback_output: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    FileEdit {
+        operation: String,
+        path: Option<String>,
+        created: Option<bool>,
+        replacements_applied: Option<i64>,
+        diff: Vec<ToolDiffLineView>,
+        fallback_output: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Subagent {
+        action: String,
+        name: Option<String>,
+        child_request_id: Option<String>,
+        description: Option<String>,
+        output: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Process {
+        action: String,
+        target: Option<String>,
+        description: Option<String>,
+        output: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Mcp {
+        service_id: Option<String>,
+        selected_tool_name: Option<String>,
+        arguments: Option<String>,
+        output: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Generic {
+        summary: Option<String>,
+        input: Option<String>,
+        output: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -91,8 +153,19 @@ pub struct RenderedToolCallView {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     #[ts(optional = nullable)]
     pub await_mode: Option<String>,
-    pub args: Option<ToolDetailValueView>,
-    pub result: Option<ToolDetailValueView>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional = nullable)]
+    pub cancel_policy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional = nullable)]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional = nullable)]
+    pub deadline_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional = nullable)]
+    pub completed_at: Option<String>,
+    pub presentation: ToolPresentationView,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     #[ts(optional = nullable)]
     pub partial_output_tail: Option<String>,
@@ -153,6 +226,9 @@ pub enum RenderedTimelineItem {
     #[serde(rename_all = "camelCase")]
     UserMessage {
         item_key: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        #[ts(optional = nullable)]
+        request_id: Option<String>,
         sequence: Option<i64>,
         content: String,
         timestamp: Option<String>,

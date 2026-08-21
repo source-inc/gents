@@ -356,17 +356,14 @@ async fn upsert_conversation_from_request_keeps_title_empty_until_generated() {
     )
     .await
     .unwrap();
-    update_conversation_status_if_latest_with_identity(
-        &node,
+    let mutation = request_conversation_status_projection_mutation(
         "session-1",
-        "general",
-        agent_did,
-        "general",
         "request-2",
         "completed",
-    )
-    .await
-    .unwrap();
+        "2026-05-01T00:00:00Z",
+    );
+    let response = node.execute(&mutation).await;
+    assert!(!response.has_errors(), "{:?}", response.errors);
 
     let resp = node
         .execute(
@@ -536,6 +533,19 @@ async fn update_conversation_title_with_source_persists_generated_title() {
         .await
         .unwrap();
 
+    upsert_conversation_from_request_with_identity(
+        &node,
+        "session-1",
+        "general",
+        "did:key:zTestGeneral",
+        "general",
+        "request-2",
+        "Include the overnight daemon failures",
+        "processing",
+    )
+    .await
+    .unwrap();
+
     let resp = node
         .execute(
             r#"{
@@ -595,50 +605,6 @@ async fn create_session_with_behavior_id_rejects_mismatched_existing_binding() {
         create_session_with_behavior_id(&node, "session-1", "general", "did:test:test", "code")
             .await
             .unwrap_err();
-    assert!(error.to_string().contains("behavior mismatch"));
-
-    let _ = std::fs::remove_dir_all(&data_path);
-}
-
-#[tokio::test]
-async fn upsert_conversation_rejects_mismatched_existing_behavior() {
-    let data_path = std::env::temp_dir().join(format!(
-        "gents-conversation-binding-{}",
-        uuid::Uuid::new_v4()
-    ));
-    let node = defra_node::EmbeddedNode::builder()
-        .data_path(&data_path)
-        .build()
-        .await
-        .unwrap();
-    ensure_schemas(&node).await.unwrap();
-
-    let agent_did = "did:key:zTestGeneral";
-    upsert_conversation_from_request_with_identity(
-        &node,
-        "session-1",
-        "general",
-        agent_did,
-        "general",
-        "request-1",
-        "Hello",
-        "processing",
-    )
-    .await
-    .unwrap();
-
-    let error = upsert_conversation_from_request_with_identity(
-        &node,
-        "session-1",
-        "general",
-        agent_did,
-        "code",
-        "request-2",
-        "Hello again",
-        "processing",
-    )
-    .await
-    .unwrap_err();
     assert!(error.to_string().contains("behavior mismatch"));
 
     let _ = std::fs::remove_dir_all(&data_path);

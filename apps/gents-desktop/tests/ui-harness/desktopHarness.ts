@@ -40,7 +40,6 @@ export type DesktopUiHarnessScenario =
   | "save-error"
   | "backend-health-error"
   | "long-content"
-  | "operations-rich"
   | "active-turn"
   | "cascade-turn"
   | "coding";
@@ -59,20 +58,7 @@ export function createDesktopUiHarness(
   options: DesktopUiHarnessOptions = {},
 ): DesktopUiHarness {
   const scenario = normalizeScenario(options.scenario);
-  let heldToolCalls: HeldToolCallView[] =
-    scenario === "operations-rich"
-      ? [
-          {
-            toolCallId: "held-call-1",
-            requestId: "req-held-1",
-            sessionId: "session-ops",
-            agentDid: AGENT_DID,
-            toolName: "bash_unrestricted",
-            args: '{"command":"cargo publish"}',
-            deadlineAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-          },
-        ]
-      : [];
+  let heldToolCalls: HeldToolCallView[] = [];
   const listeners = new Set<DesktopClientUpdatedHandler>();
   const sessions = new Map<string, DesktopSessionSnapshot>();
   const sessionLineage = new Map<
@@ -94,10 +80,7 @@ export function createDesktopUiHarness(
     scenario === "long-content"
       ? longHarnessMessage()
       : "I am your desktop UI test agent. This seeded turn gives the transcript a stable row for duplicate-message checks.";
-  const activeTurn =
-    scenario === "active-turn" ||
-    scenario === "cascade-turn" ||
-    scenario === "operations-rich";
+  const activeTurn = scenario === "active-turn" || scenario === "cascade-turn";
   sessions.set("session-intro", {
     sessionId: "session-intro",
     agentDid: AGENT_DID,
@@ -139,11 +122,20 @@ export function createDesktopUiHarness(
                   itemKey: "live-exec",
                   toolName: "gents_exec",
                   statusKind: "running",
-                  args: {
-                    rawText: JSON.stringify({ command: "cargo test -p gents" }),
-                    fields: [],
+                  presentation: {
+                    kind: "command" as const,
+                    command: "cargo test -p gents",
+                    exitCode: null,
+                    timedOut: false,
+                    failed: false,
+                    durationMs: null,
+                    cwd: null,
+                    executionMode: "read_only",
+                    networkMode: "disabled",
+                    stdout: "",
+                    stderr: "",
+                    fallbackOutput: null,
                   },
-                  result: null,
                   partialOutputTail:
                     "Compiling gents v0.7.0\ntest lifecycle::claims ... ok\ntest lifecycle::persistence ... ok",
                   partialOutputSeq: 4096,
@@ -163,32 +155,76 @@ export function createDesktopUiHarness(
                   itemKey: "intro-edit-file",
                   toolName: "edit_file",
                   statusKind: "success",
-                  args: {
-                    rawText: JSON.stringify({
-                      path: "src/parser.rs",
-                      old_text: "fn parse() -> Ast { todo!() }",
-                      new_text: "fn parse() -> Ast { Ast::default() }",
-                    }),
-                    fields: [],
-                  },
-                  result: {
-                    rawText:
-                      'gents_fs: {"ok":true,"status":"success","tool":"edit_file","path":"src/parser.rs","returned_count":1,"total_count":1,"truncated":false,"replacements_applied":1,"replace_all":false,"bytes_written":36}\nedit_file: edited src/parser.rs (1 replacement)',
-                    fields: [],
+                  presentation: {
+                    kind: "fileEdit" as const,
+                    operation: "edit_file",
+                    path: "src/parser.rs",
+                    created: false,
+                    replacementsApplied: 1,
+                    diff: [
+                      { kind: "del", text: "fn parse() -> Ast { todo!() }" },
+                      { kind: "add", text: "fn parse() -> Ast { Ast::default() }" },
+                    ],
+                    fallbackOutput: null,
                   },
                 },
                 {
                   itemKey: "intro-bash",
                   toolName: "bash",
                   statusKind: "success",
-                  args: {
-                    rawText: JSON.stringify({ command: "cargo test parser" }),
-                    fields: [],
+                  presentation: {
+                    kind: "command" as const,
+                    command: "cargo test parser",
+                    exitCode: 0,
+                    timedOut: false,
+                    failed: false,
+                    durationMs: null,
+                    cwd: null,
+                    executionMode: "read_only",
+                    networkMode: "disabled",
+                    stdout: "test result: ok. 2 passed",
+                    stderr: "",
+                    fallbackOutput: null,
                   },
-                  result: {
-                    rawText:
-                      'gents_exec: {"ok":true,"status":"success","command":"cargo test parser","exit_code":0,"timed_out":false,"execution_mode":"read_only","network_mode":"disabled"}\nstdout:\ntest result: ok. 2 passed\nstderr:\n(empty)',
-                    fields: [],
+                },
+                {
+                  itemKey: "intro-subagent",
+                  toolName: "spawn_subagent",
+                  statusKind: "success",
+                  presentation: {
+                    kind: "subagent" as const,
+                    action: "spawn",
+                    name: "reviewer",
+                    childRequestId: "request-reviewer",
+                    description: "Review the parser change for correctness.",
+                    output: "Child request created.",
+                  },
+                  awaitMode: "blocking",
+                },
+                {
+                  itemKey: "intro-process",
+                  toolName: "spawn_process",
+                  statusKind: "running",
+                  presentation: {
+                    kind: "process" as const,
+                    action: "spawn",
+                    target: "cargo test --workspace",
+                    description: "Run the complete validation suite.",
+                    output: null,
+                  },
+                  awaitMode: "background",
+                  cancelPolicy: "cascade",
+                },
+                {
+                  itemKey: "intro-mcp",
+                  toolName: "call_tool",
+                  statusKind: "success",
+                  presentation: {
+                    kind: "mcp" as const,
+                    serviceId: "github",
+                    selectedToolName: "search_issues",
+                    arguments: '{"query":"mobile sync"}',
+                    output: '{"count":2}',
                   },
                 },
               ],
@@ -492,29 +528,6 @@ export function createDesktopUiHarness(
         subpath: path,
         entries,
         truncated: false,
-      };
-    },
-    async forkSession(request) {
-      const source = sessions.get(request.sessionId);
-      if (!source) {
-        throw new Error(`fork source not found: session_id=${request.sessionId}`);
-      }
-      const forkedId = `${request.sessionId}-fork-${request.atUserTurn}`;
-      sessions.set(forkedId, {
-        ...source,
-        sessionId: forkedId,
-        title: `${source.title} (fork)`,
-        turnState: "completed",
-        latestRequestId: null,
-      });
-      syncConversations();
-      notify("chat");
-      return {
-        sessionId: forkedId,
-        copiedMessages: source.timelineItems.filter(
-          (item) => item.kind === "userMessage" || item.kind === "assistantMessage",
-        ).length,
-        copiedToolCalls: 0,
       };
     },
     async resendRequest(requestId) {
@@ -1087,9 +1100,6 @@ export function createDesktopUiHarness(
       return runHarnessTask(request.taskId);
     },
     async listSubagentTree(request) {
-      if (scenario === "operations-rich") {
-        return operationsLineage(request.rootRequestId);
-      }
       const tree: SubagentTreeView = {
         rootRequestId: request.rootRequestId,
         truncated: false,
@@ -1112,24 +1122,7 @@ export function createDesktopUiHarness(
       if (scenario === "backend-health-error") {
         throw new Error("Harness backend health bridge unavailable.");
       }
-      const backends: InferenceBackendView[] =
-        scenario === "operations-rich"
-          ? [
-              ...deployment.inferenceBackends,
-              {
-                backendId: "backend-local",
-                name: "Local Ollama Harness",
-                providerKind: "openai",
-                endpoint: "http://127.0.0.1:11434/v1",
-                apiKeyConfigured: false,
-                maxConcurrent: 1,
-                maxQueueDepth: 2,
-                enabled: false,
-                models: ["llama3.1:8b"],
-                probeStatus: "unhealthy",
-              },
-            ]
-          : deployment.inferenceBackends;
+      const backends: InferenceBackendView[] = deployment.inferenceBackends;
       const rows: BackendHealth[] = backends.map((backend) => ({
         backendId: backend.backendId,
         name: backend.name ?? backend.backendId,
@@ -1145,75 +1138,27 @@ export function createDesktopUiHarness(
         maxConcurrent: backend.maxConcurrent ?? 4,
         maxQueueDepth: backend.maxQueueDepth ?? 16,
         models: backend.models,
-        recentCalls:
-          scenario === "operations-rich" && backend.backendId === "backend-openai"
-            ? [
-                {
-                  callId: "call-openai-1",
-                  callSeq: 7,
-                  callKind: "chat",
-                  callState: "failed",
-                  queueDepthAtEnqueue: 1,
-                  queuedAt: STARTED_AT,
-                  startedAt: STARTED_AT,
-                  endedAt: STARTED_AT,
-                  failureReason: "rate_limited",
-                  promptTokens: 1220,
-                  completionTokens: 0,
-                },
-              ]
-            : [],
+        recentCalls: [],
       }));
       return rows;
     },
     async listMcpServicesWithHealth() {
-      const registries =
-        scenario === "operations-rich"
-          ? [
-              ...deployment.toolServiceRegistries,
-              {
-                serviceId: "mcp-logs",
-                displayName: "Logs MCP",
-                description: "Log query service",
-                hostname: "logs.internal",
-                tailscaleIp: null,
-                lanIp: "127.0.0.1",
-                mcpPort: 7444,
-                mcpPath: "/mcp",
-                status: "reconnecting",
-                version: "0.1.0",
-                updatedAt: STARTED_AT,
-              },
-            ]
-          : deployment.toolServiceRegistries;
+      const registries = deployment.toolServiceRegistries;
       const services: MCPServiceHealthView[] = registries.map((service) => ({
         serviceId: service.serviceId,
         agentDid: deployment.agentDid,
         endpoint: `${service.hostname ?? "localhost"}:${service.mcpPort ?? 7331}${
           service.mcpPath ?? "/mcp"
         }`,
-        status:
-          scenario === "operations-rich" && service.serviceId === "mcp-logs"
-            ? "reconnecting"
-            : "healthy",
-        failureCount:
-          scenario === "operations-rich" && service.serviceId === "mcp-logs" ? 2 : 0,
+        status: "healthy",
+        failureCount: 0,
         kMax: 3,
-        backoffUntil:
-          scenario === "operations-rich" && service.serviceId === "mcp-logs"
-            ? "2026-06-17T00:05:00.000Z"
-            : null,
+        backoffUntil: null,
         lastProbeAt: STARTED_AT,
         lastSeen: STARTED_AT,
         updatedAt: STARTED_AT,
-        lastErrorClass:
-          scenario === "operations-rich" && service.serviceId === "mcp-logs"
-            ? "transport"
-            : null,
-        lastErrorMessage:
-          scenario === "operations-rich" && service.serviceId === "mcp-logs"
-            ? "connection refused"
-            : null,
+        lastErrorClass: null,
+        lastErrorMessage: null,
       }));
       return services;
     },
@@ -1231,112 +1176,16 @@ export function createDesktopUiHarness(
         fetchedAt: new Date().toISOString(),
         agentDid: request.agentDid ?? deployment.agentDid,
         liveness: {
-          expiredProcessingCount: scenario === "operations-rich" ? 1 : 0,
-          requests:
-            scenario === "operations-rich"
-              ? [
-                  {
-                    requestId: "request-intro",
-                    claimedAt: STARTED_AT,
-                    deadline: "2026-06-17T00:01:00.000Z",
-                    deadlineExpired: true,
-                    deadlineAgeMs: 65_000,
-                    lastProgressAgeMs: 120_000,
-                    subagentDepth: 0,
-                    causedByParentRequestId: null,
-                    causedByTriggerKind: null,
-                  },
-                ]
-              : [],
-          activeToolCalls:
-            scenario === "operations-rich"
-              ? [
-                  {
-                    requestId: "request-intro",
-                    toolCallId: "tool-call-cargo",
-                    toolName: "cargo test",
-                    startedAt: STARTED_AT,
-                    deadlineAt: "2026-06-17T00:01:00.000Z",
-                    awaitMode: "background",
-                    runningAgeMs: 120_000,
-                    deadlineExpired: true,
-                  },
-                ]
-              : [],
+          expiredProcessingCount: 0,
+          requests: [],
+          activeToolCalls: [],
           activeNativeExecutorsAvailable: true,
-          activeNativeExecutors:
-            scenario === "operations-rich"
-              ? [
-                  {
-                    id: 7,
-                    pid: 4242,
-                    argv0: "cargo",
-                    toolName: "cargo test",
-                    startedAt: STARTED_AT,
-                    ageMs: 120_000,
-                  },
-                ]
-              : [],
+          activeNativeExecutors: [],
         },
         livenessUnavailableReason: null,
-        backgroundedTools:
-          scenario === "operations-rich"
-            ? [
-                {
-                  requestId: "request-intro",
-                  toolCallId: "tool-call-cargo",
-                  toolName: "cargo test",
-                  lifecycleState: "running",
-                  status: "running",
-                  startedAt: STARTED_AT,
-                  ageMs: 120_000,
-                  deadlineAt: "2026-06-17T00:01:00.000Z",
-                  deadlineExpired: true,
-                  awaitMode: "background",
-                  cancelPolicy: "cascade",
-                  childRequestId: "request-child-1",
-                  stuckSince: STARTED_AT,
-                  cancelPendingRemoteAck: false,
-                  nativeExecutor: null,
-                },
-                {
-                  requestId: "request-child-1",
-                  toolCallId: "tool-call-logs",
-                  toolName: "query_logs",
-                  lifecycleState: "cancelPending",
-                  status: "cancelPending",
-                  startedAt: STARTED_AT,
-                  ageMs: 90_000,
-                  deadlineAt: null,
-                  deadlineExpired: false,
-                  awaitMode: "bridge",
-                  cancelPolicy: "detach",
-                  childRequestId: null,
-                  stuckSince: null,
-                  cancelPendingRemoteAck: true,
-                  nativeExecutor: null,
-                },
-              ]
-            : [],
-        stuckDiagnostics:
-          scenario === "operations-rich"
-            ? [
-                {
-                  requestId: "request-intro",
-                  sessionId: "session-intro",
-                  severity: "critical",
-                  reason: "expiredTool",
-                  deadlineAgeMs: 65_000,
-                  lastProgressAgeMs: 120_000,
-                  toolCallId: "tool-call-cargo",
-                  toolName: "cargo test",
-                  stuckSince: STARTED_AT,
-                },
-              ]
-            : [],
-        lineage: request.rootRequestId
-          ? operationsLineage(request.rootRequestId)
-          : null,
+        backgroundedTools: [],
+        stuckDiagnostics: [],
+        lineage: null,
       };
       return operations;
     },
@@ -1446,48 +1295,6 @@ export function createDesktopUiHarness(
   return { adapter, listenerFactory, scenario };
 }
 
-function operationsLineage(rootRequestId: string): SubagentTreeView {
-  return {
-    rootRequestId,
-    truncated: false,
-    nodes: [
-      {
-        requestId: rootRequestId,
-        sessionId: "session-intro",
-        agentDid: AGENT_DID,
-        behaviorId: DEFAULT_BEHAVIOR_ID,
-        lifecycleState: "processing",
-        status: "processing",
-        subagentDepth: 0,
-        backendId: "backend-openai",
-      },
-      {
-        requestId: "request-child-1",
-        sessionId: "session-child-1",
-        agentDid: AGENT_DID,
-        behaviorId: "ops",
-        lifecycleState: "processing",
-        status: "running",
-        subagentDepth: 1,
-        causedByParentRequestId: rootRequestId,
-        causedByParentToolCallId: "tool-call-cargo",
-        backendId: "backend-openai",
-      },
-    ],
-    edges: [
-      {
-        parentRequestId: rootRequestId,
-        childRequestId: "request-child-1",
-        parentToolCallId: "tool-call-cargo",
-        toolName: "delegate",
-        awaitMode: "background",
-        cancelPolicy: "cascade",
-        lifecycleState: "running",
-      },
-    ],
-  };
-}
-
 function createDeployment(): DeploymentView {
   return {
     peerId: "peer-bombadil-local",
@@ -1549,6 +1356,38 @@ function createDeployment(): DeploymentView {
         isDefault: false,
         skillRefs: [],
         skillExcludes: [],
+      },
+    ],
+    behaviorEnvironments: [
+      {
+        behaviorId: DEFAULT_BEHAVIOR_ID,
+        displayName: "Default",
+        enabled: true,
+        isDefault: true,
+        modelName: "gpt-4.1-mini",
+        inferenceProfileName: "Default profile",
+        workspaceRoot: "/tmp/gents-bombadil/workspace",
+        fileAccess: "read-only",
+        bashAccess: "read-only",
+        networkAccess: "disabled",
+        skillNames: ["Host diagnostics"],
+        sessionCount: 0,
+        activeSessionCount: 0,
+      },
+      {
+        behaviorId: "ops",
+        displayName: "Ops",
+        enabled: true,
+        isDefault: false,
+        modelName: "gpt-4.1-mini",
+        inferenceProfileName: "Default profile",
+        workspaceRoot: "/tmp/gents-bombadil/workspace",
+        fileAccess: "read-only",
+        bashAccess: "read-only",
+        networkAccess: "disabled",
+        skillNames: [],
+        sessionCount: 0,
+        activeSessionCount: 0,
       },
     ],
     inferenceBackends: [
@@ -1720,7 +1559,6 @@ function normalizeScenario(value?: string | null): DesktopUiHarnessScenario {
     case "save-error":
     case "backend-health-error":
     case "long-content":
-    case "operations-rich":
     case "active-turn":
     case "cascade-turn":
     case "coding":

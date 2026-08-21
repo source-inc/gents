@@ -74,16 +74,15 @@ pub(crate) const DEFAULT_MEMORY_MODE: &str = "disabled";
 
 #[derive(Default)]
 pub(crate) struct CodexSidecar {
-    /// Threads this shim process created via ThreadStart/ThreadFork. Used as a
-    /// Codex-ownership signal for zero-turn threads that carry no durable
-    /// `codex_shim`-marked request yet. Populated only by thread creation, never
-    /// by resume/settings, so it cannot be used to adopt a foreign session.
+    /// Empty threads created by this shim remain process-local until their
+    /// first AgentRequest lets the runtime materialize the canonical session.
     pub(crate) created: BTreeSet<String>,
     pub(crate) cwd: BTreeMap<String, PathBuf>,
     pub(crate) loaded: BTreeSet<String>,
     pub(crate) archived: BTreeSet<String>,
     pub(crate) memory_mode: BTreeMap<String, String>,
     pub(crate) settings: BTreeMap<String, String>,
+    pub(crate) names: BTreeMap<String, String>,
 }
 
 impl CodexSidecar {
@@ -460,6 +459,28 @@ impl ShimState {
 
     async fn is_thread_created(&self, thread_id: &str) -> bool {
         self.sidecar.lock().await.created.contains(thread_id)
+    }
+
+    async fn created_thread_ids(&self) -> Vec<String> {
+        self.sidecar.lock().await.created.iter().cloned().collect()
+    }
+
+    async fn thread_name(&self, thread_id: &str) -> String {
+        self.sidecar
+            .lock()
+            .await
+            .names
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    async fn set_thread_name(&self, thread_id: &str, name: &str) {
+        self.sidecar
+            .lock()
+            .await
+            .names
+            .insert(thread_id.to_string(), name.to_string());
     }
 
     async fn thread_memory_mode(&self, thread_id: &str) -> String {

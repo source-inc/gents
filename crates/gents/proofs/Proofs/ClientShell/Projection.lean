@@ -58,7 +58,7 @@ def projectSendDecision
   else if s.selection.agent.isNone then .blocked .agentNotSelected
   else if ¬ ctx.composerNonEmpty then .blocked .composerEmpty
   else match s.workflow with
-    | .creating _ | .submitting _ _ => .blocked .mutationInFlight
+    | .submitting _ _ => .blocked .mutationInFlight
     | .awaiting _ _                 => .blocked .awaitingObservation
     | .blocked _                    => .blocked .workflowBlocked
     | .idle =>
@@ -102,6 +102,66 @@ def projectTransportIndicator : TransportHealth → TransportIndicator
   | .degraded => .degradedNotice
   | .wedged   => .wedgedNotice
 
+/-- Request progress is projected directly from the persisted request
+lifecycle. Clients may choose presentation, but must not collapse the active
+states into one generic spinner. -/
+inductive RequestProgressIndicator where
+  | queued
+  | claimed
+  | working
+  | waitingForInput
+  | completed
+  | failed
+  | superseded
+  | expired
+  | interrupted
+  deriving DecidableEq, Repr
+
+def projectRequestProgress : RequestState → RequestProgressIndicator
+  | .pending       => .queued
+  | .claimed       => .claimed
+  | .processing    => .working
+  | .inputRequired => .waitingForInput
+  | .completed     => .completed
+  | .failed        => .failed
+  | .superseded    => .superseded
+  | .dead          => .expired
+  | .interrupted   => .interrupted
+
+def RequestProgressIndicator.label : RequestProgressIndicator → String
+  | .queued          => "Queued"
+  | .claimed         => "Claimed"
+  | .working         => "Working"
+  | .waitingForInput => "Waiting for input"
+  | .completed       => "Completed"
+  | .failed          => "Failed"
+  | .superseded      => "Superseded"
+  | .expired         => "Expired"
+  | .interrupted     => "Interrupted"
+
+def RequestProgressIndicator.animated : RequestProgressIndicator → Bool
+  | .queued | .claimed | .working => true
+  | _ => false
+
+theorem projectRequestProgress_active_animated (state : RequestState)
+    (h : state = .pending ∨ state = .claimed ∨ state = .processing) :
+    (projectRequestProgress state).animated = true := by
+  rcases h with rfl | rfl | rfl <;> rfl
+
+/-- The request document owns the pending user projection until the durable
+user message for that exact request arrives. Unrelated messages and their
+relative replication order are deliberately irrelevant. -/
+def projectPendingUserTurn (hasDurableUserOwner : Bool) : Bool :=
+  !hasDurableUserOwner
+
+theorem projectPendingUserTurn_without_owner_visible :
+    projectPendingUserTurn false = true := by
+  rfl
+
+theorem projectPendingUserTurn_with_owner_hidden :
+    projectPendingUserTurn true = false := by
+  rfl
+
 structure OverlayBlock where
   hasContent   : Bool
   hasReasoning : Bool
@@ -111,12 +171,14 @@ def projectActiveOverlay
     (resp : Option ResponseSnapshot)
     (turn : Option ClientTurnState)
     (materialized : Bool)
+    (hasDurableOwner : Bool)
     (hasContent hasReasoning : Bool)
     : Option OverlayBlock :=
   match resp with
   | none => none
   | some r =>
     if materialized then none
+    else if hasDurableOwner then none
     else if r.status = .complete ∨ r.status = .error then none
     else
       match turn with
@@ -132,10 +194,10 @@ def projectActiveOverlay
 theorem projectActiveOverlay_at_most_one
     (resp : Option ResponseSnapshot)
     (turn : Option ClientTurnState)
-    (materialized hasContent hasReasoning : Bool) :
+    (materialized hasDurableOwner hasContent hasReasoning : Bool) :
     ∀ b₁ b₂,
-      projectActiveOverlay resp turn materialized hasContent hasReasoning = some b₁ →
-      projectActiveOverlay resp turn materialized hasContent hasReasoning = some b₂ →
+      projectActiveOverlay resp turn materialized hasDurableOwner hasContent hasReasoning = some b₁ →
+      projectActiveOverlay resp turn materialized hasDurableOwner hasContent hasReasoning = some b₂ →
       b₁ = b₂ := by
   intros b₁ b₂ h₁ h₂
   rw [h₁] at h₂
@@ -145,8 +207,8 @@ theorem projectActiveOverlay_terminal_hides
     (resp : Option ResponseSnapshot)
     (t : ClientTurnState)
     (h : t.isTerminal = true)
-    (materialized hasContent hasReasoning : Bool) :
-    projectActiveOverlay resp (some t) materialized hasContent hasReasoning = none := by
+    (materialized hasDurableOwner hasContent hasReasoning : Bool) :
+    projectActiveOverlay resp (some t) materialized hasDurableOwner hasContent hasReasoning = none := by
   cases resp with
   | none => rfl
   | some r =>
@@ -154,27 +216,43 @@ theorem projectActiveOverlay_terminal_hides
     | true =>
       simp [projectActiveOverlay]
     | false =>
-      cases r with
-      | mk status tail =>
-        cases status with
-        | streaming =>
-          cases t with
-          | waitingForClaim => simp [ClientTurnState.isTerminal] at h
-          | streaming       => simp [ClientTurnState.isTerminal] at h
-          | completed       => simp [projectActiveOverlay, ClientTurnState.isTerminal]
-          | failed          => simp [projectActiveOverlay, ClientTurnState.isTerminal]
-          | superseded      => simp [projectActiveOverlay, ClientTurnState.isTerminal]
-          | interrupted     => simp [projectActiveOverlay, ClientTurnState.isTerminal]
-        | complete =>
-          simp [projectActiveOverlay]
-        | error =>
-          simp [projectActiveOverlay]
+      cases hasDurableOwner with
+      | true => simp [projectActiveOverlay]
+      | false =>
+        cases r with
+        | mk status tail =>
+          cases status with
+          | streaming =>
+            cases t with
+            | waitingForClaim => simp [ClientTurnState.isTerminal] at h
+            | streaming       => simp [ClientTurnState.isTerminal] at h
+            | completed       => simp [projectActiveOverlay, ClientTurnState.isTerminal]
+            | failed          => simp [projectActiveOverlay, ClientTurnState.isTerminal]
+            | superseded      => simp [projectActiveOverlay, ClientTurnState.isTerminal]
+            | interrupted     => simp [projectActiveOverlay, ClientTurnState.isTerminal]
+          | complete =>
+            simp [projectActiveOverlay]
+          | error =>
+            simp [projectActiveOverlay]
 
 theorem projectActiveOverlay_materialized_hides
     (resp : Option ResponseSnapshot)
     (turn : Option ClientTurnState)
+    (hasDurableOwner : Bool)
     (hasContent hasReasoning : Bool) :
-    projectActiveOverlay resp turn true hasContent hasReasoning = none := by
+    projectActiveOverlay resp turn true hasDurableOwner hasContent hasReasoning = none := by
   cases resp with
   | none => rfl
   | some _ => rfl
+
+/-- A replicated live-tail snapshot is hidden once the same request already has
+a durable assistant turn owning that content, even when the response snapshot
+itself predates the materialization marker. -/
+theorem projectActiveOverlay_durable_owner_hides
+    (resp : Option ResponseSnapshot)
+    (turn : Option ClientTurnState)
+    (materialized hasContent hasReasoning : Bool) :
+    projectActiveOverlay resp turn materialized true hasContent hasReasoning = none := by
+  cases resp with
+  | none => rfl
+  | some _ => cases materialized <;> rfl

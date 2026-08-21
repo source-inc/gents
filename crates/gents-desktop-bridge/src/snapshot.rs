@@ -2,6 +2,8 @@
 pub mod projection;
 #[path = "snapshot/timeline.rs"]
 mod timeline;
+#[path = "snapshot/tool_presentation.rs"]
+mod tool_presentation;
 
 use std::path::Path;
 use std::sync::Arc;

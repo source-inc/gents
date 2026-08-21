@@ -284,6 +284,7 @@ describe("error card retry", () => {
       setDraft: vi.fn(),
       setError: vi.fn(),
       setLocalWorkflow: vi.fn(),
+      setOptimisticPendingTurn: vi.fn(),
       setSelectedBehaviorId: vi.fn(),
       setSelectedSessionId: vi.fn(),
       setSending: vi.fn(),
@@ -295,5 +296,58 @@ describe("error card retry", () => {
 
     await waitFor(() => expect(retryRequest).toHaveBeenCalledWith("req-failed"));
     expect(sendChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("projects an acknowledged send immediately before replication observes it", async () => {
+    const sendChatMessage = vi.fn().mockResolvedValue({
+      agentDid: deployment.agentDid,
+      sessionId: "s1",
+      requestId: "req_new",
+    });
+    const setOptimisticPendingTurn = vi.fn();
+    const setDraft = vi.fn();
+    const shellProjection = projectChatShell({
+      clientAvailable: true,
+      selectedAgentDid: deployment.agentDid,
+      selectedSessionId: "s1",
+      draft: "check the upgrade",
+      sending: false,
+      session,
+      selectedConversation: null,
+      localWorkflow: { kind: "ready" },
+    });
+
+    const actions = createDesktopShellChatActions({
+      api: { sendChatMessage } as unknown as DesktopApiAdapter,
+      draft: "check the upgrade",
+      newConversationAgentRef: { current: null },
+      refreshSession: vi.fn(),
+      refreshSnapshot: vi.fn(),
+      selectedBehaviorId: deployment.defaultBehaviorId ?? null,
+      selectedDeployment: deployment,
+      selectedSessionId: "s1",
+      session,
+      setDraft,
+      setError: vi.fn(),
+      setLocalWorkflow: vi.fn(),
+      setOptimisticPendingTurn,
+      setSelectedBehaviorId: vi.fn(),
+      setSelectedSessionId: vi.fn(),
+      setSending: vi.fn(),
+      setSession: vi.fn(),
+      shellProjection,
+    });
+
+    await actions.onSendMessage({ preventDefault: vi.fn() } as never);
+
+    expect(setOptimisticPendingTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "s1",
+        requestId: "req_new",
+        content: "check the upgrade",
+        lifecycleState: "pending",
+      }),
+    );
+    expect(setDraft).toHaveBeenCalledWith("");
   });
 });

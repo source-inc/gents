@@ -47,7 +47,6 @@ inductive BlockedReason where
 
 inductive SubmissionWorkflow where
   | idle
-  | creating   (agent : AgentDid)
   | submitting (agent : AgentDid) (session : Option SessionId)
   | awaiting   (session : SessionId) (request : RequestId)
   | blocked    (reason  : BlockedReason)
@@ -75,7 +74,6 @@ inductive UserAction where
   deriving DecidableEq, Repr
 
 inductive MutationResult where
-  | created   (session : SessionId)
   | submitted (session : SessionId) (request : RequestId)
   | failed    (reason  : BlockedReason)
   deriving DecidableEq, Repr
