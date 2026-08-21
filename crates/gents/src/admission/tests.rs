@@ -75,6 +75,10 @@ fn request(request_id: &str) -> AgentRequest {
         caused_by_source_doc_id: None,
         caused_by_correlation: None,
         caused_by_trigger_context: None,
+        workspace_id: None,
+        workspace_authority: None,
+        workspace_owner_deployment_id: None,
+        workspace_seal_hash: None,
     }
 }
 

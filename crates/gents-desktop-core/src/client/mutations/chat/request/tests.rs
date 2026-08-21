@@ -472,6 +472,10 @@ fn synthetic_missing_retry_parent(
         max_retries: Some(case.max_retries as i64),
         interrupt_requested_at: None,
         valid_until: None,
+        workspace_id: None,
+        workspace_authority: None,
+        workspace_owner_deployment_id: None,
+        workspace_seal_hash: None,
     }
 }
 

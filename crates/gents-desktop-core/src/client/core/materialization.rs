@@ -759,6 +759,10 @@ mod tests {
                 max_retries: None,
                 interrupt_requested_at: None,
                 valid_until: None,
+                workspace_id: None,
+                workspace_authority: None,
+                workspace_owner_deployment_id: None,
+                workspace_seal_hash: None,
             }],
             responses: vec![AgentResponseRow {
                 response_key: "req-1".to_string(),
@@ -842,6 +846,10 @@ mod tests {
                 max_retries: None,
                 interrupt_requested_at: None,
                 valid_until: None,
+                workspace_id: None,
+                workspace_authority: None,
+                workspace_owner_deployment_id: None,
+                workspace_seal_hash: None,
             }],
             responses: vec![AgentResponseRow {
                 response_key: "req-1".to_string(),

@@ -61,6 +61,10 @@ fn request_backed_conversation_summaries_include_in_flight_sessions() {
             caused_by_parent_request_id: None,
             interrupt_requested_at: None,
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }],
         ..ClientStoreRows::default()
     });
@@ -118,6 +122,10 @@ fn conversation_task_tag_uses_latest_schedule_lineage() {
                 caused_by_parent_request_id: None,
                 interrupt_requested_at: None,
                 valid_until: None,
+                workspace_id: None,
+                workspace_authority: None,
+                workspace_owner_deployment_id: None,
+                workspace_seal_hash: None,
             },
             AgentRequestRow {
                 request_id: "req-new".to_string(),
@@ -155,6 +163,10 @@ fn conversation_task_tag_uses_latest_schedule_lineage() {
                 caused_by_parent_request_id: None,
                 interrupt_requested_at: None,
                 valid_until: None,
+                workspace_id: None,
+                workspace_authority: None,
+                workspace_owner_deployment_id: None,
+                workspace_seal_hash: None,
             },
         ],
         ..ClientStoreRows::default()
@@ -225,6 +237,10 @@ fn task_run_history_is_agent_scoped_when_trigger_ids_match() {
                 caused_by_parent_request_id: None,
                 interrupt_requested_at: None,
                 valid_until: None,
+                workspace_id: None,
+                workspace_authority: None,
+                workspace_owner_deployment_id: None,
+                workspace_seal_hash: None,
             },
             AgentRequestRow {
                 request_id: "req-mini-2".to_string(),
@@ -262,6 +278,10 @@ fn task_run_history_is_agent_scoped_when_trigger_ids_match() {
                 caused_by_parent_request_id: None,
                 interrupt_requested_at: None,
                 valid_until: None,
+                workspace_id: None,
+                workspace_authority: None,
+                workspace_owner_deployment_id: None,
+                workspace_seal_hash: None,
             },
         ],
         ..ClientStoreRows::default()
@@ -411,6 +431,10 @@ fn task_recent_runs_view_consumes_generated_trigger_dispatch_lineage_contract_ca
                 caused_by_parent_request_id: None,
                 interrupt_requested_at: None,
                 valid_until: None,
+                workspace_id: None,
+                workspace_authority: None,
+                workspace_owner_deployment_id: None,
+                workspace_seal_hash: None,
             }],
             ..ClientStoreRows::default()
         });

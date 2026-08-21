@@ -53,6 +53,10 @@ fn session_snapshot_hides_live_overlay_once_turn_is_terminal_even_if_response_is
             caused_by_parent_request_id: None,
             interrupt_requested_at: None,
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }],
         messages: vec![
             AgentMessageRow {
@@ -167,6 +171,10 @@ fn session_snapshot_hides_live_overlay_once_response_is_interrupted() {
             caused_by_parent_request_id: None,
             interrupt_requested_at: Some("2026-04-21T12:00:02Z".to_string()),
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }],
         responses: vec![AgentResponseRow {
             response_key: "resp-1".to_string(),
@@ -260,6 +268,10 @@ fn session_snapshot_stays_renderable_across_three_turns_with_stale_conversation_
                 caused_by_parent_request_id: None,
                 interrupt_requested_at: None,
                 valid_until: None,
+                workspace_id: None,
+                workspace_authority: None,
+                workspace_owner_deployment_id: None,
+                workspace_seal_hash: None,
             },
             AgentRequestRow {
                 request_id: "req-2".to_string(),
@@ -297,6 +309,10 @@ fn session_snapshot_stays_renderable_across_three_turns_with_stale_conversation_
                 caused_by_parent_request_id: None,
                 interrupt_requested_at: None,
                 valid_until: None,
+                workspace_id: None,
+                workspace_authority: None,
+                workspace_owner_deployment_id: None,
+                workspace_seal_hash: None,
             },
             AgentRequestRow {
                 request_id: "req-3".to_string(),
@@ -334,6 +350,10 @@ fn session_snapshot_stays_renderable_across_three_turns_with_stale_conversation_
                 caused_by_parent_request_id: None,
                 interrupt_requested_at: None,
                 valid_until: None,
+                workspace_id: None,
+                workspace_authority: None,
+                workspace_owner_deployment_id: None,
+                workspace_seal_hash: None,
             },
         ],
         responses: vec![

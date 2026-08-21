@@ -38,6 +38,10 @@ fn request() -> AgentRequest {
         caused_by_source_doc_id: None,
         caused_by_correlation: None,
         caused_by_trigger_context: None,
+        workspace_id: None,
+        workspace_authority: None,
+        workspace_owner_deployment_id: None,
+        workspace_seal_hash: None,
     }
 }
 
@@ -310,6 +314,10 @@ fn request_sampling_overrides_behavior_defaults() {
         caused_by_source_doc_id: None,
         caused_by_correlation: None,
         caused_by_trigger_context: None,
+        workspace_id: None,
+        workspace_authority: None,
+        workspace_owner_deployment_id: None,
+        workspace_seal_hash: None,
     };
 
     let sampling = sampling_for_request(defaults, &request);

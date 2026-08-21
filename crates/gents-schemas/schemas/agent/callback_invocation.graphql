@@ -1,0 +1,18 @@
+# Crash-safe host-executor invocation. Claimable only on owner_deployment_id.
+# Action journal is a JSON string (prefix Validated → ResultDocsWritten).
+type CallbackInvocation @branchable {
+    invocation_id: String @index(unique: true) @immutable
+    owner_deployment_id: String @index @immutable
+    binding_id: String @index @immutable
+    source_collection: String @index @immutable
+    source_doc_id: String @index @immutable
+    source_version: String @immutable
+    idempotency_key: String @index(unique: true) @immutable
+    lifecycle_state: String @index
+    attempts: Int
+    action_plan: String
+    action_journal: String
+    error: String
+    claimed_at: String
+    created_at: String @index
+}

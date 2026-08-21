@@ -52,6 +52,27 @@ pub const DATASTORE_TOOL_SURFACE: &str =
     include_str!("../schemas/agent/datastore_tool_surface.graphql");
 pub const WORKSPACE_ROOT_NAME: &str = "WorkspaceRoot";
 pub const WORKSPACE_ROOT: &str = include_str!("../schemas/agent/workspace_root.graphql");
+pub const ISOLATED_WORKSPACE_NAME: &str = "IsolatedWorkspace";
+pub const ISOLATED_WORKSPACE: &str = include_str!("../schemas/agent/isolated_workspace.graphql");
+pub const WORKSPACE_PLACEMENT_NAME: &str = "WorkspacePlacement";
+pub const WORKSPACE_PLACEMENT: &str = include_str!("../schemas/agent/workspace_placement.graphql");
+pub const REPOSITORY_PLACEMENT_NAME: &str = "RepositoryPlacement";
+pub const REPOSITORY_PLACEMENT: &str =
+    include_str!("../schemas/agent/repository_placement.graphql");
+pub const HOST_DEPLOYMENT_NAME: &str = "HostDeployment";
+pub const HOST_DEPLOYMENT: &str = include_str!("../schemas/agent/host_deployment.graphql");
+pub const WORKSPACE_BINDING_NAME: &str = "WorkspaceBinding";
+pub const WORKSPACE_BINDING: &str = include_str!("../schemas/agent/workspace_binding.graphql");
+pub const WORKSPACE_RECEIPT_NAME: &str = "WorkspaceReceipt";
+pub const WORKSPACE_RECEIPT: &str = include_str!("../schemas/agent/workspace_receipt.graphql");
+pub const CALLBACK_MODULE_NAME: &str = "CallbackModule";
+pub const CALLBACK_MODULE: &str = include_str!("../schemas/agent/callback_module.graphql");
+pub const CALLBACK_BINDING_NAME: &str = "CallbackBinding";
+pub const CALLBACK_BINDING: &str = include_str!("../schemas/agent/callback_binding.graphql");
+pub const CALLBACK_INVOCATION_NAME: &str = "CallbackInvocation";
+pub const CALLBACK_INVOCATION: &str = include_str!("../schemas/agent/callback_invocation.graphql");
+pub const CALLBACK_RESULT_NAME: &str = "CallbackResult";
+pub const CALLBACK_RESULT: &str = include_str!("../schemas/agent/callback_result.graphql");
 pub const TASK_NAME: &str = "Task";
 pub const TASK: &str = include_str!("../schemas/agent/task.graphql");
 pub const SCHEDULE_NAME: &str = "Schedule";
@@ -108,6 +129,16 @@ pub const ALL: &[&str] = &[
     SKILL,
     DATASTORE_TOOL_SURFACE,
     WORKSPACE_ROOT,
+    ISOLATED_WORKSPACE,
+    WORKSPACE_PLACEMENT,
+    REPOSITORY_PLACEMENT,
+    HOST_DEPLOYMENT,
+    WORKSPACE_BINDING,
+    WORKSPACE_RECEIPT,
+    CALLBACK_MODULE,
+    CALLBACK_BINDING,
+    CALLBACK_INVOCATION,
+    CALLBACK_RESULT,
     AGENT_CONVERSATION,
     AGENT_REQUEST,
     AGENT_RESPONSE,
@@ -151,6 +182,16 @@ pub const ALL_COLLECTION_NAMES: &[&str] = &[
     SKILL_NAME,
     DATASTORE_TOOL_SURFACE_NAME,
     WORKSPACE_ROOT_NAME,
+    ISOLATED_WORKSPACE_NAME,
+    WORKSPACE_PLACEMENT_NAME,
+    REPOSITORY_PLACEMENT_NAME,
+    HOST_DEPLOYMENT_NAME,
+    WORKSPACE_BINDING_NAME,
+    WORKSPACE_RECEIPT_NAME,
+    CALLBACK_MODULE_NAME,
+    CALLBACK_BINDING_NAME,
+    CALLBACK_INVOCATION_NAME,
+    CALLBACK_RESULT_NAME,
     AGENT_CONVERSATION_NAME,
     AGENT_REQUEST_NAME,
     AGENT_RESPONSE_NAME,
@@ -206,6 +247,13 @@ pub const BRANCHABLE_COLLECTION_NAMES: &[&str] = &[
     SCHEDULE_NAME,
     EVENT_TRIGGER_NAME,
     EVENT_TRIGGER_GROUP_STATE_NAME,
+    ISOLATED_WORKSPACE_NAME,
+    WORKSPACE_BINDING_NAME,
+    WORKSPACE_RECEIPT_NAME,
+    CALLBACK_MODULE_NAME,
+    CALLBACK_BINDING_NAME,
+    CALLBACK_INVOCATION_NAME,
+    CALLBACK_RESULT_NAME,
 ];
 
 /// Plaintext prompt-bearing audit facts that stay on the runtime node until
@@ -296,5 +344,54 @@ mod tests {
             assert!(ALL_COLLECTION_NAMES.contains(name));
             assert!(!BRANCHABLE_COLLECTION_NAMES.contains(name));
         }
+    }
+
+    #[test]
+    fn isolated_workspace_identity_is_branchable_and_placements_are_local() {
+        for name in [
+            ISOLATED_WORKSPACE_NAME,
+            WORKSPACE_BINDING_NAME,
+            WORKSPACE_RECEIPT_NAME,
+            CALLBACK_MODULE_NAME,
+            CALLBACK_BINDING_NAME,
+            CALLBACK_INVOCATION_NAME,
+            CALLBACK_RESULT_NAME,
+        ] {
+            let declaration = type_declaration(name);
+            assert!(
+                declaration.contains("@branchable"),
+                "{name} must be @branchable: {declaration}"
+            );
+        }
+        for name in [
+            WORKSPACE_PLACEMENT_NAME,
+            REPOSITORY_PLACEMENT_NAME,
+            HOST_DEPLOYMENT_NAME,
+            WORKSPACE_ROOT_NAME,
+        ] {
+            let declaration = type_declaration(name);
+            assert!(
+                !declaration.contains("@branchable"),
+                "{name} must stay local-only: {declaration}"
+            );
+        }
+        assert!(!ISOLATED_WORKSPACE.contains("host_path"));
+        assert!(WORKSPACE_PLACEMENT.contains("host_path"));
+        assert!(AGENT_REQUEST.contains("workspace_id: String @index @immutable"));
+        assert!(AGENT_REQUEST.contains("workspace_authority: String @immutable"));
+        assert!(AGENT_REQUEST.contains("workspace_owner_deployment_id: String @index @immutable"));
+        assert!(AGENT_REQUEST.contains("workspace_seal_hash: String @immutable"));
+    }
+
+    fn type_declaration(name: &str) -> &'static str {
+        let sdl = ALL_COLLECTION_NAMES
+            .iter()
+            .position(|candidate| *candidate == name)
+            .map(|index| ALL[index])
+            .unwrap_or_else(|| panic!("{name} has no registered SDL"));
+        sdl.lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("type "))
+            .unwrap_or_else(|| panic!("{name} has no type declaration"))
     }
 }

@@ -44,4 +44,8 @@ type AgentRequest @branchable {
     caused_by_parent_request_doc_id: String @index @immutable
     caused_by_parent_tool_call_id: String @index
     caused_by_parent_tool_call_doc_id: String @index @immutable
+    workspace_id: String @index @immutable
+    workspace_authority: String @immutable
+    workspace_owner_deployment_id: String @index @immutable
+    workspace_seal_hash: String @immutable
 }

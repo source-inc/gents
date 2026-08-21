@@ -137,6 +137,10 @@ impl RequestRow {
             caused_by_source_doc_id: None,
             caused_by_correlation: self.caused_by_correlation,
             caused_by_trigger_context: self.caused_by_trigger_context,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }
     }
 }

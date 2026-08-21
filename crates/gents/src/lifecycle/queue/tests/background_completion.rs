@@ -54,6 +54,10 @@ fn wake_agent_request(
         caused_by_trigger_id: None,
         caused_by_trigger_kind: None,
         caused_by_source_doc_id: None,
+        workspace_id: None,
+        workspace_authority: None,
+        workspace_owner_deployment_id: None,
+        workspace_seal_hash: None,
     }
 }
 
