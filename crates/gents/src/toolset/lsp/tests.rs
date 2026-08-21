@@ -2275,3 +2275,67 @@ fn readonly_bash_off_uses_platform_sandbox() {
         crate::toolset::default_lsp_network_mode()
     );
 }
+
+#[tokio::test]
+async fn overlay_read_write_meets_unrestricted_lsp_sandbox_to_workspace_write() {
+    let constraints = CommandConstraints {
+        allowed_argv_prefixes: Vec::new(),
+        forbidden_argv_prefixes: Vec::new(),
+        network_mode: CommandNetworkMode::Inherit,
+        execution_mode: CommandExecutionMode::Unrestricted,
+        sandbox: CommandExecutionMode::Unrestricted,
+        deny_all_argv: false,
+    };
+    let met =
+        crate::tool_call_lifecycle::runtime::scope_request_tool_execution_with_workspace_overlay(
+            None,
+            tokio_util::sync::CancellationToken::new(),
+            crate::tool_call_lifecycle::runtime::ToolWorkspaceScope {
+                workspace_cwd: None,
+                workspace_root: Some(std::env::temp_dir()),
+                workspace_authority: Some(crate::toolset::WorkspaceAuthority::ReadWrite),
+            },
+            None,
+            None,
+            None,
+            Default::default(),
+            false,
+            async { super::overlay_lsp_constraints(&constraints) },
+        )
+        .await;
+    assert_eq!(met.execution_mode, CommandExecutionMode::WorkspaceWrite);
+    assert_eq!(met.sandbox, CommandExecutionMode::WorkspaceWrite);
+}
+
+#[tokio::test]
+async fn start_client_initializes_with_pool_key_workspace() {
+    if !python3_available() {
+        return;
+    }
+    let baked = tempfile::tempdir().unwrap();
+    let overlay = tempfile::tempdir().unwrap();
+    std::fs::write(overlay.path().join("lib.rs"), "fn x() {}\n").unwrap();
+    std::fs::write(
+        overlay.path().join("Cargo.toml"),
+        "[package]\nname='t'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+    let pool = LspPool::new();
+    let server = fixture_server(FIXTURE_PY.into());
+    let config = sample_config(
+        baked.path().to_path_buf(),
+        FileToolMode::ReadWrite,
+        "s-overlay-root",
+        vec![server.clone()],
+    );
+    let key = PoolKey {
+        session_id: "s-overlay-root".into(),
+        behavior_id: "b1".into(),
+        workspace_root: overlay.path().to_path_buf(),
+        server_name: server.name.clone(),
+        config_digest: config.digest.clone(),
+    };
+    let lease = pool.get_or_start(key, &server, &config).await.unwrap();
+    assert_eq!(lease.client().workspace(), overlay.path());
+    assert_ne!(lease.client().workspace(), baked.path());
+}

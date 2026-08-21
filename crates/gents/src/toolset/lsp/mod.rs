@@ -21,7 +21,7 @@ pub use config::LspConfigDocument;
 pub use pool::{LspPool, PoolKey};
 pub use writethrough::{LspWritethrough, MutationKind};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -31,7 +31,7 @@ use crate::llm::tool::{Tool, ToolDefinition};
 use crate::tool_call_lifecycle::FailureClass;
 use crate::tool_surface::{FileToolMode, ToolPolicyBash, ToolPolicySurface};
 use crate::toolset::shared::{ToolContext, ToolError};
-use crate::toolset::{CommandConstraints, CommandNetworkMode};
+use crate::toolset::{lsp_sandbox_for_effective, CommandConstraints, CommandNetworkMode};
 
 use actions::ActionRequest;
 use config::apply_overrides;
@@ -143,9 +143,7 @@ impl LspTool {
     }
 
     fn effective_workspace(&self) -> PathBuf {
-        crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
-            .and_then(|scope| scope.workspace_root)
-            .unwrap_or_else(|| self.config.workspace.clone())
+        overlay_workspace_or(&self.config.workspace)
     }
 
     fn effective_file_mode(&self) -> FileToolMode {
@@ -356,6 +354,7 @@ impl Tool for LspTool {
             &self.pool,
             &self.config,
             &detected,
+            &workspace,
             ActionRequest {
                 action,
                 file: args.file,
@@ -374,6 +373,24 @@ impl Tool for LspTool {
     fn into_dyn_error(error: Self::Error) -> crate::llm::tool::ToolError {
         error.into_dispatch_error()
     }
+}
+
+pub(crate) fn overlay_workspace_or(fallback: &Path) -> PathBuf {
+    crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
+        .and_then(|scope| scope.workspace_root)
+        .unwrap_or_else(|| fallback.to_path_buf())
+}
+
+pub(crate) fn overlay_lsp_constraints(base: &CommandConstraints) -> CommandConstraints {
+    let Some(authority) = crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
+        .and_then(|scope| scope.workspace_authority)
+    else {
+        return base.clone();
+    };
+    let mut constraints = base.clone();
+    constraints.execution_mode = constraints.execution_mode.meet(authority.command_mode());
+    constraints.sandbox = lsp_sandbox_for_effective(constraints.execution_mode);
+    constraints
 }
 
 pub fn merge_catalog(raw_config: Option<&str>) -> Vec<CatalogServer> {

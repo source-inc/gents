@@ -46,10 +46,10 @@ fn bind_input<'a>(
     WorkspaceBindInput {
         workspace_id: "ws-1",
         authority,
-        owner_deployment_id: Some("dep-1"),
+        owner_deployment_id: "dep-1",
         seal_hash: None,
         request_cwd: None,
-        local_deployment_id: Some("dep-1"),
+        local_deployment_id: "dep-1",
         operator_tool_root,
         enabled_workspace_roots,
         workspace_write_sandbox_enforced: enforced,
@@ -176,9 +176,11 @@ fn read_only_binds_ready_and_sealed() {
     let mut workspace = ready_workspace();
     workspace.lifecycle_state = "sealed".into();
     workspace.seal_hash = Some("hash-1".into());
+    let mut placed = placement(&placement_path);
+    placed.observed_tree_hash = Some("hash-1".into());
     bind_workspace_overlay(
         &workspace,
-        &placement(&placement_path),
+        &placed,
         WorkspaceBindInput {
             seal_hash: Some("hash-1"),
             ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
@@ -220,9 +222,11 @@ fn sealed_mismatch_and_missing_hash_fail_closed() {
     let mut workspace = ready_workspace();
     workspace.lifecycle_state = "sealed".into();
     workspace.seal_hash = Some("hash-1".into());
+    let mut hashed = placement(&placement_path);
+    hashed.observed_tree_hash = Some("hash-1".into());
     let error = bind_workspace_overlay(
         &workspace,
-        &placement(&placement_path),
+        &hashed,
         WorkspaceBindInput {
             seal_hash: Some("hash-other"),
             ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
@@ -251,6 +255,29 @@ fn sealed_mismatch_and_missing_hash_fail_closed() {
         error
             .to_string()
             .contains("observed_tree_hash drifted does not match"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn sealed_missing_observed_tree_hash_fails_closed() {
+    let (_guard, operator, placement_path) = temp_tree();
+    let mut workspace = ready_workspace();
+    workspace.lifecycle_state = "sealed".into();
+    workspace.seal_hash = Some("hash-1".into());
+    let error = bind_workspace_overlay(
+        &workspace,
+        &placement(&placement_path),
+        WorkspaceBindInput {
+            seal_hash: Some("hash-1"),
+            ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("missing placement observed_tree_hash"),
         "{error:#}"
     );
 }
@@ -349,9 +376,123 @@ fn persisted_cwd_must_stay_under_placement() {
 }
 
 #[test]
-fn unbound_requests_are_none() {
+fn workspace_authority_parse_and_write_flags() {
     assert!(WorkspaceAuthority::parse("readWrite").is_ok());
     assert!(WorkspaceAuthority::ReadWrite.allows_file_writes());
     assert!(!WorkspaceAuthority::ReadOnly.allows_file_writes());
     assert!(!WorkspaceAuthority::Integrate.allows_file_writes());
+}
+
+#[test]
+fn blank_workspace_id_is_unbound() {
+    assert!(super::optional_id(None).is_none());
+    assert!(super::optional_id(Some("")).is_none());
+    assert!(super::optional_id(Some("  ")).is_none());
+    assert_eq!(super::optional_id(Some("ws-1")), Some("ws-1"));
+}
+
+#[test]
+fn identity_mismatches_fail_closed() {
+    let (_guard, operator, placement_path) = temp_tree();
+    let workspace = ready_workspace();
+    let placed = placement(&placement_path);
+
+    let error = bind_workspace_overlay(
+        &workspace,
+        &placed,
+        WorkspaceBindInput {
+            local_deployment_id: "dep-other",
+            ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("not this host dep-other"),
+        "{error:#}"
+    );
+
+    let error = bind_workspace_overlay(
+        &workspace,
+        &placed,
+        WorkspaceBindInput {
+            owner_deployment_id: "dep-other",
+            ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("does not match workspace owner"),
+        "{error:#}"
+    );
+
+    let mut foreign = placed.clone();
+    foreign.deployment_id = "dep-other".into();
+    let error = bind_workspace_overlay(
+        &workspace,
+        &foreign,
+        bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not match owner_deployment_id"),
+        "{error:#}"
+    );
+
+    let error = bind_workspace_overlay(
+        &workspace,
+        &placed,
+        WorkspaceBindInput {
+            owner_deployment_id: "",
+            ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("workspace_owner_deployment_id is missing"),
+        "{error:#}"
+    );
+
+    let error = bind_workspace_overlay(
+        &workspace,
+        &placed,
+        WorkspaceBindInput {
+            local_deployment_id: "",
+            ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("HostDeployment.deployment_id is missing"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn missing_or_ambiguous_host_deployment_fails_closed() {
+    let error = super::local_deployment_id_from_rows(Vec::new()).unwrap_err();
+    assert!(
+        error.to_string().contains("HostDeployment is missing"),
+        "{error:#}"
+    );
+    let error = super::local_deployment_id_from_rows(vec![
+        super::HostDeploymentRow {
+            deployment_id: Some("dep-1".into()),
+        },
+        super::HostDeploymentRow {
+            deployment_id: Some("dep-2".into()),
+        },
+    ])
+    .unwrap_err();
+    assert!(error.to_string().contains("ambiguous"), "{error:#}");
+    let id = super::local_deployment_id_from_rows(vec![super::HostDeploymentRow {
+        deployment_id: Some("dep-1".into()),
+    }])
+    .unwrap();
+    assert_eq!(id, "dep-1");
 }

@@ -1,5 +1,4 @@
 use std::future::IntoFuture;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -47,19 +46,6 @@ fn ensure_request_deadline_open(deadline: RequestDeadline, context: &str) -> Res
         return Err(request_deadline_error(deadline, context));
     }
     Ok(())
-}
-
-fn request_workspace_cwd(request: &crate::watcher::AgentRequest) -> Option<PathBuf> {
-    let metadata = request.metadata.as_deref()?.trim();
-    if metadata.is_empty() {
-        return None;
-    }
-    let value = serde_json::from_str::<serde_json::Value>(metadata).ok()?;
-    value
-        .pointer("/codex_shim/cwd")
-        .or_else(|| value.get("workspace_cwd"))
-        .and_then(serde_json::Value::as_str)
-        .map(PathBuf::from)
 }
 
 fn render_request_context_message(
@@ -138,24 +124,9 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
         request_token: &tokio_util::sync::CancellationToken,
         aggregate_token_budget: Option<crate::agent::loop_stream::AggregateTokenBudget>,
         effective_seed: Option<i64>,
+        workspace: crate::tool_call_lifecycle::runtime::ToolWorkspaceScope,
     ) -> Result<HandleRequestOutcome> {
         let request_deadline = lifecycle.claimed_deadline_at();
-        let workspace = match crate::workspace::resolve_request_workspace_overlay(
-            self.node.as_ref(),
-            request,
-            self.operator_tool_root.as_deref(),
-        )
-        .await?
-        {
-            Some(overlay) => crate::tool_call_lifecycle::runtime::ToolWorkspaceScope {
-                workspace_cwd: Some(overlay.cwd),
-                workspace_root: Some(overlay.root),
-                workspace_authority: Some(overlay.authority),
-            },
-            None => crate::tool_call_lifecycle::runtime::ToolWorkspaceScope::cwd_only(
-                request_workspace_cwd(request),
-            ),
-        };
         let trigger_context = crate::lifecycle::TriggerExecutionContext::parse(
             request.caused_by_trigger_context.as_deref(),
         )?;

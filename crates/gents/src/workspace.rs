@@ -41,10 +41,10 @@ pub(crate) struct WorkspaceOverlay {
 pub(crate) struct WorkspaceBindInput<'a> {
     pub workspace_id: &'a str,
     pub authority: WorkspaceAuthority,
-    pub owner_deployment_id: Option<&'a str>,
+    pub owner_deployment_id: &'a str,
     pub seal_hash: Option<&'a str>,
     pub request_cwd: Option<&'a Path>,
-    pub local_deployment_id: Option<&'a str>,
+    pub local_deployment_id: &'a str,
     pub operator_tool_root: Option<&'a Path>,
     pub enabled_workspace_roots: &'a [PathBuf],
     pub workspace_write_sandbox_enforced: bool,
@@ -58,6 +58,7 @@ pub(crate) fn workspace_authority_file_mode(authority: WorkspaceAuthority) -> Fi
 }
 
 /// Unbound requests (`workspace_id` none/blank) stay on the behavior tool root.
+#[inline(never)]
 pub(crate) async fn resolve_request_workspace_overlay(
     node: &EmbeddedNode,
     request: &AgentRequest,
@@ -71,11 +72,17 @@ pub(crate) async fn resolve_request_workspace_overlay(
         _ => bail!("workspace-bound request {workspace_id} is missing workspace_authority"),
     };
 
+    let owner_deployment_id = optional_id(request.workspace_owner_deployment_id.as_deref())
+        .ok_or_else(|| {
+            anyhow!(
+                "workspace-bound request {workspace_id} is missing workspace_owner_deployment_id"
+            )
+        })?;
     let workspace = load_isolated_workspace(node, workspace_id)
         .await?
         .ok_or_else(|| anyhow!("isolated workspace {workspace_id} not found"))?;
     let local_deployment_id = load_local_deployment_id(node).await?;
-    let placement = load_workspace_placement(node, workspace_id, local_deployment_id.as_deref())
+    let placement = load_workspace_placement(node, workspace_id, &local_deployment_id)
         .await?
         .ok_or_else(|| {
             anyhow!("workspace placement for {workspace_id} not found on this deployment")
@@ -88,10 +95,10 @@ pub(crate) async fn resolve_request_workspace_overlay(
         WorkspaceBindInput {
             workspace_id,
             authority,
-            owner_deployment_id: optional_id(request.workspace_owner_deployment_id.as_deref()),
+            owner_deployment_id,
             seal_hash: optional_id(request.workspace_seal_hash.as_deref()),
             request_cwd: request_cwd.as_deref(),
-            local_deployment_id: local_deployment_id.as_deref(),
+            local_deployment_id: &local_deployment_id,
             operator_tool_root,
             enabled_workspace_roots: &enabled_workspace_roots,
             workspace_write_sandbox_enforced: workspace_write_sandbox_enforced(),
@@ -130,6 +137,14 @@ pub(crate) fn bind_workspace_overlay(
             input.authority.as_str()
         );
     }
+    let requested_owner = require_deployment_id(
+        Some(input.owner_deployment_id),
+        "request workspace_owner_deployment_id",
+    )?;
+    let local = require_deployment_id(
+        Some(input.local_deployment_id),
+        "local HostDeployment.deployment_id",
+    )?;
     if workspace.owner_deployment_id.trim() != placement.deployment_id.trim() {
         bail!(
             "workspace placement deployment_id {} does not match owner_deployment_id {}",
@@ -137,23 +152,22 @@ pub(crate) fn bind_workspace_overlay(
             workspace.owner_deployment_id
         );
     }
-    if let Some(requested_owner) = input.owner_deployment_id {
-        if requested_owner != workspace.owner_deployment_id.trim() {
-            bail!(
-                "request workspace_owner_deployment_id {requested_owner} does not match workspace owner {}",
-                workspace.owner_deployment_id
-            );
-        }
+    if requested_owner != workspace.owner_deployment_id.trim() {
+        bail!(
+            "request workspace_owner_deployment_id {requested_owner} does not match workspace owner {}",
+            workspace.owner_deployment_id
+        );
     }
-    if let Some(local) = input.local_deployment_id {
-        if local != placement.deployment_id.trim() {
-            bail!(
-                "workspace placement for {} is owned by deployment {}, not this host {}",
-                input.workspace_id,
-                placement.deployment_id,
-                local
-            );
-        }
+    if requested_owner != local {
+        bail!("request workspace_owner_deployment_id {requested_owner} is not this host {local}");
+    }
+    if local != placement.deployment_id.trim() {
+        bail!(
+            "workspace placement for {} is owned by deployment {}, not this host {}",
+            input.workspace_id,
+            placement.deployment_id,
+            local
+        );
     }
 
     if matches!(input.authority, WorkspaceAuthority::ReadWrite)
@@ -184,12 +198,16 @@ pub(crate) fn bind_workspace_overlay(
                 "request workspace_seal_hash {request_hash} does not match workspace seal_hash {workspace_hash}"
             );
         }
-        if let Some(observed) = optional_id(placement.observed_tree_hash.as_deref()) {
-            if observed != workspace_hash {
-                bail!(
-                    "placement observed_tree_hash {observed} does not match workspace seal_hash {workspace_hash}"
-                );
-            }
+        let observed = optional_id(placement.observed_tree_hash.as_deref()).ok_or_else(|| {
+            anyhow!(
+                "sealed workspace {} is missing placement observed_tree_hash",
+                input.workspace_id
+            )
+        })?;
+        if observed != workspace_hash {
+            bail!(
+                "placement observed_tree_hash {observed} does not match workspace seal_hash {workspace_hash}"
+            );
         }
     }
 
@@ -273,11 +291,15 @@ fn require_under_ceiling(
     Ok(())
 }
 
-fn optional_id(value: Option<&str>) -> Option<&str> {
+pub(super) fn optional_id(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn request_workspace_cwd(request: &AgentRequest) -> Option<PathBuf> {
+fn require_deployment_id<'a>(value: Option<&'a str>, what: &str) -> Result<&'a str> {
+    optional_id(value).ok_or_else(|| anyhow!("{what} is missing"))
+}
+
+pub(crate) fn request_workspace_cwd(request: &AgentRequest) -> Option<PathBuf> {
     let metadata = request.metadata.as_deref()?.trim();
     if metadata.is_empty() {
         return None;
@@ -309,8 +331,8 @@ struct WorkspacePlacementRow {
 }
 
 #[derive(Deserialize)]
-struct HostDeploymentRow {
-    deployment_id: Option<String>,
+pub(super) struct HostDeploymentRow {
+    pub(super) deployment_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -361,20 +383,17 @@ async fn load_isolated_workspace(
 async fn load_workspace_placement(
     node: &EmbeddedNode,
     workspace_id: &str,
-    local_deployment_id: Option<&str>,
+    local_deployment_id: &str,
 ) -> Result<Option<WorkspacePlacementRecord>> {
     let escaped_workspace = escape_graphql_string(workspace_id);
-    let deployment_filter = match local_deployment_id {
-        Some(deployment_id) => format!(
-            r#", deployment_id: {{ _eq: "{}" }}"#,
-            escape_graphql_string(deployment_id)
-        ),
-        None => String::new(),
-    };
+    let escaped_deployment = escape_graphql_string(local_deployment_id);
     let query = format!(
         r#"{{
             WorkspacePlacement(
-                filter: {{ workspace_id: {{ _eq: "{escaped_workspace}" }}{deployment_filter} }},
+                filter: {{
+                    workspace_id: {{ _eq: "{escaped_workspace}" }},
+                    deployment_id: {{ _eq: "{escaped_deployment}" }}
+                }},
                 limit: 1
             ) {{
                 workspace_id
@@ -405,7 +424,7 @@ async fn load_workspace_placement(
     }))
 }
 
-async fn load_local_deployment_id(node: &EmbeddedNode) -> Result<Option<String>> {
+async fn load_local_deployment_id(node: &EmbeddedNode) -> Result<String> {
     let query = r#"{
         HostDeployment(limit: 2) {
             deployment_id
@@ -413,13 +432,19 @@ async fn load_local_deployment_id(node: &EmbeddedNode) -> Result<Option<String>>
     }"#;
     let response = graphql_with_transaction_retry(node, query, "load HostDeployment").await?;
     let rows = rows::<HostDeploymentRow>(&response, "HostDeployment")?;
+    local_deployment_id_from_rows(rows)
+}
+
+pub(super) fn local_deployment_id_from_rows(rows: Vec<HostDeploymentRow>) -> Result<String> {
     if rows.len() > 1 {
         bail!("multiple HostDeployment rows; deployment_id is ambiguous");
     }
-    Ok(rows
-        .into_iter()
-        .next()
-        .and_then(|row| optional_id(row.deployment_id.as_deref()).map(str::to_string)))
+    let row = rows.into_iter().next().ok_or_else(|| {
+        anyhow!("HostDeployment is missing; cannot bind a workspace on this host")
+    })?;
+    optional_id(row.deployment_id.as_deref())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("HostDeployment is missing deployment_id"))
 }
 
 async fn load_enabled_workspace_roots(node: &EmbeddedNode) -> Result<Vec<PathBuf>> {
