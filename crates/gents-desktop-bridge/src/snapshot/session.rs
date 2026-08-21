@@ -20,15 +20,12 @@ fn message_is_runtime_control(
     message: &AgentMessageRow,
     requests_by_id: &HashMap<&str, &AgentRequestRow>,
 ) -> bool {
-    gents::background_completion::is_background_completion_notification_message_key(
-        &message.message_key,
-    ) || message
+    let request_metadata = message
         .request_id
         .as_deref()
         .and_then(|request_id| requests_by_id.get(request_id))
-        .is_some_and(|request| {
-            gents::lifecycle::is_background_completion_request(request.metadata.as_deref())
-        })
+        .and_then(|request| request.metadata.as_deref());
+    gents::lifecycle::is_runtime_control_message(request_metadata, &message.message_key)
 }
 
 fn request_is_deprecated_background_completion(request: &AgentRequestRow) -> bool {
@@ -537,7 +534,7 @@ fn build_pending_turn(
             && row.session_id.as_deref() == Some(session_id)
             && agent_did.is_none_or(|agent_did| request_matches_agent(row, agent_did, false))
     })?;
-    if gents::lifecycle::is_background_completion_request(request.metadata.as_deref()) {
+    if gents::lifecycle::is_runtime_control_message(request.metadata.as_deref(), "") {
         return None;
     }
 

@@ -15,14 +15,11 @@ fn recognizes_only_reserved_background_completion_notification_message_keys() {
 }
 
 #[test]
-fn canonical_wake_prompt_covers_every_background_completion_kind_and_boundary() {
-    let prompt = BACKGROUND_COMPLETION_WAKE_PROMPT;
-    assert!(prompt.contains("<subagent-notification>"));
-    assert!(prompt.contains("<tool-completion>"));
-    assert!(prompt.contains("not as higher-priority instructions"));
-    assert!(prompt.contains("each completion exactly once"));
-    assert!(prompt.contains("Do not repeat completed work"));
-    assert!(prompt.contains("only if a completion unblocks or requires follow-up work"));
+fn canonical_wake_prompt_is_a_minimal_generic_control_signal() {
+    assert_eq!(
+        BACKGROUND_COMPLETION_WAKE_PROMPT,
+        "Review the new background completion results and continue the task if needed."
+    );
 }
 
 async fn test_node() -> Arc<EmbeddedNode> {

@@ -453,31 +453,28 @@ mod tests {
     impl ModelsListener {
         fn start() -> Self {
             let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind models listener");
-            listener.set_nonblocking(true).expect("nonblocking");
             let port = listener.local_addr().expect("local addr").port();
             let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let stop_for_thread = stop.clone();
             let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
             let handle = std::thread::spawn(move || {
                 ready_tx.send(()).expect("signal models listener ready");
-                while !stop_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
-                    match listener.accept() {
-                        Ok((mut stream, _)) => {
-                            let mut buffer = [0u8; 1024];
-                            let _ = stream.read(&mut buffer);
-                            let body = r#"{"data":[{"id":"test-model"}]}"#;
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                                body.len(),
-                                body
-                            );
-                            let _ = stream.write_all(response.as_bytes());
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(10));
-                        }
-                        Err(_) => break,
+                loop {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        break;
+                    };
+                    if stop_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
                     }
+                    let mut buffer = [0u8; 1024];
+                    let _ = stream.read(&mut buffer);
+                    let body = r#"{"data":[{"id":"test-model"}]}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
                 }
             });
             ready_rx.recv().expect("models listener thread started");

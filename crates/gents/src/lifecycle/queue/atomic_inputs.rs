@@ -226,6 +226,7 @@ pub(super) async fn steering_transaction_attempt(
     let request_response = txn.execute(request_mutation).await?;
     let request_doc_id = transaction_created_doc_id(&request_response, "AgentRequest")?;
     let sequence = next_append_sequence_in_transaction(txn, &parent.session_id).await?;
+    let message_key = steering_input_message_key(request_id);
     let message_mutation = session::create_message_mutation(
         &parent.session_id,
         &parent.agent_did,
@@ -236,7 +237,7 @@ pub(super) async fn steering_transaction_attempt(
         None,
         Some(request_id),
         Some(&request_doc_id),
-        None,
+        Some(&message_key),
     );
     txn.execute(&message_mutation).await?;
 

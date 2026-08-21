@@ -6,6 +6,7 @@ pub(crate) struct RequestQueueMetadata {
 }
 
 const BACKGROUND_COMPLETION_WAKE_VERSION: u32 = 1;
+const STEERING_INPUT_MESSAGE_PREFIX: &str = "steering-input:";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct QueueHints {
@@ -103,4 +104,12 @@ pub(crate) fn is_subagent_owned_queue(metadata: Option<&str>) -> bool {
 
 pub(crate) fn is_goal_queue(metadata: Option<&str>) -> bool {
     parse_queue_hints(metadata).is_some_and(|hints| matches!(hints.source, QueueSource::Goal))
+}
+
+pub(crate) fn steering_input_message_key(request_id: &str) -> String {
+    format!("{STEERING_INPUT_MESSAGE_PREFIX}{request_id}")
+}
+
+pub(crate) fn is_steering_input_message_key(message_key: &str) -> bool {
+    message_key.starts_with(STEERING_INPUT_MESSAGE_PREFIX)
 }

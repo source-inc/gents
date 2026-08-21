@@ -22,6 +22,7 @@ const CHILD_BEHAVIOR_ID: &str = "r4c-child";
 struct RequestRow {
     session_id: String,
     behavior_id: Option<String>,
+    content: String,
     status: Option<String>,
     lifecycle_state: Option<String>,
     metadata: Option<String>,
@@ -36,6 +37,7 @@ struct RequestRow {
 struct MessageRow {
     role: String,
     content: String,
+    message_key: String,
     request_id: Option<String>,
     request_doc_id: Option<String>,
 }
@@ -284,6 +286,7 @@ async fn fetch_request(node: &EmbeddedNode, request_id: &str) -> RequestRow {
             AgentRequest(filter: {{ request_id: {{ _eq: "{request_id}" }} }}, limit: 1) {{
                 session_id
                 behavior_id
+                content
                 status
                 lifecycle_state
                 metadata
@@ -310,6 +313,7 @@ async fn latest_user_message(node: &EmbeddedNode, session_id: &str) -> MessageRo
             ) {{
                 role
                 content
+                message_key
                 request_id
                 request_doc_id
             }}
@@ -468,6 +472,8 @@ async fn steer_subagent_append_enqueues_with_steering_source() {
     let queued = fetch_request(db.node.as_ref(), queued_request_id).await;
     assert_eq!(queued.session_id, child_session_id);
     assert_eq!(queued.behavior_id.as_deref(), Some(CHILD_BEHAVIOR_ID));
+    assert_eq!(queued.content, "Continue with the new steering message.");
+    assert_ne!(queued.content, "also check the staging config");
     assert_eq!(queued.subagent_depth, Some(1));
     let parent_request_doc_id =
         crate::support::exact_request_doc_id(db.node.as_ref(), "parent-append").await;
@@ -509,6 +515,7 @@ async fn steer_subagent_append_writes_user_message() {
     let message = latest_user_message(db.node.as_ref(), child_session_id).await;
     assert_eq!(message.role, "user");
     assert!(message.content.contains("also check the staging config"));
+    assert!(message.message_key.starts_with("steering-input:"));
     let queued_request_id = result["queued_request_id"].as_str().unwrap();
     let queued_request_doc_id =
         crate::support::exact_request_doc_id(db.node.as_ref(), queued_request_id).await;

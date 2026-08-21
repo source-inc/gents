@@ -1,5 +1,7 @@
 use super::*;
 
+pub(crate) const STEERING_WAKE_PROMPT: &str = "Continue with the new steering message.";
+
 pub(crate) async fn enqueue_session_request(
     node: &EmbeddedNode,
     parent: &AgentRequest,
@@ -107,7 +109,7 @@ pub(crate) async fn enqueue_steering_request_with_message(
     let request_mutation = session_request_create_mutation(
         parent,
         &behavior_id,
-        content,
+        STEERING_WAKE_PROMPT,
         ExecutionOrigin::Interactive,
         &metadata,
         &request_id,

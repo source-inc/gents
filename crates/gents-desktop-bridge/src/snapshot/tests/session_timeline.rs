@@ -177,6 +177,60 @@ fn versioned_background_wake_never_projects_as_a_user_turn() {
 }
 
 #[test]
+fn steering_projects_the_input_once_without_rendering_its_control_prompt() {
+    let mut rows = make_streaming_store_with_response_content("").to_rows();
+    rows.responses.clear();
+    rows.requests[0].content = Some("Continue with the new steering message.".to_string());
+    rows.requests[0].metadata = Some(
+        r#"{"queue":{"source":"steering","policy":"append","key":null,"queued_after_request_id":"parent-1"}}"#
+            .to_string(),
+    );
+    rows.messages[0].message_key = "steering-input:req-1".to_string();
+    rows.messages[0].content = Some(user_message_json("also check the staging config"));
+
+    let store = ClientStore::from_rows(rows);
+    let snapshot = build_session_snapshot_from_store(&store, "sess-1", Some("req-1"))
+        .expect("session snapshot");
+
+    assert!(!snapshot.messages[0].runtime_control);
+    assert!(snapshot.pending_turn.is_none());
+    assert_eq!(
+        snapshot
+            .timeline_items
+            .iter()
+            .filter_map(|item| match item {
+                RenderedTimelineItem::UserMessage { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec!["also check the staging config"]
+    );
+}
+
+#[test]
+fn durable_goal_continuation_never_projects_as_user_authored_input() {
+    let mut rows = make_streaming_store_with_response_content("").to_rows();
+    rows.responses.clear();
+    rows.requests[0].content = Some("Continue pursuing the durable goal.".to_string());
+    rows.requests[0].metadata = Some(
+        r#"{"queue":{"source":"goal","policy":"append","key":null,"queued_after_request_id":"parent-1"}}"#
+            .to_string(),
+    );
+    rows.messages[0].content = Some(user_message_json("Continue pursuing the durable goal."));
+
+    let store = ClientStore::from_rows(rows);
+    let snapshot = build_session_snapshot_from_store(&store, "sess-1", Some("req-1"))
+        .expect("session snapshot");
+
+    assert!(snapshot.messages[0].runtime_control);
+    assert!(snapshot.pending_turn.is_none());
+    assert!(snapshot
+        .timeline_items
+        .iter()
+        .all(|item| !matches!(item, RenderedTimelineItem::UserMessage { .. })));
+}
+
+#[test]
 fn session_snapshot_deduplicates_persisted_rows_from_multiple_sources() {
     let mut rows = make_streaming_store_with_response_content("").to_rows();
     rows.responses.clear();

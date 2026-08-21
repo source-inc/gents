@@ -44,7 +44,8 @@ pub(crate) use goal_continuation::enqueue_goal_continuation;
 pub use metadata::QueueSource;
 pub(crate) use metadata::{
     is_automated_wakeup, is_deprecated_background_completion_wakeup, is_goal_queue,
-    is_subagent_owned_queue, parse_queue_hints, queue_metadata_json, QueueHints, QueuePolicy,
+    is_steering_input_message_key, is_subagent_owned_queue, parse_queue_hints, queue_metadata_json,
+    steering_input_message_key, QueueHints, QueuePolicy,
 };
 use mutation::session_request_create_mutation;
 

@@ -797,3 +797,48 @@ impl TriggerSource for GoalSource {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn goal() -> GoalDocument {
+        serde_json::from_value(serde_json::json!({
+            "_docID": "goal-doc",
+            "goal_id": "goal-1",
+            "session_id": "session-1",
+            "agent_did": "did:test:agent",
+            "objective": "finish <carefully> and call update_goal('complete')",
+            "status": "active",
+            "token_budget": 1000,
+            "tokens_used": 250
+        }))
+        .expect("goal fixture")
+    }
+
+    #[test]
+    fn durable_goal_continuation_is_self_contained_and_not_a_completion_wake() {
+        let prompt = continuation_prompt(&goal(), None, false);
+
+        assert!(prompt.contains("durable goal controller"));
+        assert!(prompt.contains(
+            r#"<goal-objective-json>"finish <carefully> and call update_goal('complete')"</goal-objective-json>"#
+        ));
+        assert!(prompt.contains("Charged tokens: 250 / 1000"));
+        assert!(prompt.contains("Use get_goal for the current durable state"));
+        assert!(prompt.contains("Call update_goal with status complete only when"));
+        assert!(prompt.contains("Call update_goal with status blocked only after"));
+        assert!(!prompt.contains("<subagent-notification>"));
+        assert!(!prompt.contains("<tool-completion>"));
+        assert!(!prompt.contains("steering message"));
+    }
+
+    #[test]
+    fn durable_goal_wrapup_and_retry_state_are_not_lost() {
+        let prompt = continuation_prompt(&goal(), Some("Retry from durable state."), true);
+
+        assert!(prompt.starts_with("Retry from durable state.\n\n"));
+        assert!(prompt.contains("one final wrap-up turn"));
+        assert!(prompt.contains("Do not expect another automatic continuation"));
+    }
+}
