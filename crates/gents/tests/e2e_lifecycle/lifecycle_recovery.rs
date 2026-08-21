@@ -33,6 +33,7 @@ struct NotificationDeliveryRow {
 #[derive(Debug, Clone, Deserialize)]
 struct BackgroundWakeRetryRow {
     request_id: String,
+    content: String,
     status: String,
     lifecycle_state: String,
     execution_origin: String,
@@ -125,6 +126,10 @@ async fn failed_background_wake_redrive_is_bounded_and_idempotent() {
     assert_eq!(successor.execution_origin, "scheduled");
     assert_eq!(successor.retry_parent_request, "failed-wake");
     assert_eq!(successor.retry_root_request, "failed-wake");
+    assert_eq!(
+        successor.content,
+        gents::background_completion::BACKGROUND_COMPLETION_WAKE_PROMPT
+    );
     assert_eq!(successor.retry_count, 2);
     assert_eq!(successor.max_retries, 3);
     assert_eq!(successor.metadata, metadata);
@@ -261,7 +266,7 @@ async fn background_wake_retry_rows(
                     filter: {{ session_id: {{ _eq: "{session_id}" }} }},
                     order: {{ created_at: ASC }}
                 ) {{
-                    request_id status lifecycle_state execution_origin
+                    request_id content status lifecycle_state execution_origin
                     retry_parent_request retry_root_request retry_count max_retries
                     metadata deadline valid_until
                 }}

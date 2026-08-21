@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use defra_node::EmbeddedNode;
 use serde::Deserialize;
 
+use crate::background_completion::BACKGROUND_COMPLETION_WAKE_PROMPT;
 use crate::config_client::ConfigApplyTxn;
 use crate::graphql::escape_graphql_string;
 use crate::session;
@@ -25,7 +26,6 @@ struct FailedWakeRow {
     behavior_id: String,
     session_id: String,
     retry_root_request: Option<String>,
-    content: String,
     temperature: Option<f64>,
     top_p: Option<f64>,
     top_k: Option<i64>,
@@ -185,7 +185,7 @@ async fn load_candidates(
                     execution_origin: {{ _eq: "scheduled" }}
                 }}, order: [{{ terminalized_at: ASC }}, {{ request_id: ASC }}]) {{
                     _docID request_id agent_did requester_did behavior_id session_id
-                    retry_root_request content temperature top_p top_k seed max_tokens
+                    retry_root_request temperature top_p top_k seed max_tokens
                     max_total_tokens metadata backend_id caused_by_parent_request_id
                     caused_by_parent_request_doc_id subagent_depth retry_count max_retries
                     terminalized_at
@@ -466,7 +466,7 @@ fn redrive_mutation(
         source_doc_id = escape_graphql_string(&candidate.doc_id),
         retry_root = escape_graphql_string(retry_root),
         retry_key = escape_graphql_string(retry_key),
-        content = escape_graphql_string(&candidate.content),
+        content = escape_graphql_string(BACKGROUND_COMPLETION_WAKE_PROMPT),
         temperature = optional_field("temperature", candidate.temperature),
         top_p = optional_field("top_p", candidate.top_p),
         top_k = optional_field("top_k", candidate.top_k),
