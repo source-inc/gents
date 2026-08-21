@@ -1,0 +1,10 @@
+type DefenseScanResult {
+  run_id: String @index @immutable
+  area_id: String @index(unique: true) @immutable
+  repository_path: String @immutable
+  expected_total: String @immutable
+  status: String @immutable
+  finding_count: String @immutable
+  coverage: String @immutable
+  summary: String @immutable
+}

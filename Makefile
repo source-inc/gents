@@ -60,6 +60,29 @@ MAINTENANCE_STREAM_LIVENESS_SECS ?= 86400
 MAINTENANCE_STREAM_BATCH_MS ?= 5000
 MAINTENANCE_RETRY_MAX_TRANSPORT ?= 720
 MAINTENANCE_RETRY_MAX_RESAMPLE ?= 32
+DEFENDING_ROOT ?= $(CURDIR)
+DEFENDING_PROMPT ?= Map the repository's trust boundaries, find plausible exploitable vulnerabilities, adversarially verify them, and draft minimal reviewable fixes for confirmed findings.
+DEFENDING_ENDPOINT ?= http://100.73.235.38:8000/v1
+DEFENDING_MODEL ?= GLM-5.2
+DEFENDING_MIN_AREAS ?= 4
+DEFENDING_MAX_AREAS ?= 10
+DEFENDING_MAX_CONCURRENT ?= 8
+DEFENDING_PORT ?= 19193
+DEFENDING_PAGE_PORT ?= 19194
+DEFENDING_JOB_ID ?=
+DEFENDING_KEEP_HOME ?=
+DEFENDING_CONTEXT_WINDOW ?= 262144
+DEFENDING_MAX_OUTPUT_TOKENS ?= 65536
+DEFENDING_MAX_TURNS ?= 1000000
+DEFENDING_TEMPERATURE ?= 1.0
+DEFENDING_TOP_P ?= 0.95
+DEFENDING_COMPACTION_THRESHOLD ?= 0.762939453125
+DEFENDING_DEADLINE_SECS ?= 86400
+DEFENDING_AWAIT_TIMEOUT_SECS ?= 86400
+DEFENDING_STREAM_LIVENESS_SECS ?= 86400
+DEFENDING_STREAM_BATCH_MS ?= 5000
+DEFENDING_RETRY_MAX_TRANSPORT ?= 720
+DEFENDING_RETRY_MAX_RESAMPLE ?= 32
 
 .DEFAULT_GOAL := help
 
@@ -146,6 +169,19 @@ help:
 	@echo "    MAINTENANCE_WORKTREE_PATH=DIR  Override the exact new sibling worktree path"
 	@echo "    MAINTENANCE_BRANCH=BRANCH  Override the exact new maintenance branch"
 	@echo "    MAINTENANCE_KEEP_HOME=1   Keep the generated runtime home"
+	@echo
+	@echo "Defending code:"
+	@echo "  make defend-page           Open the live campaign visualizer on :$(DEFENDING_PAGE_PORT)"
+	@echo "  make defend                Run the threat-model-driven defending-code pack"
+	@echo "    DEFENDING_ROOT=DIR        Set the authorized repository root"
+	@echo "    DEFENDING_PROMPT='...'    Override the defensive-review focus"
+	@echo "    DEFENDING_ENDPOINT=URL    Set the OpenAI-compatible backend"
+	@echo "    DEFENDING_MODEL=MODEL     Set the model (default GLM-5.2)"
+	@echo "    DEFENDING_MIN_AREAS=4     Set the review-area lower bound"
+	@echo "    DEFENDING_MAX_AREAS=10    Set the review-area upper bound"
+	@echo "    DEFENDING_MAX_CONCURRENT=8  Cap concurrent backend requests"
+	@echo "    DEFENDING_PAGE_PORT=19194  Set the visualizer port"
+	@echo "    DEFENDING_KEEP_HOME=1     Keep the generated runtime home"
 	@echo
 	@echo "Worktrees:"
 	@echo "  make worktree BRANCH=<branch> [DIR=<dest>] [BASE=<ref>]"
@@ -281,6 +317,47 @@ maintain:
 		--http-port "$(MAINTENANCE_PORT)" \
 		--job-id "$$maintenance_job_id" \
 		$(if $(MAINTENANCE_KEEP_HOME),--keep-home,)
+
+.PHONY: defend
+defend:
+	@test -d "$(DEFENDING_ROOT)" || { echo "DEFENDING_ROOT is not a directory: $(DEFENDING_ROOT)" >&2; exit 2; }
+	@case "$(DEFENDING_MIN_AREAS)" in ''|*[!0-9]*) echo "DEFENDING_MIN_AREAS must be a positive integer: $(DEFENDING_MIN_AREAS)" >&2; exit 2;; esac
+	@case "$(DEFENDING_MAX_AREAS)" in ''|*[!0-9]*) echo "DEFENDING_MAX_AREAS must be a positive integer: $(DEFENDING_MAX_AREAS)" >&2; exit 2;; esac
+	@case "$(DEFENDING_MAX_CONCURRENT)" in ''|*[!0-9]*) echo "DEFENDING_MAX_CONCURRENT must be a positive integer: $(DEFENDING_MAX_CONCURRENT)" >&2; exit 2;; esac
+	@test "$(DEFENDING_MIN_AREAS)" -gt 0 && test "$(DEFENDING_MAX_AREAS)" -ge "$(DEFENDING_MIN_AREAS)" || { echo "defending area bounds must satisfy 0 < DEFENDING_MIN_AREAS <= DEFENDING_MAX_AREAS" >&2; exit 2; }
+	@test "$(DEFENDING_MAX_CONCURRENT)" -gt 0 || { echo "DEFENDING_MAX_CONCURRENT must be greater than zero" >&2; exit 2; }
+	@command -v rust-analyzer >/dev/null 2>&1 || echo "warning: rust-analyzer not found on PATH; defending-code will fall back to file/search tools" >&2
+	@defending_job_id="$(DEFENDING_JOB_ID)"; \
+	if test -z "$$defending_job_id"; then defending_job_id="defending-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$"; fi; \
+	GENTS_DEFENDING_ROOT="$(abspath $(DEFENDING_ROOT))" \
+	GENTS_DEFENDING_PROMPT="$(DEFENDING_PROMPT)" \
+	GENTS_DEFENDING_ENDPOINT="$(DEFENDING_ENDPOINT)" \
+	GENTS_DEFENDING_MODEL="$(DEFENDING_MODEL)" \
+	GENTS_DEFENDING_MIN_AREAS="$(DEFENDING_MIN_AREAS)" \
+	GENTS_DEFENDING_MAX_AREAS="$(DEFENDING_MAX_AREAS)" \
+	GENTS_DEFENDING_MAX_CONCURRENT="$(DEFENDING_MAX_CONCURRENT)" \
+	GENTS_DEFENDING_CONTEXT_WINDOW="$(DEFENDING_CONTEXT_WINDOW)" \
+	GENTS_DEFENDING_MAX_OUTPUT_TOKENS="$(DEFENDING_MAX_OUTPUT_TOKENS)" \
+	GENTS_DEFENDING_MAX_TURNS="$(DEFENDING_MAX_TURNS)" \
+	GENTS_DEFENDING_TEMPERATURE="$(DEFENDING_TEMPERATURE)" \
+	GENTS_DEFENDING_TOP_P="$(DEFENDING_TOP_P)" \
+	GENTS_DEFENDING_COMPACTION_THRESHOLD="$(DEFENDING_COMPACTION_THRESHOLD)" \
+	GENTS_DEFENDING_DEADLINE_SECS="$(DEFENDING_DEADLINE_SECS)" \
+	GENTS_DEFENDING_AWAIT_TIMEOUT_SECS="$(DEFENDING_AWAIT_TIMEOUT_SECS)" \
+	GENTS_DEFENDING_STREAM_LIVENESS_SECS="$(DEFENDING_STREAM_LIVENESS_SECS)" \
+	GENTS_DEFENDING_STREAM_BATCH_MS="$(DEFENDING_STREAM_BATCH_MS)" \
+	GENTS_DEFENDING_RETRY_MAX_TRANSPORT="$(DEFENDING_RETRY_MAX_TRANSPORT)" \
+	GENTS_DEFENDING_RETRY_MAX_RESAMPLE="$(DEFENDING_RETRY_MAX_RESAMPLE)" \
+	$(CARGO) run -p gents-cli -- demo run "$(CURDIR)/demo/defending-code" \
+		--http-port "$(DEFENDING_PORT)" \
+		--job-id "$$defending_job_id" \
+		$(if $(DEFENDING_KEEP_HOME),--keep-home,)
+
+.PHONY: defend-page
+defend-page:
+	@echo "page     http://127.0.0.1:$(DEFENDING_PAGE_PORT)/?pack=defending"
+	@echo "runtime  http://127.0.0.1:$(DEFENDING_PORT)"
+	@DEMO_RUNTIME_PORT="$(DEFENDING_PORT)" DEMO_PAGE_PORT="$(DEFENDING_PAGE_PORT)" VITE_DEMO_MODE=defending $(NPM) --prefix apps/review-demo run dev
 
 build-cli-headless:
 	$(CARGO) build -p gents-cli --no-default-features

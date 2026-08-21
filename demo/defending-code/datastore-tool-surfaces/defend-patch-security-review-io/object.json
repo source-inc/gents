@@ -1,0 +1,85 @@
+{
+  "surface_id": "defend-patch-security-review-io",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Adversarial patch re-attack IO",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_defending_finding",
+      "collection": "DefendingFinding",
+      "description": "Load the run-bounded confirmed ledger so every exact cluster member can be re-attacked.",
+      "fields": ["finding_id", "source_revision", "source_tree_state", "root_cause_key", "security_boundary", "attacker_identity", "attacker_controlled_input", "control_source", "entry_point", "sink", "attacker_control", "default_reachable", "required_configuration", "required_privileges", "guard_checked", "fails_closed", "violated_invariant", "impact", "contract_surface", "category", "severity", "path", "line", "title", "description", "exploit_scenario", "evidence", "verification", "preconditions", "access_level", "threat_ids"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_root_cause_cluster",
+      "collection": "DefenseRootCauseCluster",
+      "description": "Load the exact remediation unit for this patch.",
+      "fields": ["cluster_id", "repository_path", "base_revision", "base_tree_state", "status", "primary_finding_id", "member_finding_ids", "canonical_root_cause", "security_boundary", "affected_paths", "remediation_scope", "expected_total"],
+      "filter_fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "cluster_id", "required": false, "fill": {"source_field": "cluster_id"}}
+      ]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_contract_review",
+      "collection": "DefenseContractReview",
+      "description": "Load the contract constraints for this patch.",
+      "fields": ["review_id", "cluster_id", "repository_path", "status", "disposition", "spec_impact", "required_foundation_flow", "required_proof_files", "compatibility_constraints", "recommended_fix_boundary", "required_human_decision", "evidence", "expected_total"],
+      "filter_fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "cluster_id", "required": false, "fill": {"source_field": "cluster_id"}}
+      ]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_patch_candidate",
+      "collection": "DefensePatchCandidate",
+      "description": "Load the exact raw patch to re-attack.",
+      "fields": ["patch_id", "cluster_id", "finding_id", "member_finding_ids", "contract_review_id", "contract_disposition", "status", "repository_path", "base_revision", "base_tree_state", "path", "line", "category", "diff", "diff_sha256", "rationale", "variants_checked", "bypass_considered", "test_note", "validation_plan", "expected_total"],
+      "filter_fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "patch_id", "required": false, "fill": {"source_field": "patch_id"}}
+      ]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_patch_validation",
+      "collection": "DefensePatchValidation",
+      "description": "Load the exact mechanical validation receipt.",
+      "fields": ["validation_id", "patch_id", "cluster_id", "finding_id", "repository_path", "status", "validated_base_revision", "base_tree_state", "validated_diff_sha256", "observed_head_revision", "result_tree_hash", "workspace_mode", "workspace_identity", "changed_files", "provenance_match", "applies_cleanly", "format_status", "compile_status", "test_status", "proof_status", "commands", "evidence", "expected_total"],
+      "filter_fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "patch_id", "required": false, "fill": {"source_field": "patch_id"}}
+      ]
+    },
+    {
+      "tool_name": "write_defense_patch_security_review",
+      "collection": "DefensePatchSecurityReview",
+      "description": "Persist one independent exploit-closure review.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "security_review_id", "required": true},
+        {"name": "patch_id", "required": false, "fill": {"source_field": "patch_id"}},
+        {"name": "cluster_id", "required": false, "fill": {"source_field": "cluster_id"}},
+        {"name": "finding_id", "required": false, "fill": {"source_field": "finding_id"}},
+        {"name": "validation_id", "required": false, "fill": {"source_field": "validation_id"}},
+        {"name": "reviewed_base_revision", "required": false, "fill": {"source_field": "reviewed_base_revision"}},
+        {"name": "reviewed_base_tree_state", "required": false, "fill": {"source_field": "reviewed_base_tree_state"}},
+        {"name": "reviewed_diff_sha256", "required": true},
+        {"name": "receipt_match", "required": true},
+        {"name": "verdict", "required": true},
+        {"name": "original_path_closed", "required": true},
+        {"name": "sibling_variants_checked", "required": true},
+        {"name": "bypass_found", "required": true},
+        {"name": "contract_alignment", "required": true},
+        {"name": "evidence", "required": true},
+        {"name": "expected_total", "required": false, "fill": {"source_field": "expected_total"}}
+      ]
+    }
+  ]
+}

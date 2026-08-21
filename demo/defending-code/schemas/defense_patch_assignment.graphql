@@ -1,0 +1,15 @@
+type DefensePatchAssignment {
+  run_id: String @index @immutable
+  assignment_id: String @index(unique: true) @immutable
+  cluster_id: String @index @immutable
+  finding_id: String @immutable
+  member_finding_ids: String @immutable
+  contract_review_id: String @immutable
+  contract_disposition: String @immutable
+  skip_reason: String @immutable
+  repository_path: String @immutable
+  base_revision: String @immutable
+  base_tree_state: String @immutable
+  status: String @immutable
+  expected_total: String @immutable
+}

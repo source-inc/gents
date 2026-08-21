@@ -1,0 +1,19 @@
+{
+  "profile_id": "defending-profile",
+  "display_name": "Defending-code profile",
+  "context_window": ${GENTS_DEFENDING_CONTEXT_WINDOW:-262144},
+  "max_output_tokens": ${GENTS_DEFENDING_MAX_OUTPUT_TOKENS:-65536},
+  "max_turns": ${GENTS_DEFENDING_MAX_TURNS:-1000000},
+  "temperature": ${GENTS_DEFENDING_TEMPERATURE:-1.0},
+  "top_p": ${GENTS_DEFENDING_TOP_P:-0.95},
+  "top_k": null,
+  "min_p": null,
+  "frequency_penalty": null,
+  "stream_batch_ms": ${GENTS_DEFENDING_STREAM_BATCH_MS:-5000},
+  "deadline_duration_secs": ${GENTS_DEFENDING_DEADLINE_SECS:-86400},
+  "stream_liveness_timeout_secs": ${GENTS_DEFENDING_STREAM_LIVENESS_SECS:-86400},
+  "retry_max_transport": ${GENTS_DEFENDING_RETRY_MAX_TRANSPORT:-720},
+  "retry_backoff_ms": [5000, 30000, 120000],
+  "retry_max_resample": ${GENTS_DEFENDING_RETRY_MAX_RESAMPLE:-32},
+  "retry_allow_repair": true
+}

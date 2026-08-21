@@ -1,0 +1,64 @@
+{
+  "surface_id": "defend-patch-review-writes",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Isolated patch-review writes",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_defense_root_cause_cluster",
+      "collection": "DefenseRootCauseCluster",
+      "description": "Load the exact remediation unit whose patch is under maintainer review.",
+      "fields": ["cluster_id", "repository_path", "base_revision", "base_tree_state", "status", "primary_finding_id", "member_finding_ids", "canonical_root_cause", "security_boundary", "affected_paths", "remediation_scope", "expected_total"],
+      "filter_fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "cluster_id", "required": false, "fill": {"source_field": "cluster_id"}}
+      ]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_contract_review",
+      "collection": "DefenseContractReview",
+      "description": "Load the independently established contract and compatibility constraints.",
+      "fields": ["review_id", "cluster_id", "repository_path", "status", "disposition", "behavior_intentional", "spec_impact", "required_foundation_flow", "required_proof_files", "compatibility_constraints", "recommended_fix_boundary", "required_human_decision", "evidence", "expected_total"],
+      "filter_fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "cluster_id", "required": false, "fill": {"source_field": "cluster_id"}}
+      ]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_patch_candidate",
+      "collection": "DefensePatchCandidate",
+      "description": "Load the exact patch associated with this validation receipt.",
+      "fields": ["patch_id", "cluster_id", "finding_id", "member_finding_ids", "contract_review_id", "contract_disposition", "status", "repository_path", "base_revision", "base_tree_state", "path", "line", "category", "diff", "diff_sha256", "rationale", "variants_checked", "bypass_considered", "test_note", "validation_plan", "expected_total"],
+      "filter_fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "patch_id", "required": false, "fill": {"source_field": "patch_id"}}
+      ]
+    },
+    {
+      "tool_name": "write_defense_patch_review",
+      "collection": "DefensePatchReview",
+      "description": "Persist the independent review of one proposed patch or no-patch sentinel.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "patch_id", "required": false, "fill": {"source_field": "patch_id"}},
+        {"name": "cluster_id", "required": false, "fill": {"source_field": "cluster_id"}},
+        {"name": "finding_id", "required": false, "fill": {"source_field": "finding_id"}},
+        {"name": "validation_id", "required": false, "fill": {"source_field": "validation_id"}},
+        {"name": "reviewed_base_revision", "required": false, "fill": {"source_field": "validated_base_revision"}},
+        {"name": "reviewed_base_tree_state", "required": false, "fill": {"source_field": "base_tree_state"}},
+        {"name": "reviewed_diff_sha256", "required": true},
+        {"name": "receipt_match", "required": true},
+        {"name": "verdict", "required": true},
+        {"name": "quality_status", "required": true},
+        {"name": "out_of_scope_hunks", "required": true},
+        {"name": "new_surface", "required": true},
+        {"name": "reason", "required": true},
+        {"name": "expected_total", "required": false, "fill": {"source_field": "expected_total"}}
+      ]
+    }
+  ]
+}

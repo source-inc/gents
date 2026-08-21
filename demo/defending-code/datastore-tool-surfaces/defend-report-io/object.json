@@ -1,0 +1,135 @@
+{
+  "surface_id": "defend-report-io",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Closed-ledger campaign report IO",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_defense_review_area",
+      "collection": "DefenseReviewArea",
+      "description": "Load the closed planned-area ledger for coverage checks.",
+      "fields": ["area_id", "repository_path", "source_revision", "source_tree_state", "status", "focus", "threat_ids", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_scan_result",
+      "collection": "DefenseScanResult",
+      "description": "Load every area completion and declared candidate count.",
+      "fields": ["area_id", "repository_path", "status", "finding_count", "coverage", "summary", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_candidate",
+      "collection": "DefenseCandidateFinding",
+      "description": "Load the immutable candidate ledger for area and verification joins.",
+      "fields": ["finding_id", "area_id", "source_revision", "source_tree_state", "claim_kind", "root_cause_key", "security_boundary", "claimed_severity", "path", "line", "title"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_verification_assignment",
+      "collection": "DefenseVerificationAssignment",
+      "description": "Load the closed candidate-to-verifier work ledger.",
+      "fields": ["assignment_id", "finding_id", "area_id", "repository_path", "status", "scan_ledger_status", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_verification_completion",
+      "collection": "DefenseVerificationCompletion",
+      "description": "Load the verifier completion barrier ledger.",
+      "fields": ["assignment_id", "finding_id", "repository_path", "status", "scan_ledger_status", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_patch_assignment",
+      "collection": "DefensePatchAssignment",
+      "description": "Load the exact contract-to-remediation work ledger.",
+      "fields": ["assignment_id", "cluster_id", "finding_id", "member_finding_ids", "contract_review_id", "contract_disposition", "skip_reason", "repository_path", "base_revision", "base_tree_state", "status", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read", "tool_name": "read_defense_threat_model",
+      "collection": "DefenseThreatModel", "description": "Load the threat model.",
+      "fields": ["repository_path", "source_revision", "source_tree_state", "provenance_status", "system_context", "assets", "entry_points", "threats", "deprioritized", "open_questions", "mitigations", "provenance"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read", "tool_name": "read_defense_triage_summary",
+      "collection": "DefenseTriageSummary", "description": "Load exact triage counts.",
+      "fields": ["repository_path", "scan_ledger_status", "candidate_count", "confirmed_count", "refuted_count", "duplicate_count", "promoted_count", "summary"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read", "tool_name": "read_defense_verdict",
+      "collection": "DefenseFindingVerdict", "description": "Load the candidate verdict ledger.",
+      "fields": ["finding_id", "area_id", "repository_path", "verdict", "source_revision", "source_tree_state", "claim_kind", "root_cause_key", "security_boundary", "attacker_identity", "attacker_controlled_input", "control_source", "entry_point", "sink", "attacker_control", "default_reachable", "required_configuration", "required_privileges", "guard_checked", "fails_closed", "violated_invariant", "impact", "contract_surface", "category", "severity", "confidence", "path", "line", "title", "description", "exploit_scenario", "recommendation", "evidence", "verification", "duplicate_of", "preconditions", "access_level", "owner_hint", "threat_ids", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read", "tool_name": "read_defending_finding",
+      "collection": "DefendingFinding", "description": "Load confirmed findings.",
+      "fields": ["finding_id", "source_revision", "source_tree_state", "root_cause_key", "security_boundary", "attacker_identity", "attacker_controlled_input", "control_source", "entry_point", "sink", "attacker_control", "default_reachable", "required_configuration", "required_privileges", "guard_checked", "fails_closed", "violated_invariant", "impact", "category", "severity", "confidence", "path", "line", "title", "description", "exploit_scenario", "recommendation", "evidence", "verification", "preconditions", "access_level", "threat_ids"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read", "tool_name": "read_defense_root_cause_cluster",
+      "collection": "DefenseRootCauseCluster", "description": "Load root-cause remediation units.",
+      "fields": ["cluster_id", "repository_path", "base_revision", "base_tree_state", "status", "primary_finding_id", "member_finding_ids", "consequence_finding_ids", "canonical_title", "canonical_root_cause", "severity", "security_boundary", "affected_paths", "remediation_scope", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read", "tool_name": "read_defense_contract_review",
+      "collection": "DefenseContractReview", "description": "Load contract dispositions.",
+      "fields": ["review_id", "cluster_id", "repository_path", "status", "disposition", "behavior_intentional", "spec_impact", "required_foundation_flow", "required_proof_files", "compatibility_constraints", "recommended_fix_boundary", "required_human_decision", "evidence", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read", "tool_name": "read_defense_patch_candidate",
+      "collection": "DefensePatchCandidate", "description": "Load patch proposals.",
+      "fields": ["patch_id", "cluster_id", "finding_id", "member_finding_ids", "contract_review_id", "contract_disposition", "status", "repository_path", "base_revision", "base_tree_state", "workspace_requirement", "path", "line", "category", "diff", "diff_sha256", "rationale", "variants_checked", "bypass_considered", "test_note", "validation_plan", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read", "tool_name": "read_defense_patch_validation",
+      "collection": "DefensePatchValidation", "description": "Load mechanical validation receipts.",
+      "fields": ["validation_id", "patch_id", "cluster_id", "finding_id", "repository_path", "status", "validated_base_revision", "base_tree_state", "validated_diff_sha256", "observed_head_revision", "result_tree_hash", "workspace_mode", "workspace_identity", "changed_files", "provenance_match", "applies_cleanly", "format_status", "compile_status", "test_status", "proof_status", "evidence", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read", "tool_name": "read_defense_patch_review",
+      "collection": "DefensePatchReview", "description": "Load maintainer reviews.",
+      "fields": ["patch_id", "cluster_id", "finding_id", "validation_id", "reviewed_base_revision", "reviewed_base_tree_state", "reviewed_diff_sha256", "receipt_match", "verdict", "quality_status", "out_of_scope_hunks", "new_surface", "reason", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_defense_report",
+      "collection": "DefenseReport",
+      "description": "Publish one report over every closed defense ledger.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "audit_status", "required": true},
+        {"name": "candidate_count", "required": true},
+        {"name": "confirmed_count", "required": true},
+        {"name": "refuted_count", "required": true},
+        {"name": "root_cause_count", "required": true},
+        {"name": "actionable_cluster_count", "required": true},
+        {"name": "patch_count", "required": true},
+        {"name": "mechanically_valid_patch_count", "required": true},
+        {"name": "maintainer_accepted_patch_count", "required": true},
+        {"name": "security_accepted_patch_count", "required": true},
+        {"name": "accepted_patch_count", "required": true},
+        {"name": "rejected_patch_count", "required": true},
+        {"name": "severity_counts", "required": true},
+        {"name": "top_risks", "required": true},
+        {"name": "summary", "required": true},
+        {"name": "human_actions", "required": true}
+      ]
+    }
+  ]
+}

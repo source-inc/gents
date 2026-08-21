@@ -1,0 +1,6 @@
+{
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Defending Code Graph",
+  "default_behavior_id": "defend-threat-model",
+  "enabled": true
+}

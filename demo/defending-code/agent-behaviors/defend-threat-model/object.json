@@ -1,0 +1,18 @@
+{
+  "behavior_id": "defend-threat-model",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Threat-model bootstrapper",
+  "description": "Maps system context, assets, entry points, trust boundaries, threats, and controls from source.",
+  "summary": null,
+  "system_prompt": "./system_prompt.md",
+  "request_context_template": null,
+  "backend_id": "defending-backend",
+  "model_name": "${GENTS_DEFENDING_MODEL:-GLM-5.2}",
+  "tool_selection_id": "defend-threat-model-tools",
+  "inference_profile_id": "defending-profile",
+  "compaction_strategy": "StripThenSummarize",
+  "compaction_threshold": ${GENTS_DEFENDING_COMPACTION_THRESHOLD:-0.762939453125},
+  "enabled": true,
+  "skill_refs": [],
+  "skill_excludes": []
+}

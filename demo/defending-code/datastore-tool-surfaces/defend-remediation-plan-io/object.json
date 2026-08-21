@@ -1,0 +1,37 @@
+{
+  "surface_id": "defend-remediation-plan-io",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Contract reviews to patch assignments",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_defense_root_cause_cluster",
+      "collection": "DefenseRootCauseCluster",
+      "description": "Load the closed root-cause cluster ledger.",
+      "fields": ["cluster_id", "repository_path", "base_revision", "base_tree_state", "status", "primary_finding_id", "member_finding_ids", "canonical_root_cause", "remediation_scope", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_defense_patch_assignment",
+      "collection": "DefensePatchAssignment",
+      "description": "Create one contract-aware patch work item per root-cause cluster.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1, "expected_count_field": "expected_total"},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "assignment_id", "required": true},
+        {"name": "cluster_id", "required": true},
+        {"name": "finding_id", "required": true},
+        {"name": "member_finding_ids", "required": true},
+        {"name": "contract_review_id", "required": true},
+        {"name": "contract_disposition", "required": true},
+        {"name": "skip_reason", "required": true},
+        {"name": "repository_path", "required": false, "fill": {"source_field": "repository_path"}},
+        {"name": "base_revision", "required": true},
+        {"name": "base_tree_state", "required": true},
+        {"name": "status", "required": true},
+        {"name": "expected_total", "required": true}
+      ]
+    }
+  ]
+}

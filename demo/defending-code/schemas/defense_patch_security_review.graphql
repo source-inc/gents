@@ -1,0 +1,19 @@
+type DefensePatchSecurityReview {
+  run_id: String @index @immutable
+  security_review_id: String @index(unique: true) @immutable
+  patch_id: String @index @immutable
+  cluster_id: String @index @immutable
+  finding_id: String @immutable
+  validation_id: String @immutable
+  reviewed_base_revision: String @immutable
+  reviewed_base_tree_state: String @immutable
+  reviewed_diff_sha256: String @immutable
+  receipt_match: String @immutable
+  verdict: String @immutable
+  original_path_closed: String @immutable
+  sibling_variants_checked: String @immutable
+  bypass_found: String @immutable
+  contract_alignment: String @immutable
+  evidence: String @immutable
+  expected_total: String @immutable
+}

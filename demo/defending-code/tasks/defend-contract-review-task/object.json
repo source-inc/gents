@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-contract-review-task",
+  "name": "Review one finding cluster against repository contracts",
+  "description": "One document-triggered contract reviewer per root-cause cluster.",
+  "behavior_id": "defend-contract-review",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

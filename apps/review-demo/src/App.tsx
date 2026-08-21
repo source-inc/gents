@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { DefendingApp } from "./defending/DefendingApp.tsx";
 import { ReviewDag } from "./graph/ReviewDag.tsx";
 import { projectReviewGraph } from "./graph/projectReviewGraph.ts";
 import { formatTokenTotals, tokenTotalsForRun } from "./graph/tokenTotals.ts";
@@ -27,6 +28,14 @@ const EMPTY: ReviewSnapshot = {
 };
 
 export function App() {
+  const queryMode = new URLSearchParams(window.location.search).get("pack");
+  if (import.meta.env.VITE_DEMO_MODE === "defending" || queryMode === "defending") {
+    return <DefendingApp />;
+  }
+  return <ReviewApp />;
+}
+
+function ReviewApp() {
   const [health, setHealth] = useState<RuntimeHealth>("offline");
   const [snapshot, setSnapshot] = useState<ReviewSnapshot>(EMPTY);
   const [selectedId, setSelectedId] = useState<string | null>(null);

@@ -90,6 +90,10 @@ export type AgentRequestRow = {
   caused_by_trigger_id?: string | null;
   caused_by_correlation?: string | null;
   caused_by_source_doc_id?: string | null;
+  caused_by_parent_request_id?: string | null;
+  caused_by_parent_tool_call_id?: string | null;
+  subagent_depth?: number | null;
+  content?: string | null;
   created_at?: string | null;
 };
 

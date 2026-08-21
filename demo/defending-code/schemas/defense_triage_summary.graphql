@@ -1,0 +1,11 @@
+type DefenseTriageSummary {
+  run_id: String @index(unique: true) @immutable
+  repository_path: String @immutable
+  scan_ledger_status: String @immutable
+  candidate_count: String @immutable
+  confirmed_count: String @immutable
+  refuted_count: String @immutable
+  duplicate_count: String @immutable
+  promoted_count: String @immutable
+  summary: String @immutable
+}

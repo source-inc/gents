@@ -3323,6 +3323,516 @@ mod tests {
     }
 
     #[test]
+    fn defending_code_pack_is_typed_static_and_closes_both_fan_outs() {
+        let pack = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../demo/defending-code");
+        let manifest = load_manifest_defaults(&pack).expect("defending-code pack should load");
+        assert_eq!(manifest.expect.prompt_tool_contracts.len(), 14);
+        assert_eq!(manifest.expect.result_documents.len(), 17);
+        assert_eq!(manifest.init.tool_package, "write");
+
+        for (trigger, collection) in [
+            ("defend-scan", "DefenseReviewArea"),
+            ("defend-verifier", "DefenseVerificationAssignment"),
+            ("defend-contract-review", "DefenseRootCauseCluster"),
+            ("defend-patch", "DefensePatchAssignment"),
+            ("defend-patch-validation", "DefensePatchCandidate"),
+            ("defend-patch-review", "DefensePatchValidation"),
+            ("defend-patch-security-review", "DefensePatchReview"),
+        ] {
+            let source = manifest
+                .expect
+                .trigger_request_count_sources
+                .get(trigger)
+                .unwrap_or_else(|| panic!("{trigger} should have a count source"));
+            assert_eq!(source.collection, collection);
+            assert_eq!(source.correlation_field, "run_id");
+            assert_eq!(source.expected_count_field, "expected_total");
+        }
+
+        let fan_in = manifest.expect.fan_in.as_ref().expect("fan-in contract");
+        assert_eq!(fan_in.member_collection, "DefenseReviewArea");
+        assert_eq!(fan_in.result_collection, "DefenseScanResult");
+        assert_eq!(fan_in.report_collection, "DefenseReport");
+        assert_eq!(fan_in.min_expected_count, Some(4));
+        assert_eq!(fan_in.max_expected_count, Some(10));
+
+        for (trigger, collection, fire_mode) in [
+            ("defend-verification-plan", "DefenseScanResult", "per_group"),
+            (
+                "defend-verifier",
+                "DefenseVerificationAssignment",
+                "per_document",
+            ),
+            (
+                "defend-triage",
+                "DefenseVerificationCompletion",
+                "per_group",
+            ),
+            ("defend-cluster", "DefenseTriageSummary", "per_document"),
+            (
+                "defend-contract-review",
+                "DefenseRootCauseCluster",
+                "per_document",
+            ),
+            (
+                "defend-remediation-plan",
+                "DefenseContractReview",
+                "per_group",
+            ),
+            (
+                "defend-patch-validation",
+                "DefensePatchCandidate",
+                "per_document",
+            ),
+            (
+                "defend-patch-review",
+                "DefensePatchValidation",
+                "per_document",
+            ),
+            (
+                "defend-patch-security-review",
+                "DefensePatchReview",
+                "per_document",
+            ),
+        ] {
+            let document = read_pack_json_defaults(
+                &pack
+                    .join("event_triggers")
+                    .join(trigger)
+                    .join("object.json"),
+            )
+            .unwrap_or_else(|error| panic!("{trigger} should load: {error:#}"));
+            assert_eq!(
+                document.get("source_collection").and_then(Value::as_str),
+                Some(collection)
+            );
+            assert_eq!(
+                document.get("fire_mode").and_then(Value::as_str),
+                Some(fire_mode)
+            );
+        }
+
+        for selection in [
+            "defend-threat-model-tools",
+            "defend-plan-tools",
+            "defend-scan-tools",
+            "defend-verification-plan-tools",
+            "defend-triage-tools",
+            "defend-verifier-tools",
+            "defend-cluster-tools",
+            "defend-contract-review-tools",
+            "defend-remediation-plan-tools",
+            "defend-patch-tools",
+            "defend-patch-validation-tools",
+            "defend-patch-review-tools",
+            "defend-patch-security-review-tools",
+            "defend-report-tools",
+        ] {
+            let document = read_pack_json_defaults(
+                &pack
+                    .join("tool-selections")
+                    .join(selection)
+                    .join("object.json"),
+            )
+            .unwrap_or_else(|error| panic!("{selection} should load: {error:#}"));
+            assert_eq!(
+                document.get("enable_defra_query").and_then(Value::as_bool),
+                Some(false),
+                "{selection} must use collection-bound reads"
+            );
+            let expected_network_mode = if matches!(
+                selection,
+                "defend-threat-model-tools"
+                    | "defend-plan-tools"
+                    | "defend-scan-tools"
+                    | "defend-verifier-tools"
+                    | "defend-contract-review-tools"
+                    | "defend-patch-tools"
+                    | "defend-patch-validation-tools"
+                    | "defend-patch-review-tools"
+                    | "defend-patch-security-review-tools"
+            ) {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            assert_eq!(
+                document.get("command_network_mode").and_then(Value::as_str),
+                Some(expected_network_mode)
+            );
+        }
+
+        for selection in [
+            "defend-threat-model-tools",
+            "defend-plan-tools",
+            "defend-scan-tools",
+            "defend-verifier-tools",
+            "defend-patch-tools",
+        ] {
+            let document = read_pack_json_defaults(
+                &pack
+                    .join("tool-selections")
+                    .join(selection)
+                    .join("object.json"),
+            )
+            .unwrap_or_else(|error| panic!("{selection} should load: {error:#}"));
+            assert_eq!(
+                document.get("enable_bash").and_then(Value::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                document.get("bash_mode").and_then(Value::as_str),
+                Some("Unrestricted")
+            );
+            assert_eq!(
+                document
+                    .get("command_execution_policy")
+                    .and_then(Value::as_str),
+                Some("unrestricted")
+            );
+            assert_eq!(
+                document.get("enable_lsp").and_then(Value::as_bool),
+                Some(true)
+            );
+            assert!(document
+                .get("lsp_config")
+                .and_then(Value::as_str)
+                .is_some_and(|config| config.contains("rust-analyzer")));
+            assert_eq!(
+                document
+                    .get("backgroundable_tool_names")
+                    .and_then(Value::as_array)
+                    .and_then(|names| names.first())
+                    .and_then(Value::as_str),
+                Some("bash_unrestricted")
+            );
+        }
+
+        let triage_tools = read_pack_json_defaults(
+            &pack
+                .join("tool-selections")
+                .join("defend-triage-tools")
+                .join("object.json"),
+        )
+        .expect("triage reducer tools should load");
+        assert_eq!(
+            triage_tools
+                .get("subagent_spawn_enabled")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            triage_tools
+                .get("subagent_background_enabled")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            triage_tools
+                .get("subagent_default_await_mode")
+                .is_some_and(Value::is_null),
+            true
+        );
+        assert_eq!(
+            triage_tools.get("enable_bash").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(triage_tools
+            .get("subagent_targets")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty));
+        let triage_prompt = std::fs::read_to_string(
+            pack.join("tasks")
+                .join("defend-triage-task")
+                .join("prompt.md"),
+        )
+        .expect("triage reducer prompt should load");
+        assert!(!triage_prompt.contains("spawn_subagent"));
+
+        let verifier_surface = read_pack_json_defaults(
+            &pack
+                .join("datastore-tool-surfaces")
+                .join("defend-verifier-io")
+                .join("object.json"),
+        )
+        .expect("verifier datastore surface should load");
+        let completion_write = verifier_surface
+            .get("entries")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    entry.get("tool_name").and_then(Value::as_str)
+                        == Some("write_defense_verification_completion")
+                })
+            })
+            .expect("verifier surface should expose completion writes");
+        assert_eq!(
+            completion_write
+                .get("output_obligation")
+                .and_then(|obligation| obligation.get("scope"))
+                .and_then(Value::as_str),
+            Some("trigger"),
+            "every event-triggered verifier request must close its assignment"
+        );
+
+        let verification_plan_surface = read_pack_json_defaults(
+            &pack
+                .join("datastore-tool-surfaces")
+                .join("defend-verification-plan-io")
+                .join("object.json"),
+        )
+        .expect("verification-plan datastore surface should load");
+        let assignment_write = verification_plan_surface
+            .get("entries")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    entry.get("tool_name").and_then(Value::as_str)
+                        == Some("write_defense_verification_assignment")
+                })
+            })
+            .expect("verification-plan surface should expose assignment writes");
+        assert_eq!(
+            assignment_write
+                .get("output_obligation")
+                .and_then(|obligation| obligation.get("expected_count_field"))
+                .and_then(Value::as_str),
+            Some("expected_total"),
+            "the planner must close the exact verifier work set"
+        );
+
+        for (task, surface, source_collection, source_template, redundant_read) in [
+            (
+                "defend-threat-model-task",
+                "defend-threat-model-writes",
+                "DefendingCodeJob",
+                "{{ doc.repository_path }}",
+                "read_defending_code_job",
+            ),
+            (
+                "defend-plan-task",
+                "defend-plan-writes",
+                "DefenseThreatModel",
+                "{{ doc.source_revision }}",
+                "read_defense_threat_model",
+            ),
+            (
+                "defend-scan-task",
+                "defend-scan-writes",
+                "DefenseReviewArea",
+                "{{ doc.area_id }}",
+                "read_defense_review_area",
+            ),
+            (
+                "defend-verification-plan-task",
+                "defend-verification-plan-io",
+                "DefenseScanResult",
+                "{{ group.docs }}",
+                "read_defense_scan_result",
+            ),
+            (
+                "defend-verifier-task",
+                "defend-verifier-io",
+                "DefenseVerificationAssignment",
+                "{{ doc.assignment_id }}",
+                "read_defense_verification_assignment",
+            ),
+            (
+                "defend-triage-task",
+                "defend-triage-io",
+                "DefenseVerificationCompletion",
+                "{{ group.docs }}",
+                "read_defense_verification_completion",
+            ),
+            (
+                "defend-cluster-task",
+                "defend-cluster-io",
+                "DefenseTriageSummary",
+                "{{ doc.promoted_count }}",
+                "read_defense_triage_summary",
+            ),
+            (
+                "defend-contract-review-task",
+                "defend-contract-review-io",
+                "DefenseRootCauseCluster",
+                "{{ doc.cluster_id }}",
+                "read_defense_root_cause_cluster",
+            ),
+            (
+                "defend-remediation-plan-task",
+                "defend-remediation-plan-io",
+                "DefenseContractReview",
+                "{{ group.docs }}",
+                "read_defense_contract_review",
+            ),
+            (
+                "defend-patch-task",
+                "defend-patch-io",
+                "DefensePatchAssignment",
+                "{{ doc.assignment_id }}",
+                "read_defense_patch_assignment",
+            ),
+            (
+                "defend-patch-validation-task",
+                "defend-patch-validation-writes",
+                "DefensePatchCandidate",
+                "{{ doc.diff }}",
+                "read_defense_patch_candidate",
+            ),
+            (
+                "defend-patch-review-task",
+                "defend-patch-review-writes",
+                "DefensePatchValidation",
+                "{{ doc.validated_diff_sha256 }}",
+                "read_defense_patch_validation",
+            ),
+            (
+                "defend-patch-security-review-task",
+                "defend-patch-security-review-io",
+                "DefensePatchReview",
+                "{{ doc.validation_id }}",
+                "read_defense_patch_review",
+            ),
+            (
+                "defend-report-task",
+                "defend-report-io",
+                "DefensePatchSecurityReview",
+                "{{ group.docs }}",
+                "read_defense_patch_security_review",
+            ),
+        ] {
+            let prompt = std::fs::read_to_string(pack.join("tasks").join(task).join("prompt.md"))
+                .unwrap_or_else(|error| panic!("{task} prompt should load: {error}"));
+            assert!(
+                prompt.contains(source_template),
+                "{task} must interpolate its trigger document directly"
+            );
+            assert!(
+                !prompt.contains(redundant_read),
+                "{task} must not re-query its trigger document with {redundant_read}"
+            );
+            let datastore = read_pack_json_defaults(
+                &pack
+                    .join("datastore-tool-surfaces")
+                    .join(surface)
+                    .join("object.json"),
+            )
+            .unwrap_or_else(|error| panic!("{surface} should load: {error:#}"));
+            assert!(
+                datastore
+                    .get("entries")
+                    .and_then(Value::as_array)
+                    .is_some_and(|entries| entries.iter().all(|entry| {
+                        entry.get("kind").and_then(Value::as_str) != Some("read")
+                            || entry.get("collection").and_then(Value::as_str)
+                                != Some(source_collection)
+                    })),
+                "{surface} must not expose a redundant read of trigger source {source_collection}"
+            );
+        }
+
+        for selection in [
+            "defend-contract-review-tools",
+            "defend-patch-validation-tools",
+            "defend-patch-review-tools",
+            "defend-patch-security-review-tools",
+        ] {
+            let document = read_pack_json_defaults(
+                &pack
+                    .join("tool-selections")
+                    .join(selection)
+                    .join("object.json"),
+            )
+            .unwrap_or_else(|error| panic!("{selection} should load: {error:#}"));
+            assert_eq!(
+                document.get("enable_bash").and_then(Value::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                document.get("enable_lsp").and_then(Value::as_bool),
+                Some(true)
+            );
+        }
+
+        let report_tools = read_pack_json_defaults(
+            &pack
+                .join("tool-selections")
+                .join("defend-report-tools")
+                .join("object.json"),
+        )
+        .expect("report tools should load");
+        assert_eq!(
+            report_tools.get("enable_bash").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report_tools.get("enable_lsp").and_then(Value::as_bool),
+            Some(false)
+        );
+
+        let backend = read_pack_json_defaults(
+            &pack
+                .join("inference-backends")
+                .join("defending-backend")
+                .join("object.json"),
+        )
+        .expect("defending backend should load");
+        assert_eq!(
+            backend.get("max_concurrent").and_then(Value::as_u64),
+            Some(8)
+        );
+
+        for behavior in [
+            "defend-threat-model",
+            "defend-plan",
+            "defend-scan",
+            "defend-verification-plan",
+            "defend-triage",
+            "defend-verifier",
+            "defend-cluster",
+            "defend-contract-review",
+            "defend-remediation-plan",
+            "defend-patch",
+            "defend-patch-validation",
+            "defend-patch-review",
+            "defend-patch-security-review",
+            "defend-report",
+        ] {
+            let document = read_pack_json_defaults(
+                &pack
+                    .join("agent-behaviors")
+                    .join(behavior)
+                    .join("object.json"),
+            )
+            .unwrap_or_else(|error| panic!("{behavior} should load: {error:#}"));
+            assert_eq!(
+                document.get("compaction_threshold").and_then(Value::as_f64),
+                Some(0.762_939_453_125),
+                "{behavior} should compact at 200,000 of 262,144 tokens"
+            );
+        }
+
+        let review_prompt = std::fs::read_to_string(
+            pack.join("tasks")
+                .join("defend-patch-review-task")
+                .join("prompt.md"),
+        )
+        .expect("patch review prompt should load");
+        assert!(review_prompt.contains("do not receive scanner conversation"));
+        assert!(!review_prompt.contains("{{ doc.rationale }}"));
+        assert!(!review_prompt.contains("{{ doc.description }}"));
+
+        let read_surface = std::fs::read_to_string(
+            pack.join("datastore-tool-surfaces")
+                .join("defend-report-io")
+                .join("object.json"),
+        )
+        .expect("report surface should load");
+        assert!(!read_surface.contains("defra_query"));
+        assert!(read_surface.contains("read_defense_patch_review"));
+    }
+
+    #[test]
     fn repo_maintenance_pack_preserves_categories_and_worktree_sized_packages() {
         let pack = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../demo/repo-maintenance");
         let manifest = load_manifest_defaults(&pack).expect("repo-maintenance pack should load");

@@ -1,0 +1,25 @@
+type DefensePatchCandidate {
+  run_id: String @index @immutable
+  patch_id: String @index(unique: true) @immutable
+  cluster_id: String @index @immutable
+  finding_id: String @immutable
+  member_finding_ids: String @immutable
+  contract_review_id: String @immutable
+  contract_disposition: String @immutable
+  status: String @immutable
+  repository_path: String @immutable
+  base_revision: String @immutable
+  base_tree_state: String @immutable
+  workspace_requirement: String @immutable
+  path: String @immutable
+  line: String @immutable
+  category: String @immutable
+  diff: String @immutable
+  diff_sha256: String @immutable
+  rationale: String @immutable
+  variants_checked: String @immutable
+  bypass_considered: String @immutable
+  test_note: String @immutable
+  validation_plan: String @immutable
+  expected_total: String @immutable
+}

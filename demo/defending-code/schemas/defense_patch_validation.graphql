@@ -1,0 +1,26 @@
+type DefensePatchValidation {
+  run_id: String @index @immutable
+  validation_id: String @index(unique: true) @immutable
+  patch_id: String @index @immutable
+  cluster_id: String @index @immutable
+  finding_id: String @immutable
+  repository_path: String @immutable
+  status: String @immutable
+  validated_base_revision: String @immutable
+  base_tree_state: String @immutable
+  validated_diff_sha256: String @immutable
+  observed_head_revision: String @immutable
+  result_tree_hash: String @immutable
+  workspace_mode: String @immutable
+  workspace_identity: String @immutable
+  changed_files: String @immutable
+  provenance_match: String @immutable
+  applies_cleanly: String @immutable
+  format_status: String @immutable
+  compile_status: String @immutable
+  test_status: String @immutable
+  proof_status: String @immutable
+  commands: String @immutable
+  evidence: String @immutable
+  expected_total: String @immutable
+}

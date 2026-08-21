@@ -1,0 +1,32 @@
+{
+  "surface_id": "defend-threat-model-writes",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Threat-model document write",
+  "enabled": true,
+  "entries": [
+    {
+      "tool_name": "write_defense_threat_model",
+      "collection": "DefenseThreatModel",
+      "description": "Create the single structured threat model for this defense run.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "repository_path", "required": false, "fill": {"source_field": "repository_path"}},
+        {"name": "source_revision", "required": true},
+        {"name": "source_tree_state", "required": true},
+        {"name": "provenance_status", "required": true},
+        {"name": "focus", "required": false, "fill": {"source_field": "focus"}},
+        {"name": "area_min", "required": false, "fill": {"source_field": "area_min"}},
+        {"name": "area_max", "required": false, "fill": {"source_field": "area_max"}},
+        {"name": "system_context", "required": true},
+        {"name": "assets", "required": true},
+        {"name": "entry_points", "required": true},
+        {"name": "threats", "required": true},
+        {"name": "deprioritized", "required": true},
+        {"name": "open_questions", "required": true},
+        {"name": "mitigations", "required": true},
+        {"name": "provenance", "required": true}
+      ]
+    }
+  ]
+}

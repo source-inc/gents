@@ -1,0 +1,213 @@
+{
+  "name": "defending-code",
+  "description": "Threat-model-driven static defense campaign: discover -> verify -> cluster -> contract review -> patch -> validate -> maintainer review -> re-attack -> report",
+  "init": {
+    "inference_url": "${GENTS_DEFENDING_ENDPOINT:-http://100.73.235.38:8000/v1}",
+    "model_name": "${GENTS_DEFENDING_MODEL:-GLM-5.2}",
+    "tool_package": "write",
+    "tool_root": "${GENTS_DEFENDING_ROOT:-.}",
+    "tool_root_env_var": "GENTS_DEFENDING_ROOT",
+    "tool_root_markers": [],
+    "backend_preset": "vllm",
+    "openai_wire_api": "chat-completions"
+  },
+  "seed": {
+    "collection": "DefendingCodeJob",
+    "job_id_field": "run_id",
+    "prompt_field": "focus",
+    "fields": {
+      "repository_path": "${GENTS_DEFENDING_ROOT:-.}",
+      "area_min": "${GENTS_DEFENDING_MIN_AREAS:-4}",
+      "area_max": "${GENTS_DEFENDING_MAX_AREAS:-10}",
+      "engagement_context": "${GENTS_DEFENDING_ENGAGEMENT_CONTEXT:-Authorized defensive static review of code controlled by the operator. Do not execute target code or contact external systems.}"
+    }
+  },
+  "default_prompt": "${GENTS_DEFENDING_PROMPT:-Map the repository's trust boundaries, find plausible exploitable vulnerabilities, adversarially verify them, and draft minimal reviewable fixes for confirmed findings.}",
+  "expect": {
+    "trigger_ids": ["defend-threat-model", "defend-plan", "defend-scan", "defend-verification-plan", "defend-verifier", "defend-triage", "defend-cluster", "defend-contract-review", "defend-remediation-plan", "defend-patch", "defend-patch-validation", "defend-patch-review", "defend-patch-security-review", "defend-report"],
+    "trigger_request_count_sources": {
+      "defend-scan": {
+        "collection": "DefenseReviewArea",
+        "correlation_field": "run_id",
+        "expected_count_field": "expected_total"
+      },
+      "defend-verifier": {
+        "collection": "DefenseVerificationAssignment",
+        "correlation_field": "run_id",
+        "expected_count_field": "expected_total"
+      },
+      "defend-contract-review": {
+        "collection": "DefenseRootCauseCluster",
+        "correlation_field": "run_id",
+        "expected_count_field": "expected_total"
+      },
+      "defend-patch": {
+        "collection": "DefensePatchAssignment",
+        "correlation_field": "run_id",
+        "expected_count_field": "expected_total"
+      },
+      "defend-patch-validation": {
+        "collection": "DefensePatchCandidate",
+        "correlation_field": "run_id",
+        "expected_count_field": "expected_total"
+      },
+      "defend-patch-review": {
+        "collection": "DefensePatchValidation",
+        "correlation_field": "run_id",
+        "expected_count_field": "expected_total"
+      },
+      "defend-patch-security-review": {
+        "collection": "DefensePatchReview",
+        "correlation_field": "run_id",
+        "expected_count_field": "expected_total"
+      }
+    },
+    "signed_provenance": true,
+    "required_tool_call_trigger_ids": ["defend-threat-model", "defend-plan", "defend-scan", "defend-verification-plan", "defend-verifier", "defend-triage", "defend-cluster", "defend-contract-review", "defend-remediation-plan", "defend-patch", "defend-patch-validation", "defend-patch-review", "defend-patch-security-review", "defend-report"],
+    "prompt_tool_contracts": [
+      {"task_id": "defend-threat-model-task", "required_tool_names": ["write_defense_threat_model"]},
+      {"task_id": "defend-plan-task", "required_tool_names": ["write_defense_review_area"]},
+      {"task_id": "defend-scan-task", "required_tool_names": ["write_defense_candidate", "write_defense_scan_result"]},
+      {"task_id": "defend-verification-plan-task", "required_tool_names": ["read_defense_candidate", "write_defense_verification_assignment"]},
+      {"task_id": "defend-triage-task", "required_tool_names": ["read_defense_candidate", "read_defense_verdict", "write_defending_finding", "write_defense_triage_summary"]},
+      {"task_id": "defend-verifier-task", "required_tool_names": ["read_defense_threat_model", "read_defense_candidate", "write_defense_verdict", "write_defense_verification_completion"]},
+      {"task_id": "defend-cluster-task", "required_tool_names": ["read_defending_finding", "write_defense_root_cause_cluster"]},
+      {"task_id": "defend-contract-review-task", "required_tool_names": ["read_defending_finding", "write_defense_contract_review"]},
+      {"task_id": "defend-remediation-plan-task", "required_tool_names": ["read_defense_root_cause_cluster", "write_defense_patch_assignment"]},
+      {"task_id": "defend-patch-task", "required_tool_names": ["read_defense_root_cause_cluster", "read_defense_contract_review", "read_defending_finding", "write_defense_patch_candidate"]},
+      {"task_id": "defend-patch-validation-task", "required_tool_names": ["read_defense_root_cause_cluster", "read_defense_contract_review", "write_defense_patch_validation"]},
+      {"task_id": "defend-patch-review-task", "required_tool_names": ["read_defense_root_cause_cluster", "read_defense_contract_review", "read_defense_patch_candidate", "write_defense_patch_review"]},
+      {"task_id": "defend-patch-security-review-task", "required_tool_names": ["read_defending_finding", "read_defense_root_cause_cluster", "read_defense_contract_review", "read_defense_patch_candidate", "read_defense_patch_validation", "write_defense_patch_security_review"]},
+      {"task_id": "defend-report-task", "required_tool_names": ["read_defense_review_area", "read_defense_scan_result", "read_defense_candidate", "read_defense_verification_assignment", "read_defense_verification_completion", "read_defense_patch_assignment", "read_defense_threat_model", "read_defense_triage_summary", "read_defense_verdict", "read_defending_finding", "read_defense_root_cause_cluster", "read_defense_contract_review", "read_defense_patch_candidate", "read_defense_patch_validation", "read_defense_patch_review", "write_defense_report"]}
+    ],
+    "source_edges": [],
+    "projections": ["atif", "openai-codex", "langgraph", "multi-agent"],
+    "collection_counts": {
+      "DefenseThreatModel": 1,
+      "DefenseReviewArea": 1,
+      "DefenseScanResult": 1,
+      "DefenseVerificationAssignment": 1,
+      "DefenseVerificationCompletion": 1,
+      "DefenseTriageSummary": 1,
+      "DefenseRootCauseCluster": 1,
+      "DefenseContractReview": 1,
+      "DefensePatchAssignment": 1,
+      "DefensePatchCandidate": 1,
+      "DefensePatchValidation": 1,
+      "DefensePatchReview": 1,
+      "DefensePatchSecurityReview": 1,
+      "DefenseReport": 1
+    },
+    "result_documents": [
+      {
+        "collection": "DefenseReport",
+        "correlation_field": "run_id",
+        "fields": ["audit_status", "candidate_count", "confirmed_count", "refuted_count", "root_cause_count", "actionable_cluster_count", "patch_count", "mechanically_valid_patch_count", "maintainer_accepted_patch_count", "security_accepted_patch_count", "accepted_patch_count", "rejected_patch_count", "severity_counts", "top_risks", "summary", "human_actions"]
+      },
+      {
+        "collection": "DefenseThreatModel",
+        "correlation_field": "run_id",
+        "fields": ["source_revision", "source_tree_state", "provenance_status", "system_context", "assets", "entry_points", "threats", "deprioritized", "open_questions", "mitigations", "provenance"]
+      },
+      {
+        "collection": "DefenseReviewArea",
+        "correlation_field": "run_id",
+        "fields": ["area_id", "repository_path", "source_revision", "source_tree_state", "status", "focus", "threat_ids", "threat_context", "trust_boundary", "reachable_assets", "instructions", "expected_total"]
+      },
+      {
+        "collection": "DefenseScanResult",
+        "correlation_field": "run_id",
+        "fields": ["area_id", "repository_path", "status", "finding_count", "coverage", "summary", "expected_total"]
+      },
+      {
+        "collection": "DefenseCandidateFinding",
+        "correlation_field": "run_id",
+        "fields": ["finding_id", "area_id", "source_revision", "source_tree_state", "claim_kind", "root_cause_key", "security_boundary", "attacker_identity", "attacker_controlled_input", "control_source", "entry_point", "sink", "default_reachable", "required_configuration", "required_privileges", "guard_checked", "fails_closed", "violated_invariant", "category", "claimed_severity", "confidence", "path", "line", "title", "description", "exploit_scenario", "recommendation", "evidence", "threat_ids"]
+      },
+      {
+        "collection": "DefendingFinding",
+        "correlation_field": "run_id",
+        "fields": ["finding_id", "area_id", "source_revision", "source_tree_state", "claim_kind", "root_cause_key", "security_boundary", "attacker_identity", "attacker_controlled_input", "control_source", "entry_point", "sink", "attacker_control", "default_reachable", "required_configuration", "required_privileges", "guard_checked", "fails_closed", "violated_invariant", "impact", "contract_surface", "category", "severity", "confidence", "path", "line", "title", "description", "exploit_scenario", "recommendation", "evidence", "verification", "preconditions", "access_level", "owner_hint", "threat_ids", "verdict"]
+      },
+      {
+        "collection": "DefenseVerificationAssignment",
+        "correlation_field": "run_id",
+        "fields": ["assignment_id", "finding_id", "area_id", "repository_path", "status", "scan_ledger_status", "expected_total"]
+      },
+      {
+        "collection": "DefenseVerificationCompletion",
+        "correlation_field": "run_id",
+        "fields": ["assignment_id", "finding_id", "repository_path", "status", "scan_ledger_status", "expected_total"]
+      },
+      {
+        "collection": "DefenseFindingVerdict",
+        "correlation_field": "run_id",
+        "fields": ["finding_id", "area_id", "repository_path", "verdict", "source_revision", "source_tree_state", "claim_kind", "root_cause_key", "security_boundary", "attacker_identity", "attacker_controlled_input", "control_source", "entry_point", "sink", "attacker_control", "default_reachable", "required_configuration", "required_privileges", "guard_checked", "fails_closed", "violated_invariant", "impact", "contract_surface", "category", "severity", "confidence", "path", "line", "title", "description", "exploit_scenario", "recommendation", "evidence", "verification", "duplicate_of", "preconditions", "access_level", "owner_hint", "threat_ids", "expected_total"]
+      },
+      {
+        "collection": "DefenseTriageSummary",
+        "correlation_field": "run_id",
+        "fields": ["scan_ledger_status", "candidate_count", "confirmed_count", "refuted_count", "duplicate_count", "promoted_count", "summary"]
+      },
+      {
+        "collection": "DefenseRootCauseCluster",
+        "correlation_field": "run_id",
+        "fields": ["cluster_id", "repository_path", "base_revision", "base_tree_state", "status", "primary_finding_id", "member_finding_ids", "consequence_finding_ids", "canonical_title", "canonical_root_cause", "claim_kind", "severity", "security_boundary", "affected_paths", "remediation_scope", "expected_total"]
+      },
+      {
+        "collection": "DefenseContractReview",
+        "correlation_field": "run_id",
+        "fields": ["review_id", "cluster_id", "repository_path", "status", "disposition", "behavior_intentional", "spec_impact", "required_foundation_flow", "required_proof_files", "compatibility_constraints", "recommended_fix_boundary", "required_human_decision", "evidence", "expected_total"]
+      },
+      {
+        "collection": "DefensePatchAssignment",
+        "correlation_field": "run_id",
+        "fields": ["assignment_id", "cluster_id", "finding_id", "member_finding_ids", "contract_review_id", "contract_disposition", "skip_reason", "repository_path", "base_revision", "base_tree_state", "status", "expected_total"]
+      },
+      {
+        "collection": "DefensePatchCandidate",
+        "correlation_field": "run_id",
+        "fields": ["patch_id", "cluster_id", "finding_id", "member_finding_ids", "contract_review_id", "contract_disposition", "status", "repository_path", "base_revision", "base_tree_state", "workspace_requirement", "path", "line", "category", "diff", "diff_sha256", "rationale", "variants_checked", "bypass_considered", "test_note", "validation_plan", "expected_total"]
+      },
+      {
+        "collection": "DefensePatchValidation",
+        "correlation_field": "run_id",
+        "fields": ["validation_id", "patch_id", "cluster_id", "finding_id", "repository_path", "status", "validated_base_revision", "base_tree_state", "validated_diff_sha256", "observed_head_revision", "result_tree_hash", "workspace_mode", "workspace_identity", "changed_files", "provenance_match", "applies_cleanly", "format_status", "compile_status", "test_status", "proof_status", "commands", "evidence", "expected_total"]
+      },
+      {
+        "collection": "DefensePatchReview",
+        "correlation_field": "run_id",
+        "fields": ["patch_id", "cluster_id", "finding_id", "validation_id", "reviewed_base_revision", "reviewed_base_tree_state", "reviewed_diff_sha256", "receipt_match", "verdict", "quality_status", "out_of_scope_hunks", "new_surface", "reason", "expected_total"]
+      },
+      {
+        "collection": "DefensePatchSecurityReview",
+        "correlation_field": "run_id",
+        "fields": ["security_review_id", "patch_id", "cluster_id", "finding_id", "validation_id", "reviewed_base_revision", "reviewed_base_tree_state", "reviewed_diff_sha256", "receipt_match", "verdict", "original_path_closed", "sibling_variants_checked", "bypass_found", "contract_alignment", "evidence", "expected_total"]
+      }
+    ],
+    "fan_in": {
+      "member_collection": "DefenseReviewArea",
+      "result_collection": "DefenseScanResult",
+      "report_collection": "DefenseReport",
+      "correlation_field": "run_id",
+      "expected_count_field": "expected_total",
+      "min_expected_count": ${GENTS_DEFENDING_MIN_AREAS:-4},
+      "max_expected_count": ${GENTS_DEFENDING_MAX_AREAS:-10},
+      "consumer_trigger_id": "defend-verification-plan",
+      "member_required_fields": ["area_id", "repository_path", "focus", "threat_ids", "threat_context", "trust_boundary", "reachable_assets", "instructions"],
+      "verification": {
+        "candidate_collection": "DefenseCandidateFinding",
+        "decision_collection": "DefenseFindingVerdict",
+        "summary_collection": "DefenseTriageSummary",
+        "confirmed_collection": "DefendingFinding",
+        "final_consumer_trigger_id": "defend-report",
+        "finding_id_field": "finding_id",
+        "verdict_field": "verdict",
+        "evidence_field": "evidence",
+        "confirmed_count_field": "confirmed_count",
+        "refuted_count_field": "refuted_count"
+      }
+    }
+  },
+  "await_timeout_secs": ${GENTS_DEFENDING_AWAIT_TIMEOUT_SECS:-86400}
+}
