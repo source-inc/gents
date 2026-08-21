@@ -478,6 +478,10 @@ fn workspace_authority_parse_and_write_flags() {
     assert!(WorkspaceAuthority::ReadWrite.allows_file_writes());
     assert!(!WorkspaceAuthority::ReadOnly.allows_file_writes());
     assert!(!WorkspaceAuthority::Integrate.allows_file_writes());
+    assert_eq!(
+        WorkspaceAuthority::ReadOnly.infimum(WorkspaceAuthority::ReadWrite),
+        WorkspaceAuthority::ReadOnly
+    );
 }
 
 #[test]

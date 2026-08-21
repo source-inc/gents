@@ -19,7 +19,11 @@ use crate::event_delivery_contract::{EventDeliveryRuntimeContract, EventDelivery
 use crate::graphql::escape_graphql_string;
 use crate::runtime_snapshot::{ActiveRuntimeSnapshot, ConcurrencyMode, ResolvedTask};
 use crate::tool_call_lifecycle::subagent_request::{
-    create_subagent_request_with_request_id, create_subagent_request_with_trusted_parent_request_id,
+    create_subagent_request_with_request_id_and_workspace,
+    create_subagent_request_with_trusted_parent_request_id_and_workspace,
+};
+use crate::tool_call_lifecycle::subagent_workspace::{
+    lineage_from_bridge, resolve_spawn_workspace, ParentWorkspaceStamp,
 };
 use crate::tool_call_lifecycle::{
     AwaitMode, CancelPolicy, FailureClass, IllegalToolCallTransition, ToolCallState,
@@ -97,6 +101,14 @@ struct ParentRequestRow {
     agent_did: String,
     #[serde(default)]
     subagent_depth: Option<i64>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    workspace_authority: Option<String>,
+    #[serde(default)]
+    workspace_owner_deployment_id: Option<String>,
+    #[serde(default)]
+    workspace_seal_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,6 +143,16 @@ struct SpawnArgs {
     deadline: Option<String>,
     #[serde(default)]
     parent_subagent_depth: Option<u32>,
+    #[serde(default)]
+    workspace: Option<crate::background_tools::SpawnWorkspaceArg>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    workspace_authority: Option<String>,
+    #[serde(default)]
+    workspace_owner_deployment_id: Option<String>,
+    #[serde(default)]
+    workspace_seal_hash: Option<String>,
 }
 
 impl SpawnArgs {
@@ -287,6 +309,10 @@ impl SubagentSource {
                     request_id
                     agent_did
                     subagent_depth
+                    workspace_id
+                    workspace_authority
+                    workspace_owner_deployment_id
+                    workspace_seal_hash
                 }}
             }}"#
         );
@@ -771,8 +797,39 @@ impl SubagentSource {
         } else {
             resolved_target_did.unwrap_or_else(|| parent_authoring_did.clone())
         };
+        let parent_workspace = ParentWorkspaceStamp::from_fields(
+            parent.as_ref().and_then(|row| row.workspace_id.as_deref()),
+            parent
+                .as_ref()
+                .and_then(|row| row.workspace_authority.as_deref()),
+            parent
+                .as_ref()
+                .and_then(|row| row.workspace_owner_deployment_id.as_deref()),
+            parent
+                .as_ref()
+                .and_then(|row| row.workspace_seal_hash.as_deref()),
+        );
+        let workspace = match lineage_from_bridge(
+            spawn_args.workspace_id.as_deref(),
+            spawn_args.workspace_authority.as_deref(),
+            spawn_args.workspace_owner_deployment_id.as_deref(),
+            spawn_args.workspace_seal_hash.as_deref(),
+        ) {
+            Some(lineage) => Some(lineage),
+            None => {
+                resolve_spawn_workspace(
+                    &self.node,
+                    &parent_workspace,
+                    spawn_args.workspace.as_ref(),
+                    &child_agent_did,
+                    &parent_tool_call_id,
+                    &parent_request_id,
+                )
+                .await?
+            }
+        };
         let request_id = if trusted_paired_peer {
-            create_subagent_request_with_trusted_parent_request_id(
+            create_subagent_request_with_trusted_parent_request_id_and_workspace(
                 &self.node,
                 child_request_id.clone(),
                 parent_request_id.clone(),
@@ -785,10 +842,11 @@ impl SubagentSource {
                 spawn_args.prompt.clone(),
                 deadline,
                 parent_authoring_did.clone(),
+                workspace,
             )
             .await?
         } else {
-            create_subagent_request_with_request_id(
+            create_subagent_request_with_request_id_and_workspace(
                 &self.node,
                 child_request_id.clone(),
                 parent_request_id.clone(),
@@ -800,6 +858,7 @@ impl SubagentSource {
                 spawn_args.behavior_id.clone(),
                 spawn_args.prompt.clone(),
                 deadline,
+                workspace,
             )
             .await?
         };

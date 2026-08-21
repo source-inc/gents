@@ -20,8 +20,9 @@ use crate::interrupt::interrupt_request;
 use crate::session::execute_mutation_with_retry;
 
 use super::{
-    subagent_request::create_subagent_request_with_request_id, AwaitMode, CancelCause,
-    CancelPolicy, ChildTerminal, FailureClass, ToolCallState,
+    subagent_request::create_subagent_request_with_request_id_and_workspace,
+    subagent_workspace::{lineage_from_bridge, resolve_spawn_workspace, ParentWorkspaceStamp},
+    AwaitMode, CancelCause, CancelPolicy, ChildTerminal, FailureClass, ToolCallState,
 };
 
 #[derive(Debug, Default)]
@@ -146,7 +147,7 @@ struct TerminalBackgroundToolRow {
     child_request_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 struct ParentRequestRow {
     agent_did: String,
     status: String,
@@ -154,6 +155,14 @@ struct ParentRequestRow {
     lifecycle_state: Option<String>,
     #[serde(default)]
     subagent_depth: Option<i64>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    workspace_authority: Option<String>,
+    #[serde(default)]
+    workspace_owner_deployment_id: Option<String>,
+    #[serde(default)]
+    workspace_seal_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,6 +202,16 @@ struct SpawnArgs {
     prompt: String,
     #[serde(default)]
     deadline: Option<String>,
+    #[serde(default)]
+    workspace: Option<crate::background_tools::SpawnWorkspaceArg>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    workspace_authority: Option<String>,
+    #[serde(default)]
+    workspace_owner_deployment_id: Option<String>,
+    #[serde(default)]
+    workspace_seal_hash: Option<String>,
 }
 
 impl SpawnArgs {
@@ -681,7 +700,7 @@ mod tests {
             agent_did: "did:test:x".to_string(),
             status: "completed".to_string(),
             lifecycle_state: Some("interrupted".to_string()),
-            subagent_depth: None,
+            ..Default::default()
         };
         assert!(request_has_cancel_worthy_field(&divergent));
         assert!(request_is_cancel_worthy_terminal(&divergent));
@@ -698,7 +717,7 @@ mod tests {
             agent_did: "did:test:x".to_string(),
             status: "completed".to_string(),
             lifecycle_state: Some("completed".to_string()),
-            subagent_depth: None,
+            ..Default::default()
         };
         assert!(!request_has_cancel_worthy_field(&clean));
         assert!(request_is_cleanly_completed(&clean));
@@ -884,7 +903,44 @@ async fn recover_orphan_subagent_children(node: &EmbeddedNode, agent_did: &str) 
             );
             continue;
         };
-        if let Err(error) = create_subagent_request_with_request_id(
+        let parent_workspace = ParentWorkspaceStamp::from_fields(
+            parent.workspace_id.as_deref(),
+            parent.workspace_authority.as_deref(),
+            parent.workspace_owner_deployment_id.as_deref(),
+            parent.workspace_seal_hash.as_deref(),
+        );
+        let workspace = match lineage_from_bridge(
+            spawn_args.workspace_id.as_deref(),
+            spawn_args.workspace_authority.as_deref(),
+            spawn_args.workspace_owner_deployment_id.as_deref(),
+            spawn_args.workspace_seal_hash.as_deref(),
+        ) {
+            Some(lineage) => Some(lineage),
+            None => match resolve_spawn_workspace(
+                node,
+                &parent_workspace,
+                spawn_args.workspace.as_ref(),
+                &child_agent_did,
+                &row.tool_call_id,
+                &parent_request_id,
+            )
+            .await
+            {
+                Ok(lineage) => lineage,
+                Err(error) => {
+                    tracing::warn!(
+                        doc_id = %row.doc_id,
+                        request_id = %parent_request_id,
+                        tool_call_id = %row.tool_call_id,
+                        child_request_id = %child_request_id,
+                        error = %error,
+                        "cannot materialize orphan subagent child because workspace could not be resolved"
+                    );
+                    continue;
+                }
+            },
+        };
+        if let Err(error) = create_subagent_request_with_request_id_and_workspace(
             node,
             child_request_id.clone(),
             parent_request_id.clone(),
@@ -896,6 +952,7 @@ async fn recover_orphan_subagent_children(node: &EmbeddedNode, agent_did: &str) 
             spawn_args.behavior_id,
             spawn_args.prompt,
             deadline,
+            workspace,
         )
         .await
         {
@@ -1407,6 +1464,10 @@ async fn lookup_parent_request(
                 status
                 lifecycle_state
                 subagent_depth
+                workspace_id
+                workspace_authority
+                workspace_owner_deployment_id
+                workspace_seal_hash
             }}
         }}"#
     );

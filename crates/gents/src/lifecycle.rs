@@ -193,6 +193,27 @@ impl WorkspaceLineage {
         }
         Ok(())
     }
+
+    pub(crate) fn graphql_fields(&self) -> String {
+        let mut fields = String::new();
+        let mut push = |name: &str, value: Option<&str>| {
+            if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+                fields.push_str(&format!(
+                    r#"
+                    {name}: "{}","#,
+                    escape_graphql_string(value)
+                ));
+            }
+        };
+        push("workspace_id", self.workspace_id.as_deref());
+        push("workspace_authority", self.workspace_authority.as_deref());
+        push(
+            "workspace_owner_deployment_id",
+            self.workspace_owner_deployment_id.as_deref(),
+        );
+        push("workspace_seal_hash", self.workspace_seal_hash.as_deref());
+        fields
+    }
 }
 
 pub const MAX_TRIGGER_CONTEXT_BYTES: usize = 16 * 1024;

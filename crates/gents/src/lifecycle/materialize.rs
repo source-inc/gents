@@ -90,33 +90,9 @@ fn trigger_lineage_graphql_fields(trigger_lineage: &TriggerLineage) -> Result<St
 }
 
 fn workspace_lineage_graphql_fields(workspace: Option<&WorkspaceLineage>) -> String {
-    let Some(workspace) = workspace else {
-        return String::new();
-    };
-    let mut fields = String::new();
-    let mut push = |name: &str, value: Option<&str>| {
-        if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
-            fields.push_str(&format!(
-                r#"
-                    {name}: "{}","#,
-                escape_graphql_string(value)
-            ));
-        }
-    };
-    push("workspace_id", workspace.workspace_id.as_deref());
-    push(
-        "workspace_authority",
-        workspace.workspace_authority.as_deref(),
-    );
-    push(
-        "workspace_owner_deployment_id",
-        workspace.workspace_owner_deployment_id.as_deref(),
-    );
-    push(
-        "workspace_seal_hash",
-        workspace.workspace_seal_hash.as_deref(),
-    );
-    fields
+    workspace
+        .map(WorkspaceLineage::graphql_fields)
+        .unwrap_or_default()
 }
 
 async fn resolve_created_agent_request_doc_id(

@@ -904,7 +904,7 @@ pub async fn flush_workspace_docs(
     Ok(())
 }
 
-async fn load_isolated_workspace(
+pub(crate) async fn load_isolated_workspace(
     node: &EmbeddedNode,
     workspace_id: &str,
 ) -> Result<Option<IsolatedWorkspaceDoc>> {

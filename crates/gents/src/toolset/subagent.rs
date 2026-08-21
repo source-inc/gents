@@ -167,7 +167,7 @@ impl Tool for SpawnSubagentTool {
 
         ToolDefinition {
             name: Self::NAME.to_string(),
-            description: "Spawn an authorized subagent by its friendly name. Foreground is the default await mode; background is available only when enabled for this behavior."
+            description: "Spawn an authorized subagent by its friendly name. Foreground is the default await mode; background is available only when enabled for this behavior. When the parent request is workspace-bound, omit workspace or pass inherit to share that workspace with authority infimum. Pass {\"id\": \"...\"} to bind an existing Ready/Sealed IsolatedWorkspace, or {\"provision\": {\"policy\": \"git_worktree_diff\"}} to create a child IsolatedWorkspace."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -186,6 +186,9 @@ impl Tool for SpawnSubagentTool {
                         "enum": await_modes,
                         "default": self.config.default_await_mode.as_str(),
                         "description": "Use foreground to wait for the child result. Use background only when the schema exposes it."
+                    },
+                    "workspace": {
+                        "description": "inherit (default when the parent has workspace_id), {\"id\": \"<workspace_id>\"} to bind an existing Ready/Sealed workspace, or {\"provision\": {\"policy\": \"git_worktree_diff\"}} to create a child IsolatedWorkspace. Child authority cannot outrank the parent."
                     }
                 },
                 "required": ["name", "prompt"]

@@ -765,6 +765,52 @@ impl DefraSessionHook {
                 .await;
         }
 
+        let parent_workspace = ParentWorkspaceStamp::from_fields(
+            parent_context.workspace_id.as_deref(),
+            parent_context.workspace_authority.as_deref(),
+            parent_context.workspace_owner_deployment_id.as_deref(),
+            parent_context.workspace_seal_hash.as_deref(),
+        );
+        let resolved_workspace = match resolve_spawn_workspace(
+            &self.node,
+            &parent_workspace,
+            parsed.workspace.as_ref(),
+            &self.agent_did,
+            internal_call_id,
+            &request_id,
+        )
+        .await
+        {
+            Ok(lineage) => lineage,
+            Err(SpawnWorkspaceError { class, message }) => {
+                let payload = match class {
+                    FailureClass::ArgumentInvalid => invalid_tool_arguments_payload(
+                        SPAWN_SUBAGENT_TOOL_NAME,
+                        "/workspace",
+                        message,
+                    ),
+                    _ => service_unavailable_payload(
+                        SPAWN_SUBAGENT_TOOL_NAME,
+                        "/workspace",
+                        message,
+                        false,
+                    ),
+                };
+                return self
+                    .fail_spawn_subagent_tool_call(
+                        session_id,
+                        request_id,
+                        parent_context.request_deadline_at,
+                        seq,
+                        internal_call_id,
+                        args,
+                        class,
+                        payload,
+                    )
+                    .await;
+            }
+        };
+
         // Persist a normalized bridge args payload that carries the RESOLVED
         // target `(agent_did, behavior_id)` alongside the model-facing `name`.
         // `SubagentSource` reads these resolved fields directly. For a remote
@@ -774,15 +820,18 @@ impl DefraSessionHook {
         // access to the parent's target table), which is what removes the
         // resolution seam.
         let target_agent_did = target.agent_did.clone();
-        let bridge_args = serde_json::json!({
+        let mut bridge_args = serde_json::json!({
             "name": name,
             "agent_did": target_agent_did.clone(),
             "behavior_id": target.behavior_id,
             "prompt": parsed.prompt,
             "deadline": parsed.deadline,
             "parent_subagent_depth": parent_context.subagent_depth,
-        })
-        .to_string();
+        });
+        if let Some(workspace) = resolved_workspace.as_ref() {
+            merge_workspace_lineage(&mut bridge_args, workspace);
+        }
+        let bridge_args = bridge_args.to_string();
 
         let child_request_id = uuid::Uuid::new_v4().to_string();
         let mut lifecycle = ToolCallLifecycle::new_subagent(

@@ -12,7 +12,7 @@ use defra_node::EmbeddedNode;
 use serde::Deserialize;
 
 use crate::graphql::escape_graphql_string;
-use crate::lifecycle::DEFAULT_REQUEST_MAX_RETRIES;
+use crate::lifecycle::{WorkspaceLineage, DEFAULT_REQUEST_MAX_RETRIES};
 use crate::session::execute_mutation_with_retry;
 
 use super::IllegalToolCallTransition;
@@ -121,6 +121,42 @@ pub async fn create_subagent_request_with_request_id(
         true,
         None,
         (parent_request_doc_id, parent_tool_call_doc_id),
+        None,
+    )
+    .await
+}
+
+/// Same as [`create_subagent_request_with_request_id`], stamping optional
+/// isolated-workspace identity onto the child `AgentRequest`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_subagent_request_with_request_id_and_workspace(
+    node: &EmbeddedNode,
+    request_id: String,
+    parent_request_id: String,
+    parent_request_doc_id: String,
+    parent_tool_call_id: String,
+    parent_tool_call_doc_id: String,
+    parent_subagent_depth: u32,
+    agent_did: String,
+    behavior_id: String,
+    prompt: String,
+    deadline: Option<DateTime<Utc>>,
+    workspace: Option<WorkspaceLineage>,
+) -> Result<String> {
+    create_subagent_request_inner(
+        node,
+        request_id,
+        parent_request_id,
+        parent_tool_call_id,
+        parent_subagent_depth,
+        agent_did,
+        behavior_id,
+        prompt,
+        deadline,
+        true,
+        None,
+        (parent_request_doc_id, parent_tool_call_doc_id),
+        workspace,
     )
     .await
 }
@@ -157,6 +193,41 @@ pub async fn create_subagent_request_with_trusted_parent_request_id(
         false,
         Some(requester_did),
         (parent_request_doc_id, parent_tool_call_doc_id),
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_subagent_request_with_trusted_parent_request_id_and_workspace(
+    node: &EmbeddedNode,
+    request_id: String,
+    parent_request_id: String,
+    parent_request_doc_id: String,
+    parent_tool_call_id: String,
+    parent_tool_call_doc_id: String,
+    parent_subagent_depth: u32,
+    agent_did: String,
+    behavior_id: String,
+    prompt: String,
+    deadline: Option<DateTime<Utc>>,
+    requester_did: String,
+    workspace: Option<WorkspaceLineage>,
+) -> Result<String> {
+    create_subagent_request_inner(
+        node,
+        request_id,
+        parent_request_id,
+        parent_tool_call_id,
+        parent_subagent_depth,
+        agent_did,
+        behavior_id,
+        prompt,
+        deadline,
+        false,
+        Some(requester_did),
+        (parent_request_doc_id, parent_tool_call_doc_id),
+        workspace,
     )
     .await
 }
@@ -175,6 +246,7 @@ async fn create_subagent_request_inner(
     require_parent_agent_match: bool,
     requester_did: Option<String>,
     parent_doc_ids: (String, String),
+    workspace: Option<WorkspaceLineage>,
 ) -> Result<String> {
     // 1. Depth check (pure precondition, fires before any DB I/O).
     if parent_subagent_depth >= MAX_SUBAGENT_DEPTH {
@@ -271,6 +343,13 @@ async fn create_subagent_request_inner(
             )
         })
         .unwrap_or_default();
+    if let Some(workspace) = workspace.as_ref() {
+        workspace.require_authority_if_workspace_id()?;
+    }
+    let workspace_fields = workspace
+        .as_ref()
+        .map(WorkspaceLineage::graphql_fields)
+        .unwrap_or_default();
 
     // 5. Build and execute the CREATE mutation. Mirrors the field shape
     // of `write_pending_agent_request_with_lineage_and_conversation_title`
@@ -301,7 +380,7 @@ async fn create_subagent_request_inner(
                 caused_by_parent_tool_call_id: "{escaped_parent_tool_call_id}",
                 caused_by_trigger_id: "{escaped_parent_tool_call_id}",
                 caused_by_trigger_kind: "subagent",
-                {inherited_trigger_context}
+                {inherited_trigger_context}{workspace_fields}
             }}) {{ _docID }}
         }}"#,
         max_retries = DEFAULT_REQUEST_MAX_RETRIES,

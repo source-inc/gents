@@ -119,6 +119,23 @@ impl WorkspaceAuthority {
         matches!(self, Self::ReadWrite)
     }
 
+    /// Greatest lower bound. Child spawn cannot outrank a bound parent.
+    pub fn infimum(self, other: Self) -> Self {
+        if self.rank() <= other.rank() {
+            self
+        } else {
+            other
+        }
+    }
+
+    fn rank(self) -> u8 {
+        match self {
+            Self::ReadOnly => 0,
+            Self::Integrate => 1,
+            Self::ReadWrite => 2,
+        }
+    }
+
     pub fn bindable_lifecycle_state(self, state: &str) -> bool {
         match (self, normalize_workspace_lifecycle_state(state)) {
             (Self::ReadWrite, Some("ready")) => true,
