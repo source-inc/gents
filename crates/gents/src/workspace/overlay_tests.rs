@@ -25,6 +25,7 @@ fn ready_workspace() -> IsolatedWorkspaceRecord {
         owner_deployment_id: "dep-1".into(),
         lifecycle_state: "ready".into(),
         seal_hash: None,
+        instruction_manifest: "{}".into(),
     }
 }
 
@@ -53,6 +54,7 @@ fn bind_input<'a>(
         operator_tool_root,
         enabled_workspace_roots,
         workspace_write_sandbox_enforced: enforced,
+        live_tree_hash: None,
     }
 }
 
@@ -257,6 +259,58 @@ fn sealed_mismatch_and_missing_hash_fail_closed() {
             .contains("observed_tree_hash drifted does not match"),
         "{error:#}"
     );
+}
+
+#[test]
+fn live_tree_hash_drift_fails_closed() {
+    let (_guard, operator, placement_path) = temp_tree();
+    let mut workspace = ready_workspace();
+    workspace.lifecycle_state = "sealed".into();
+    workspace.seal_hash = Some("hash-1".into());
+    let mut placed = placement(&placement_path);
+    placed.observed_tree_hash = Some("hash-1".into());
+    let overlay = bind_workspace_overlay(
+        &workspace,
+        &placed,
+        WorkspaceBindInput {
+            seal_hash: Some("hash-1"),
+            live_tree_hash: Some("hash-1"),
+            ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
+        },
+    )
+    .unwrap();
+    assert_eq!(overlay.seal_hash.as_deref(), Some("hash-1"));
+
+    let error = bind_workspace_overlay(
+        &workspace,
+        &placed,
+        WorkspaceBindInput {
+            seal_hash: Some("hash-1"),
+            live_tree_hash: Some("drifted"),
+            ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("live tree hash drifted does not match"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn frozen_instruction_manifest_is_copied_onto_overlay() {
+    let (_guard, operator, placement_path) = temp_tree();
+    let mut workspace = ready_workspace();
+    workspace.instruction_manifest = r#"{"schema":1,"base_sha":"abc","files":[]}"#.into();
+    let overlay = bind_workspace_overlay(
+        &workspace,
+        &placement(&placement_path),
+        bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false),
+    )
+    .unwrap();
+    assert!(overlay.instruction_manifest.contains("base_sha"));
 }
 
 #[test]

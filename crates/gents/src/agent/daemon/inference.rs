@@ -52,45 +52,61 @@ fn render_request_context_message(
     node: &defra_node::EmbeddedNode,
     behavior: &AgentBehavior,
     request: &AgentRequest,
+    frozen_instruction_manifest: Option<&str>,
 ) -> Result<Option<Message>> {
-    let Some(template) = behavior.request_context_template.as_deref() else {
-        return Ok(None);
+    let template_body = match behavior.request_context_template.as_deref() {
+        Some(template) if !template.trim().is_empty() => {
+            let mut ctx = serde_json::Map::new();
+            ctx.insert(
+                "now".to_string(),
+                serde_json::json!(Utc::now().to_rfc3339()),
+            );
+            if template.contains("collection_summary") {
+                ctx.insert(
+                    "collection_summary".to_string(),
+                    serde_json::json!(crate::template::collection_summary(node)?),
+                );
+            }
+
+            let rendered = crate::template::render_request_context_template(
+                template,
+                serde_json::json!({
+                    "node_did": behavior.agent_did(),
+                    "behavior_id": behavior.behavior_id.as_str(),
+                }),
+                serde_json::Value::Object(ctx),
+                &crate::template::catalog::default_catalog(),
+            )
+            .map_err(|error| anyhow!("request_context_template render failed: {error}"))?;
+            tracing::debug!(
+                request_id = %request.request_id,
+                behavior_id = %behavior.behavior_id,
+                "rendered request context template"
+            );
+            Some(rendered)
+        }
+        _ => None,
     };
-    if template.trim().is_empty() {
-        return Ok(None);
+    let instruction_body =
+        frozen_instruction_manifest.and_then(crate::workspace::instruction_context_section);
+    match (template_body, instruction_body) {
+        (None, None) => Ok(None),
+        (template, instructions) => {
+            let mut body = String::new();
+            if let Some(template) = template {
+                body.push_str(&template);
+            }
+            if let Some(instructions) = instructions {
+                if !body.is_empty() {
+                    body.push_str("\n\n");
+                }
+                body.push_str(&instructions);
+            }
+            Ok(Some(Message::user(format!(
+                "<context>\n{body}\n</context>"
+            ))))
+        }
     }
-
-    let mut ctx = serde_json::Map::new();
-    ctx.insert(
-        "now".to_string(),
-        serde_json::json!(Utc::now().to_rfc3339()),
-    );
-    if template.contains("collection_summary") {
-        ctx.insert(
-            "collection_summary".to_string(),
-            serde_json::json!(crate::template::collection_summary(node)?),
-        );
-    }
-
-    let rendered = crate::template::render_request_context_template(
-        template,
-        serde_json::json!({
-            "node_did": behavior.agent_did(),
-            "behavior_id": behavior.behavior_id.as_str(),
-        }),
-        serde_json::Value::Object(ctx),
-        &crate::template::catalog::default_catalog(),
-    )
-    .map_err(|error| anyhow!("request_context_template render failed: {error}"))?;
-
-    tracing::debug!(
-        request_id = %request.request_id,
-        behavior_id = %behavior.behavior_id,
-        "rendered request context template"
-    );
-    Ok(Some(Message::user(format!(
-        "<context>\n{rendered}\n</context>"
-    ))))
 }
 
 async fn await_with_request_deadline<F, T>(
@@ -125,6 +141,7 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
         aggregate_token_budget: Option<crate::agent::loop_stream::AggregateTokenBudget>,
         effective_seed: Option<i64>,
         workspace: crate::tool_call_lifecycle::runtime::ToolWorkspaceScope,
+        frozen_instruction_manifest: Option<String>,
     ) -> Result<HandleRequestOutcome> {
         let request_deadline = lifecycle.claimed_deadline_at();
         let trigger_context = crate::lifecycle::TriggerExecutionContext::parse(
@@ -141,8 +158,12 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
         let has_deadline = !deadline_at.is_empty();
         let workspace_cwd_set = workspace.workspace_cwd.is_some();
 
-        let request_context_message =
-            render_request_context_message(self.node.as_ref(), &self.behavior, request)?;
+        let request_context_message = render_request_context_message(
+            self.node.as_ref(),
+            &self.behavior,
+            request,
+            frozen_instruction_manifest.as_deref(),
+        )?;
 
         ensure_request_deadline_open(request_deadline, "starting inference")?;
         if *shutdown.borrow() {

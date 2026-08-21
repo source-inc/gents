@@ -427,6 +427,36 @@ impl<M: CompletionModel + 'static> BehaviorDaemon<M> {
         match result {
             Ok(HandleRequestOutcome::Completed) => {
                 record_current_request_outcome("completed");
+                if let Err(error) = crate::workspace::seal_on_writer_success(
+                    self.node.as_ref(),
+                    &request,
+                    self.operator_tool_root.as_deref(),
+                )
+                .await
+                {
+                    record_current_failure_class(&error);
+                    tracing::error!(
+                        request_id = %request.request_id,
+                        error = %error,
+                        "failed to seal workspace after writer success"
+                    );
+                    if let Err(release_error) =
+                        crate::workspace::release_writer_binding(self.node.as_ref(), &request).await
+                    {
+                        tracing::warn!(
+                            request_id = %request.request_id,
+                            error = %release_error,
+                            "failed to release writer workspace binding after seal failure"
+                        );
+                    }
+                    finalize_request_failure(
+                        &mut lifecycle,
+                        &error.to_string(),
+                        &request.request_id,
+                    )
+                    .await;
+                    return;
+                }
                 if let Err(error) = lifecycle.complete().await {
                     record_current_failure_class(&error);
                     tracing::error!(
@@ -438,6 +468,15 @@ impl<M: CompletionModel + 'static> BehaviorDaemon<M> {
             }
             Ok(HandleRequestOutcome::Interrupted) => {
                 record_current_request_outcome("interrupted");
+                if let Err(error) =
+                    crate::workspace::release_writer_binding(self.node.as_ref(), &request).await
+                {
+                    tracing::warn!(
+                        request_id = %request.request_id,
+                        error = %error,
+                        "failed to release writer workspace binding after interrupt"
+                    );
+                }
                 tracing::info!(
                     behavior_id = %self.behavior.behavior_id,
                     request_id = %request.request_id,
@@ -455,6 +494,15 @@ impl<M: CompletionModel + 'static> BehaviorDaemon<M> {
                     error = %error,
                     "request failed after response started"
                 );
+                if let Err(release_error) =
+                    crate::workspace::release_writer_binding(self.node.as_ref(), &request).await
+                {
+                    tracing::warn!(
+                        request_id = %request.request_id,
+                        error = %release_error,
+                        "failed to release writer workspace binding after failure"
+                    );
+                }
                 finalize_request_failure(&mut lifecycle, &error.to_string(), &request.request_id)
                     .await;
             }
@@ -482,6 +530,15 @@ impl<M: CompletionModel + 'static> BehaviorDaemon<M> {
                         behavior_id = %self.behavior.behavior_id,
                         error = %stream_error,
                         "failed to write error response"
+                    );
+                }
+                if let Err(release_error) =
+                    crate::workspace::release_writer_binding(self.node.as_ref(), &request).await
+                {
+                    tracing::warn!(
+                        request_id = %request.request_id,
+                        error = %release_error,
+                        "failed to release writer workspace binding after failure"
                     );
                 }
                 finalize_request_failure(&mut lifecycle, &error.to_string(), &request.request_id)

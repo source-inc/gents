@@ -31,6 +31,13 @@ fn git_worktree_caps() -> BTreeSet<String> {
         .collect()
 }
 
+fn seal_caps() -> BTreeSet<String> {
+    [CAP_SEAL_WORKSPACE]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
 fn git(cwd: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
@@ -96,6 +103,13 @@ impl Fixture {
             adapter: WorkspaceAdapterKind::GitWorktree,
             clone_artifacts: None,
         }
+    }
+
+    fn commit(&mut self, rel: &str, content: &str) {
+        fs::write(self.repo.join(rel), content).unwrap();
+        git(&self.repo, &["add", rel]);
+        git(&self.repo, &["commit", "-m", rel]);
+        self.base_sha = git(&self.repo, &["rev-parse", "HEAD"]);
     }
 
     fn ctx<'a>(
@@ -204,6 +218,7 @@ fn isolated_workspace_mutation_has_no_host_path() {
     assert!(mutation.contains("upsert_IsolatedWorkspace"));
     assert!(!mutation.contains("create_IsolatedWorkspace"));
     assert!(mutation.contains("seal_hash: null"));
+    assert!(mutation.contains("instruction_manifest:"));
     let placement = WorkspacePlacementDoc {
         workspace_id: "ws-1".into(),
         deployment_id: "deploy-1".into(),
@@ -220,6 +235,25 @@ fn isolated_workspace_mutation_has_no_host_path() {
         workspace_placement_upsert_mutation(&placement, "2026-08-21T00:00:00Z");
     assert!(placement_mutation.contains("host_path:"));
     assert!(!placement_mutation.contains("[]"));
+    let receipt = WorkspaceReceiptDoc {
+        receipt_id: "receipt-writer-ws-1-req-1".into(),
+        workspace_id: "ws-1".into(),
+        produced_by_request_id: "req-1".into(),
+        produced_by_request_doc_id: "doc-1".into(),
+        kind: "writer".into(),
+        base_sha: "abc".into(),
+        seal_hash: "tree".into(),
+        head_sha: None,
+        changed_files: None,
+        diff_artifact: None,
+        checks_run: None,
+        unresolved_conflicts: None,
+        integration_instructions: None,
+    };
+    let receipt_mutation = workspace_receipt_create_mutation(&receipt);
+    assert!(receipt_mutation.contains("upsert_WorkspaceReceipt"));
+    assert!(receipt_mutation.contains("changed_files: null"));
+    assert!(!receipt_mutation.contains("[]"));
 }
 
 #[test]
@@ -648,4 +682,290 @@ impl IsolatedWorkspaceDocExt for IsolatedWorkspaceDoc {
         let encoded = serde_json::to_string(self).unwrap();
         encoded.contains("dirty_base") || encoded.contains("host_path")
     }
+}
+
+fn seal_writer(
+    fx: &Fixture,
+    docs: &mut MemoryWorkspaceDocuments,
+    workspace_id: &str,
+    request_id: &str,
+) -> SealWorkspaceOutcome {
+    let plan = emit_seal_workspace_plan(SealWorkspaceAction {
+        workspace_id: workspace_id.to_string(),
+        produced_by_request_id: request_id.to_string(),
+        produced_by_request_doc_id: format!("{request_id}-doc"),
+    });
+    let mut journal = Vec::new();
+    execute_seal_workspace_plan(&plan, &mut journal, &mut fx.ctx(docs, seal_caps())).expect("seal")
+}
+
+#[test]
+fn writer_seal_persists_receipt_and_forbids_read_write() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-seal", "unit-1", "topic-seal");
+    let plan = emit_create_workspace_plan(action);
+    let mut journal = Vec::new();
+    let created = execute_create_workspace_plan(
+        &plan,
+        &mut journal,
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    fs::write(dest.join("patch.rs"), "fn patch() {}\n").unwrap();
+
+    let mut writer = super::binding::new_binding(
+        "ws-seal",
+        "req-writer",
+        "req-writer-doc",
+        crate::toolset::WorkspaceAuthority::ReadWrite,
+        "deploy-1",
+        None,
+    );
+    docs.write_binding(writer.clone()).unwrap();
+
+    let sealed = seal_writer(&fx, &mut docs, "ws-seal", "req-writer");
+    assert_eq!(sealed.workspace.lifecycle_state, "sealed");
+    assert!(sealed.workspace.seal_hash.is_some());
+    assert_eq!(
+        sealed.placement.observed_tree_hash,
+        sealed.workspace.seal_hash.clone().unwrap()
+    );
+    assert_eq!(sealed.receipt.kind, "writer");
+    assert_eq!(sealed.receipt.produced_by_request_id, "req-writer");
+    assert!(sealed
+        .receipt
+        .changed_files
+        .as_deref()
+        .is_some_and(|files| files.contains("patch.rs")));
+    writer = docs
+        .load_bindings("ws-seal")
+        .unwrap()
+        .into_iter()
+        .find(|binding| binding.request_id == "req-writer")
+        .unwrap();
+    assert_eq!(writer.lifecycle_state, "released");
+
+    let err = super::binding::admit_workspace_binding(
+        "ws-seal",
+        &sealed.workspace.lifecycle_state,
+        sealed.workspace.seal_hash.as_deref(),
+        &docs.load_bindings("ws-seal").unwrap(),
+        super::binding::new_binding(
+            "ws-seal",
+            "req-writer-2",
+            "req-writer-2-doc",
+            crate::toolset::WorkspaceAuthority::ReadWrite,
+            "deploy-1",
+            sealed.workspace.seal_hash.as_deref(),
+        ),
+        false,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("not bindable"), "{err:#}");
+}
+
+#[test]
+fn concurrent_read_only_after_seal_with_matching_hash() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-ro", "unit-1", "topic-ro");
+    let plan = emit_create_workspace_plan(action);
+    let mut journal = Vec::new();
+    execute_create_workspace_plan(
+        &plan,
+        &mut journal,
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let sealed = seal_writer(&fx, &mut docs, "ws-ro", "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+
+    let first = super::binding::admit_workspace_binding(
+        "ws-ro",
+        "sealed",
+        Some(&hash),
+        &[],
+        super::binding::new_binding(
+            "ws-ro",
+            "req-review-a",
+            "doc-a",
+            crate::toolset::WorkspaceAuthority::ReadOnly,
+            "deploy-1",
+            Some(&hash),
+        ),
+        false,
+    )
+    .unwrap();
+    let super::binding::AdmitBinding::Create { binding: a, .. } = first else {
+        panic!("expected create");
+    };
+    let second = super::binding::admit_workspace_binding(
+        "ws-ro",
+        "sealed",
+        Some(&hash),
+        std::slice::from_ref(&a),
+        super::binding::new_binding(
+            "ws-ro",
+            "req-review-b",
+            "doc-b",
+            crate::toolset::WorkspaceAuthority::ReadOnly,
+            "deploy-1",
+            Some(&hash),
+        ),
+        false,
+    )
+    .unwrap();
+    let super::binding::AdmitBinding::Create { binding: b, .. } = second else {
+        panic!("expected concurrent create");
+    };
+    assert_eq!(a.seal_hash.as_deref(), Some(hash.as_str()));
+    assert_eq!(b.seal_hash.as_deref(), Some(hash.as_str()));
+    assert!(a.is_active());
+    assert!(b.is_active());
+}
+
+#[test]
+fn seal_drift_fails_closed() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-drift", "unit-1", "topic-drift");
+    let plan = emit_create_workspace_plan(action);
+    let mut journal = Vec::new();
+    let created = execute_create_workspace_plan(
+        &plan,
+        &mut journal,
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    let sealed = seal_writer(&fx, &mut docs, "ws-drift", "req-writer");
+    let hash = sealed.workspace.seal_hash.clone().unwrap();
+    fs::write(dest.join("after-seal.txt"), "mutated after review\n").unwrap();
+    let live = super::adapter::working_tree_hash(&dest).unwrap();
+    assert_ne!(live, hash);
+
+    let mut workspace = super::IsolatedWorkspaceRecord {
+        workspace_id: "ws-drift".into(),
+        owner_deployment_id: "deploy-1".into(),
+        lifecycle_state: "sealed".into(),
+        seal_hash: Some(hash.clone()),
+        instruction_manifest: sealed.workspace.instruction_manifest.clone(),
+    };
+    let mut placed = super::WorkspacePlacementRecord {
+        workspace_id: "ws-drift".into(),
+        deployment_id: "deploy-1".into(),
+        host_path: dest.to_string_lossy().into_owned(),
+        observed_tree_hash: Some(hash.clone()),
+    };
+    let error = bind_workspace_overlay(
+        &workspace,
+        &placed,
+        WorkspaceBindInput {
+            workspace_id: "ws-drift",
+            authority: crate::toolset::WorkspaceAuthority::ReadOnly,
+            owner_deployment_id: "deploy-1",
+            seal_hash: Some(&hash),
+            request_cwd: None,
+            local_deployment_id: "deploy-1",
+            operator_tool_root: Some(fx.parent()),
+            enabled_workspace_roots: &[],
+            workspace_write_sandbox_enforced: false,
+            live_tree_hash: Some(&live),
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("live tree hash"), "{error:#}");
+    workspace.seal_hash = Some(hash.clone());
+    placed.observed_tree_hash = Some("stale".into());
+    let stored = bind_workspace_overlay(
+        &workspace,
+        &placed,
+        WorkspaceBindInput {
+            workspace_id: "ws-drift",
+            authority: crate::toolset::WorkspaceAuthority::ReadOnly,
+            owner_deployment_id: "deploy-1",
+            seal_hash: Some(&hash),
+            request_cwd: None,
+            local_deployment_id: "deploy-1",
+            operator_tool_root: Some(fx.parent()),
+            enabled_workspace_roots: &[],
+            workspace_write_sandbox_enforced: false,
+            live_tree_hash: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        stored
+            .to_string()
+            .contains("observed_tree_hash stale does not match"),
+        "{stored:#}"
+    );
+}
+
+#[test]
+fn frozen_agents_md_is_used_instead_of_live_writer_tree() {
+    let mut fx = Fixture::new();
+    fx.commit("AGENTS.md", "frozen-base-instructions\n");
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-agents", "unit-1", "topic-agents");
+    let plan = emit_create_workspace_plan(action);
+    let mut journal = Vec::new();
+    let created = execute_create_workspace_plan(
+        &plan,
+        &mut journal,
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    fs::write(dest.join("AGENTS.md"), "live-writer-instructions\n").unwrap();
+
+    let manifest = InstructionManifest::parse(&created.workspace.instruction_manifest)
+        .expect("instruction_manifest");
+    assert_eq!(manifest.base_sha, fx.base_sha);
+    let agents = manifest
+        .files
+        .iter()
+        .find(|file| file.path == "AGENTS.md")
+        .expect("AGENTS.md from base_sha");
+    assert!(agents.text.contains("frozen-base-instructions"));
+    assert!(!agents.text.contains("live-writer-instructions"));
+
+    let section = instruction_context_section(&created.workspace.instruction_manifest).unwrap();
+    assert!(section.contains("frozen-base-instructions"));
+    assert!(!section.contains("live-writer-instructions"));
+    let live = fs::read_to_string(dest.join("AGENTS.md")).unwrap();
+    assert!(live.contains("live-writer-instructions"));
+
+    let sealed = seal_writer(&fx, &mut docs, "ws-agents", "req-writer");
+    let sealed_manifest = InstructionManifest::parse(&sealed.workspace.instruction_manifest)
+        .expect("sealed manifest");
+    let sealed_agents = sealed_manifest
+        .files
+        .iter()
+        .find(|file| file.path == "AGENTS.md")
+        .expect("AGENTS.md still frozen");
+    assert!(sealed_agents.text.contains("frozen-base-instructions"));
+    assert!(!sealed_agents.text.contains("live-writer-instructions"));
+}
+
+#[test]
+fn seal_workspace_plan_omits_host_path() {
+    let plan = emit_seal_workspace_plan(SealWorkspaceAction {
+        workspace_id: "ws-1".into(),
+        produced_by_request_id: "req-1".into(),
+        produced_by_request_doc_id: "doc-1".into(),
+    });
+    let json = serde_json::to_value(&plan).unwrap();
+    assert_eq!(json["actions"][0]["type"], "seal_workspace");
+    assert!(json["actions"][0].get("host_path").is_none());
+    assert!(serde_json::from_value::<HostAction>(serde_json::json!({
+        "type": "seal_workspace",
+        "workspace_id": "ws-1",
+        "produced_by_request_id": "req-1",
+        "produced_by_request_doc_id": "doc-1",
+        "host_path": "/tmp/evil"
+    }))
+    .is_err());
 }

@@ -373,11 +373,22 @@ async fn execute_running_invocation(
         return deny(node, invocation, &error.to_string()).await;
     }
 
-    let HostAction::CreateWorkspace(action) = plan
+    let action = match plan
         .actions
         .first()
         .ok_or_else(|| anyhow!("ActionPlan has no actions"))?
-        .clone();
+        .clone()
+    {
+        HostAction::CreateWorkspace(action) => action,
+        HostAction::SealWorkspace(_) => {
+            return deny(
+                node,
+                invocation,
+                "seal_workspace is invoked on writer success, not as a callback plan",
+            )
+            .await;
+        }
+    };
     if !can_start_executing(&journal, 0) {
         return deny(node, invocation, "journal prefix blocks first action").await;
     }
@@ -616,6 +627,7 @@ pub async fn finish_succeeded_if_docs_ready(
         .map_err(anyhow::Error::msg)?
         .and_then(|plan| match plan.actions.into_iter().next() {
             Some(HostAction::CreateWorkspace(action)) => Some(action.workspace_id),
+            Some(HostAction::SealWorkspace(action)) => Some(action.workspace_id),
             None => None,
         });
     let Some(workspace_id) = workspace_id else {

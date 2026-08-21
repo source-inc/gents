@@ -159,7 +159,8 @@ impl MaterializerHandle for ProductionMaterializer {
 
         Box::pin(async move {
             let (behavior_name, behavior_did, _deadline_secs, _backend_id) = resolved?;
-            let workspace = WorkspaceLineage::from_trigger_context(trigger_context.as_deref())?;
+            let mut workspace = WorkspaceLineage::from_trigger_context(trigger_context.as_deref())?;
+            crate::workspace::stamp_workspace_lineage(node.as_ref(), &mut workspace).await?;
             workspace.require_authority_if_workspace_id()?;
             if workspace.is_bound()
                 && !workspace_bound_request_claimable(

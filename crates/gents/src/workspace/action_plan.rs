@@ -7,6 +7,7 @@ use serde_json::Value;
 pub const CAP_CREATE_WORKSPACE: &str = "create_workspace";
 pub const CAP_OBSERVE_DIRTY_BASE: &str = "observe_dirty_base";
 pub const CAP_CLONE_ARTIFACTS: &str = "clone_artifacts";
+pub const CAP_SEAL_WORKSPACE: &str = "seal_workspace";
 pub(crate) const ACTION_PLAN_ABI: u32 = 1;
 pub const DEFAULT_MAKE_WORKTREE_ARTIFACTS: &[&str] = &["target/", "crates/gents/proofs/.lake"];
 
@@ -22,6 +23,8 @@ pub struct ActionPlan {
 pub enum HostAction {
     #[serde(rename = "create_workspace")]
     CreateWorkspace(CreateWorkspaceAction),
+    #[serde(rename = "seal_workspace")]
+    SealWorkspace(SealWorkspaceAction),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -84,11 +87,27 @@ fn default_adapter() -> WorkspaceAdapterKind {
     WorkspaceAdapterKind::MakeWorktree
 }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SealWorkspaceAction {
+    pub workspace_id: String,
+    pub produced_by_request_id: String,
+    pub produced_by_request_doc_id: String,
+}
+
 /// Builtin ActionPlan emitter: structured fields → the same ABI WASM will use.
 pub fn emit_create_workspace_plan(action: CreateWorkspaceAction) -> ActionPlan {
     ActionPlan {
         abi: ACTION_PLAN_ABI,
         actions: vec![HostAction::CreateWorkspace(action)],
+    }
+}
+
+pub fn emit_seal_workspace_plan(action: SealWorkspaceAction) -> ActionPlan {
+    ActionPlan {
+        abi: ACTION_PLAN_ABI,
+        actions: vec![HostAction::SealWorkspace(action)],
     }
 }
 
@@ -210,6 +229,7 @@ impl HostAction {
     pub(crate) fn validate_against(&self, capabilities: &BTreeSet<String>) -> Result<()> {
         match self {
             Self::CreateWorkspace(action) => action.validate_against(capabilities),
+            Self::SealWorkspace(action) => action.validate_against(capabilities),
         }
     }
 }
@@ -266,6 +286,20 @@ impl CreateWorkspaceAction {
             base_sha: self.base_sha.clone(),
             branch: self.branch.clone(),
         }
+    }
+}
+
+
+impl SealWorkspaceAction {
+    pub(crate) fn validate_against(&self, capabilities: &BTreeSet<String>) -> Result<()> {
+        require_non_empty("workspace_id", &self.workspace_id)?;
+        require_non_empty("produced_by_request_id", &self.produced_by_request_id)?;
+        require_non_empty(
+            "produced_by_request_doc_id",
+            &self.produced_by_request_doc_id,
+        )?;
+        require_capability(capabilities, CAP_SEAL_WORKSPACE)?;
+        Ok(())
     }
 }
 

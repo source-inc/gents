@@ -3,15 +3,19 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use super::action_plan::{ActionPlan, CreateWorkspaceAction, HostAction};
+use super::action_plan::{ActionPlan, CreateWorkspaceAction, HostAction, SealWorkspaceAction};
 use super::adapter::{
-    artifacts_complete, clone_artifacts, observe_dirty_base, observe_effect, observed_tree_hash,
-    provision, resolve_base_sha, write_identity, ObservedEffect,
+    artifacts_complete, capture_instruction_manifest, capture_seal_snapshot, clone_artifacts,
+    observe_dirty_base, observe_effect, observed_tree_hash, provision, read_seal_marker,
+    resolve_base_sha, write_identity, write_seal_marker, ObservedEffect,
 };
+use super::binding::release_binding;
 use super::documents::{
-    new_isolated_workspace, IsolatedWorkspaceDoc, ProvisioningObservation, WorkspaceDocuments,
-    WorkspacePlacementDoc, ADAPTER_VERSION, LIFECYCLE_PROVISION_FAILED, LIFECYCLE_READY,
+    new_isolated_workspace, writer_receipt_id, IsolatedWorkspaceDoc, ProvisioningObservation,
+    WorkspaceDocuments, WorkspacePlacementDoc, WorkspaceReceiptDoc, ADAPTER_VERSION,
+    LIFECYCLE_PROVISION_FAILED, LIFECYCLE_READY, LIFECYCLE_SEALED, RECEIPT_KIND_WRITER,
 };
+use super::instructions::{is_empty_manifest, InstructionManifest};
 use super::journal::{self, ActionJournalEntry, ActionJournalState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +63,7 @@ impl std::fmt::Display for HostExecuteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Denied { reason } => write!(f, "action plan denied: {reason}"),
-            Self::Failed { reason, .. } => write!(f, "create_workspace failed: {reason}"),
+            Self::Failed { reason, .. } => write!(f, "host action failed: {reason}"),
         }
     }
 }
@@ -170,11 +174,16 @@ pub fn execute_create_workspace_plan(
         .map_err(|err| HostExecuteError::denied(err.to_string()))?;
     if plan.actions.len() != 1 {
         return Err(HostExecuteError::denied(
-            "PR 4 host executor only runs a single create_workspace action",
+            "create_workspace executor only runs a single create_workspace action",
         ));
     }
     let action = match &plan.actions[0] {
         HostAction::CreateWorkspace(action) => action,
+        HostAction::SealWorkspace(_) => {
+            return Err(HostExecuteError::denied(
+                "create_workspace executor cannot run seal_workspace",
+            ))
+        }
     };
     if ctx.repository.repository_id != action.repository_id {
         return Err(HostExecuteError::denied(format!(
@@ -405,8 +414,20 @@ fn persist_docs(
                 identity.workspace_id
             );
         }
+        if existing.lifecycle_state == LIFECYCLE_SEALED {
+            bail!(
+                "IsolatedWorkspace {} is sealed; refusing {lifecycle_state} without cleanup",
+                identity.workspace_id
+            );
+        }
     }
 
+    let instruction_manifest = instruction_manifest_for_persist(
+        ctx.documents,
+        &identity.workspace_id,
+        &ctx.repository.host_path,
+        &identity.base_sha,
+    );
     let workspace = new_isolated_workspace(
         identity,
         action.creation_policy,
@@ -417,6 +438,8 @@ fn persist_docs(
         &ctx.caused_by_invocation_id,
         &ctx.caused_by_correlation,
         lifecycle_state,
+        instruction_manifest,
+        None,
     );
     let host_path = dest
         .to_str()
@@ -440,6 +463,272 @@ fn persist_docs(
         workspace,
         placement,
     })
+}
+
+const DIFF_ARTIFACT_LIMIT: usize = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealWorkspaceOutcome {
+    pub workspace: IsolatedWorkspaceDoc,
+    pub placement: WorkspacePlacementDoc,
+    pub receipt: WorkspaceReceiptDoc,
+}
+
+pub fn execute_seal_workspace_plan(
+    plan: &ActionPlan,
+    journal: &mut Vec<ActionJournalEntry>,
+    ctx: &mut HostExecutorContext<'_>,
+) -> Result<SealWorkspaceOutcome, HostExecuteError> {
+    if !journal::action_journal_prefix_legal(journal) {
+        return Err(HostExecuteError::denied("illegal action journal prefix"));
+    }
+    plan.validate_against(&ctx.capabilities)
+        .map_err(|err| HostExecuteError::denied(err.to_string()))?;
+    if plan.actions.len() != 1 {
+        return Err(HostExecuteError::denied(
+            "seal_workspace executor only runs a single seal_workspace action",
+        ));
+    }
+    let action = match &plan.actions[0] {
+        HostAction::SealWorkspace(action) => action,
+        HostAction::CreateWorkspace(_) => {
+            return Err(HostExecuteError::denied(
+                "seal_workspace executor cannot run create_workspace",
+            ))
+        }
+    };
+    if journal::current_state(journal, 0).is_none() {
+        journal::advance(journal, 0, ActionJournalState::Validated);
+    }
+    seal_workspace_action(action, journal, ctx)
+}
+
+fn seal_workspace_action(
+    action: &SealWorkspaceAction,
+    journal: &mut Vec<ActionJournalEntry>,
+    ctx: &mut HostExecutorContext<'_>,
+) -> Result<SealWorkspaceOutcome, HostExecuteError> {
+    if matches!(
+        journal::current_state(journal, 0),
+        Some(ActionJournalState::ResultDocsWritten)
+    ) {
+        return load_written_seal(&action.workspace_id, action, ctx.documents)
+            .map_err(|err| HostExecuteError::failed(err.to_string(), false, None));
+    }
+
+    if matches!(
+        journal::current_state(journal, 0),
+        Some(ActionJournalState::Validated)
+    ) {
+        journal::advance(journal, 0, ActionJournalState::Executing);
+    }
+
+    let mut workspace = ctx
+        .documents
+        .load_isolated_workspace(&action.workspace_id)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?
+        .ok_or_else(|| {
+            HostExecuteError::failed(
+                format!("IsolatedWorkspace {} not found", action.workspace_id),
+                false,
+                None,
+            )
+        })?;
+    let mut placement = ctx
+        .documents
+        .load_placement(&action.workspace_id)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?
+        .ok_or_else(|| {
+            HostExecuteError::failed(
+                format!("WorkspacePlacement {} not found", action.workspace_id),
+                false,
+                None,
+            )
+        })?;
+    if workspace.owner_deployment_id != ctx.deployment_id {
+        return Err(HostExecuteError::denied(format!(
+            "workspace {} is owned by {}, not this host {}",
+            action.workspace_id, workspace.owner_deployment_id, ctx.deployment_id
+        )));
+    }
+
+    let dest = PathBuf::from(&placement.host_path);
+    let snapshot = capture_seal_snapshot(&dest)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
+    let seal_hash = snapshot.tree_hash.clone();
+
+    if workspace.lifecycle_state == LIFECYCLE_SEALED {
+        let existing = workspace.seal_hash.as_deref().unwrap_or_default();
+        if existing != seal_hash {
+            return Err(HostExecuteError::failed(
+                format!(
+                    "sealed workspace {} hash {existing} does not match live tree {seal_hash}",
+                    action.workspace_id
+                ),
+                false,
+                None,
+            ));
+        }
+        journal::advance(journal, 0, ActionJournalState::EffectObserved);
+        let outcome = persist_seal_docs(action, workspace, placement, &snapshot, ctx.documents)
+            .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
+        journal::advance(journal, 0, ActionJournalState::ResultDocsWritten);
+        return Ok(outcome);
+    }
+
+    if workspace.lifecycle_state != LIFECYCLE_READY {
+        return Err(HostExecuteError::denied(format!(
+            "workspace {} in state {} cannot be sealed",
+            action.workspace_id, workspace.lifecycle_state
+        )));
+    }
+
+    if is_empty_manifest(&workspace.instruction_manifest) {
+        let captured = capture_instruction_manifest(&dest, &workspace.base_sha)
+            .or_else(|_| {
+                capture_instruction_manifest(&ctx.repository.host_path, &workspace.base_sha)
+            })
+            .unwrap_or_else(|_| {
+                InstructionManifest::new(&workspace.base_sha, Vec::new()).to_json_string()
+            });
+        workspace.instruction_manifest = captured;
+    }
+
+    write_seal_marker(&dest, &seal_hash, &workspace.base_sha)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
+    let _ = read_seal_marker(&dest);
+
+    journal::advance(journal, 0, ActionJournalState::EffectObserved);
+    workspace.seal_hash = Some(seal_hash.clone());
+    workspace.lifecycle_state = LIFECYCLE_SEALED.to_string();
+    placement.observed_tree_hash = seal_hash;
+    let outcome = persist_seal_docs(action, workspace, placement, &snapshot, ctx.documents)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
+    journal::advance(journal, 0, ActionJournalState::ResultDocsWritten);
+    Ok(outcome)
+}
+
+fn persist_seal_docs(
+    action: &SealWorkspaceAction,
+    workspace: IsolatedWorkspaceDoc,
+    placement: WorkspacePlacementDoc,
+    snapshot: &super::adapter::SealSnapshot,
+    documents: &mut dyn WorkspaceDocuments,
+) -> Result<SealWorkspaceOutcome> {
+    let seal_hash = workspace
+        .seal_hash
+        .clone()
+        .ok_or_else(|| anyhow!("seal persist requires seal_hash"))?;
+    let receipt_id = writer_receipt_id(&workspace.workspace_id, &action.produced_by_request_id);
+    let receipt = if let Some(existing) = documents
+        .load_receipts(&workspace.workspace_id)?
+        .into_iter()
+        .find(|receipt| receipt.receipt_id == receipt_id)
+    {
+        if existing.seal_hash != seal_hash {
+            bail!(
+                "existing writer receipt {} has seal_hash {}, not {seal_hash}",
+                existing.receipt_id,
+                existing.seal_hash
+            );
+        }
+        existing
+    } else {
+        WorkspaceReceiptDoc {
+            receipt_id,
+            workspace_id: workspace.workspace_id.clone(),
+            produced_by_request_id: action.produced_by_request_id.clone(),
+            produced_by_request_doc_id: action.produced_by_request_doc_id.clone(),
+            kind: RECEIPT_KIND_WRITER.to_string(),
+            base_sha: workspace.base_sha.clone(),
+            seal_hash: seal_hash.clone(),
+            head_sha: None,
+            changed_files: changed_files_json(&snapshot.changed_files),
+            diff_artifact: bound_diff_artifact(&snapshot.diff),
+            checks_run: None,
+            unresolved_conflicts: None,
+            integration_instructions: None,
+        }
+    };
+
+    let bindings = documents.load_bindings(&workspace.workspace_id)?;
+    for binding in bindings {
+        if binding.is_active_read_write() {
+            documents.write_binding(release_binding(binding))?;
+        }
+    }
+    documents.write_isolated_workspace(workspace.clone())?;
+    documents.write_placement(placement.clone())?;
+    documents.write_receipt(receipt.clone())?;
+    Ok(SealWorkspaceOutcome {
+        workspace,
+        placement,
+        receipt,
+    })
+}
+
+fn load_written_seal(
+    workspace_id: &str,
+    action: &SealWorkspaceAction,
+    documents: &dyn WorkspaceDocuments,
+) -> Result<SealWorkspaceOutcome> {
+    let workspace = documents
+        .load_isolated_workspace(workspace_id)?
+        .ok_or_else(|| {
+            anyhow!("journal ResultDocsWritten but IsolatedWorkspace {workspace_id} missing")
+        })?;
+    let placement = documents.load_placement(workspace_id)?.ok_or_else(|| {
+        anyhow!("journal ResultDocsWritten but WorkspacePlacement {workspace_id} missing")
+    })?;
+    let receipt_id = writer_receipt_id(workspace_id, &action.produced_by_request_id);
+    let receipt = documents
+        .load_receipts(workspace_id)?
+        .into_iter()
+        .find(|receipt| receipt.receipt_id == receipt_id)
+        .ok_or_else(|| {
+            anyhow!("journal ResultDocsWritten but WorkspaceReceipt {receipt_id} missing")
+        })?;
+    Ok(SealWorkspaceOutcome {
+        workspace,
+        placement,
+        receipt,
+    })
+}
+
+fn instruction_manifest_for_persist(
+    documents: &dyn WorkspaceDocuments,
+    workspace_id: &str,
+    source: &Path,
+    base_sha: &str,
+) -> String {
+    if let Ok(Some(existing)) = documents.load_isolated_workspace(workspace_id) {
+        if !is_empty_manifest(&existing.instruction_manifest) {
+            return existing.instruction_manifest;
+        }
+    }
+    capture_instruction_manifest(source, base_sha)
+        .unwrap_or_else(|_| InstructionManifest::new(base_sha, Vec::new()).to_json_string())
+}
+
+fn changed_files_json(files: &[String]) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
+    serde_json::to_string(files).ok()
+}
+
+fn bound_diff_artifact(diff: &str) -> Option<String> {
+    if diff.trim().is_empty() {
+        return None;
+    }
+    if diff.len() <= DIFF_ARTIFACT_LIMIT {
+        return Some(diff.to_string());
+    }
+    let mut end = DIFF_ARTIFACT_LIMIT;
+    while end > 0 && !diff.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(diff[..end].to_string())
 }
 
 fn load_written_docs(
