@@ -740,19 +740,7 @@ pub(super) fn meet_execution_mode(
     left: CommandExecutionMode,
     right: CommandExecutionMode,
 ) -> CommandExecutionMode {
-    if execution_mode_rank(left) <= execution_mode_rank(right) {
-        left
-    } else {
-        right
-    }
-}
-
-fn execution_mode_rank(mode: CommandExecutionMode) -> u8 {
-    match mode {
-        CommandExecutionMode::ReadOnly => 0,
-        CommandExecutionMode::WorkspaceWrite => 1,
-        CommandExecutionMode::Unrestricted => 2,
-    }
+    left.meet(right)
 }
 
 pub(super) fn meet_network_mode(

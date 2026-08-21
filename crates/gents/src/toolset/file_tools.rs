@@ -14,6 +14,20 @@ use super::args::{EditFileArgs, GlobArgs, GrepArgs, ListFilesArgs, ReadFileArgs,
 use super::edit_match::{self, EditOutcome, EditRequest, MatchMode, Operation};
 use super::native_runner::NativeFsRunner;
 use super::shared::{cap_output, render_file_contents, ToolContext, ToolError};
+use crate::tool_call_lifecycle::FailureClass;
+
+fn deny_workspace_file_writes() -> Result<(), ToolError> {
+    if crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
+        .and_then(|scope| scope.workspace_authority)
+        .is_some_and(|authority| !authority.allows_file_writes())
+    {
+        return Err(ToolError::reported_failure(
+            FailureClass::PolicyDenied,
+            "workspace authority does not allow file writes".into(),
+        ));
+    }
+    Ok(())
+}
 
 fn merge_optional_notes(left: Option<String>, right: Option<String>) -> Option<String> {
     match (left, right) {
@@ -501,6 +515,7 @@ impl Tool for WriteFileTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        deny_workspace_file_writes()?;
         let path = self.context.resolve_path_allow_create(&args.path)?;
         let lock = file_mutation_lock_for(&path);
         let _guard = lock.lock().await;
@@ -630,6 +645,9 @@ impl Tool for EditFileTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        if !args.dry_run {
+            deny_workspace_file_writes()?;
+        }
         let path = self.context.resolve_existing_file(&args.path)?;
         let display = self.context.display_path(&path);
         let lock = file_mutation_lock_for(&path);

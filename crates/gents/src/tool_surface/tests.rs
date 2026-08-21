@@ -76,6 +76,65 @@ fn selection_file_tool_root_clamps_within_operator_root() {
 }
 
 #[test]
+fn build_tools_does_not_bake_a_per_request_workspace_root() {
+    let operator_root = temp_root("gents-operator-workspace-overlay");
+    let selection_root = operator_root.join("repo");
+    std::fs::create_dir_all(&selection_root).unwrap();
+    let config = BehaviorToolConfig::from_selection(
+        "ops",
+        ToolSelection {
+            file_tools: FileToolMode::ReadWrite,
+            file_tool_root: Some(selection_root.clone()),
+            bash: BashMode::Unrestricted,
+            command_policy: Some(
+                crate::toolset::CommandExecutionPolicy::write_capable()
+                    .with_mode(crate::toolset::CommandExecutionMode::Unrestricted),
+            ),
+            cli_tool_names: Vec::new(),
+            enable_meta_tools: false,
+            allowed_mcp_service_ids: Vec::new(),
+            backgroundable_tool_names: Vec::new(),
+            approval_required_tools: Vec::new(),
+            orchestration_enabled: false,
+            enable_memory: false,
+            enable_session_history_tool: false,
+            enable_context_budget: true,
+            enable_defra_query: false,
+            defra_query_collections: Vec::new(),
+            write_tools: Vec::new(),
+            query_tools: Vec::new(),
+            enable_self_config: false,
+            self_config_categories: None,
+            self_config_no_lockout: false,
+            self_config_dry_run: false,
+            enable_lsp: false,
+            lsp_config: None,
+        },
+        &ToolCeiling::readwrite(operator_root.clone()),
+        Vec::new(),
+    )
+    .unwrap();
+
+    let canonical_selection = std::fs::canonicalize(&selection_root).unwrap();
+    for tool in config.host_tools().native_tools() {
+        match tool {
+            crate::toolset::NativeTool::WriteFile { root }
+            | crate::toolset::NativeTool::EditFile { root } => {
+                assert_eq!(root, &canonical_selection);
+            }
+            crate::toolset::NativeTool::BashUnrestricted { root, policy, .. } => {
+                assert_eq!(root, &canonical_selection);
+                assert_eq!(
+                    policy.mode,
+                    crate::toolset::CommandExecutionMode::Unrestricted
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
 fn command_timeout_ceiling_reaches_selected_bash_tool() {
     let operator_root = temp_root("gents-command-timeout-root");
     let ceiling = ToolCeiling::readonly_at(&operator_root).with_command_timeout_secs(120);

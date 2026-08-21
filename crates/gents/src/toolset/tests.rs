@@ -13,7 +13,7 @@ use super::file_tools::{
 use super::shared::{
     build_shell_env_from_vars, select_sandbox_for_policy, validate_command_policy,
     validate_read_only_command, CommandExecutionMode, CommandExecutionPolicy, CommandNetworkMode,
-    ToolContext, ToolError,
+    ToolContext, ToolError, WorkspaceAuthority,
 };
 use super::*;
 use crate::lean_vocab_test::{
@@ -669,6 +669,49 @@ async fn write_and_edit_file_work_under_root() {
 
     let content = std::fs::read_to_string(root.join("nested/file.txt")).unwrap();
     assert_eq!(content, "hello amy");
+}
+
+#[tokio::test]
+async fn read_only_workspace_authority_denies_file_writes() {
+    let root = temp_root("gents-workspace-ro-write");
+    std::fs::write(root.join("file.txt"), "hello").unwrap();
+    let writer = WriteFileTool::new(ToolContext::new(root.clone(), true).unwrap());
+    let error =
+        crate::tool_call_lifecycle::runtime::scope_request_tool_execution_with_workspace_overlay(
+            None,
+            tokio_util::sync::CancellationToken::new(),
+            crate::tool_call_lifecycle::runtime::ToolWorkspaceScope {
+                workspace_cwd: Some(root.clone()),
+                workspace_root: Some(std::fs::canonicalize(&root).unwrap()),
+                workspace_authority: Some(WorkspaceAuthority::ReadOnly),
+            },
+            None,
+            None,
+            None,
+            Default::default(),
+            false,
+            async {
+                crate::llm::tool::Tool::call(
+                    &writer,
+                    WriteFileArgs {
+                        path: "file.txt".to_string(),
+                        content: "nope".to_string(),
+                        raw_json: false,
+                    },
+                )
+                .await
+            },
+        )
+        .await
+        .expect_err("ReadOnly workspace authority must deny write_file");
+    assert!(
+        error.to_string().contains("does not allow file writes"),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("file.txt")).unwrap(),
+        "hello"
+    );
 }
 
 #[tokio::test]

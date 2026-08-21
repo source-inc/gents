@@ -134,10 +134,13 @@ impl LspWritethrough {
             .and_then(|scope| scope.session_id)
             .filter(|id| !id.is_empty())
             .unwrap_or_else(|| self.config.session_id.clone());
+        let workspace_root = crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
+            .and_then(|scope| scope.workspace_root)
+            .unwrap_or_else(|| self.config.workspace.clone());
         let key = PoolKey {
             session_id,
             behavior_id: self.config.behavior_id.clone(),
-            workspace_root: self.config.workspace.clone(),
+            workspace_root,
             server_name: server.name.clone(),
             config_digest: self.config.digest.clone(),
         };

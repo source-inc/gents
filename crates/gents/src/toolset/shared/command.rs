@@ -62,6 +62,109 @@ impl CommandExecutionMode {
             Self::Unrestricted => "unrestricted",
         }
     }
+
+    /// More restrictive mode wins: ReadOnly < WorkspaceWrite < Unrestricted.
+    pub fn meet(self, other: Self) -> Self {
+        if self.rank() <= other.rank() {
+            self
+        } else {
+            other
+        }
+    }
+
+    fn rank(self) -> u8 {
+        match self {
+            Self::ReadOnly => 0,
+            Self::WorkspaceWrite => 1,
+            Self::Unrestricted => 2,
+        }
+    }
+}
+
+/// Request `workspace_authority`. ReadWrite meets command mode to WorkspaceWrite,
+/// never Unrestricted. Integrate is inspect-only (no bash writes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceAuthority {
+    ReadOnly,
+    ReadWrite,
+    Integrate,
+}
+
+impl WorkspaceAuthority {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.trim() {
+            "readOnly" | "ReadOnly" | "read_only" => Ok(Self::ReadOnly),
+            "readWrite" | "ReadWrite" | "read_write" => Ok(Self::ReadWrite),
+            "integrate" | "Integrate" => Ok(Self::Integrate),
+            other => bail!("unknown workspace authority {other}"),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "readOnly",
+            Self::ReadWrite => "readWrite",
+            Self::Integrate => "integrate",
+        }
+    }
+
+    pub fn command_mode(self) -> CommandExecutionMode {
+        match self {
+            Self::ReadOnly | Self::Integrate => CommandExecutionMode::ReadOnly,
+            Self::ReadWrite => CommandExecutionMode::WorkspaceWrite,
+        }
+    }
+
+    pub fn allows_file_writes(self) -> bool {
+        matches!(self, Self::ReadWrite)
+    }
+
+    pub fn bindable_lifecycle_state(self, state: &str) -> bool {
+        match (self, normalize_workspace_lifecycle_state(state)) {
+            (Self::ReadWrite, Some("ready")) => true,
+            (Self::ReadOnly, Some("ready" | "sealed")) => true,
+            (Self::Integrate, Some("sealed")) => true,
+            _ => false,
+        }
+    }
+}
+
+pub(crate) fn normalize_workspace_lifecycle_state(value: &str) -> Option<&'static str> {
+    match value.trim() {
+        "provisioning" | "Provisioning" => Some("provisioning"),
+        "ready" | "Ready" => Some("ready"),
+        "provisionFailed" | "provision_failed" | "ProvisionFailed" => Some("provisionFailed"),
+        "sealed" | "Sealed" => Some("sealed"),
+        "cleaning" | "Cleaning" => Some("cleaning"),
+        "cleaned" | "Cleaned" => Some("cleaned"),
+        _ => None,
+    }
+}
+
+/// Meet the baked command policy with the request's workspace authority.
+pub(crate) fn apply_workspace_authority(
+    policy: &CommandExecutionPolicy,
+    authority: WorkspaceAuthority,
+) -> CommandExecutionPolicy {
+    let mut met = policy.clone();
+    met.mode = policy.mode.meet(authority.command_mode());
+    if matches!(met.mode, CommandExecutionMode::ReadOnly) && met.read_only_allowlist().is_empty() {
+        met = met.with_read_only_allowlist(
+            crate::toolset::default_read_only_command_policy()
+                .read_only_allowlist()
+                .to_vec(),
+        );
+    }
+    met
+}
+
+pub(crate) fn effective_command_policy(policy: &CommandExecutionPolicy) -> CommandExecutionPolicy {
+    match crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
+        .and_then(|scope| scope.workspace_authority)
+    {
+        Some(authority) => apply_workspace_authority(policy, authority),
+        None => policy.clone(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -422,13 +525,15 @@ pub(crate) async fn run_command(
     policy: &CommandExecutionPolicy,
     raw_json: bool,
 ) -> std::result::Result<String, ToolError> {
+    let policy = effective_command_policy(policy);
     let cwd = context.resolve_existing_dir(cwd)?;
     let argv = std::iter::once(command_name.to_string())
         .chain(args.iter().cloned())
         .collect::<Vec<_>>();
     let command_line = shell_join(&argv);
+    let root = context.root();
     let (program, command_args, sandbox) =
-        sandboxed_command_for_policy(context.root(), command_name, args, policy)?;
+        sandboxed_command_for_policy(&root, command_name, args, &policy)?;
     let runtime = current_tool_runtime_context();
     let request_deadline = runtime.as_ref().and_then(|runtime| runtime.deadline_at);
     let command_deadline = chrono::Utc::now()

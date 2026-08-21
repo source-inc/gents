@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
@@ -168,6 +169,7 @@ pub(in crate::agent) async fn run_agent(
         startup_barrier: startup_barrier.clone(),
         startup_readiness: agent.startup_readiness.clone(),
         startup_demotions: runtime_status.startup_demotions(),
+        operator_tool_root: agent.operator_tool_root().map(PathBuf::from),
     };
     let runtime_for_runner = runtime.clone();
     let startup_demotions = runtime_status.startup_demotions();

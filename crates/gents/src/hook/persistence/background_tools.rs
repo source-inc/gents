@@ -156,9 +156,17 @@ impl DefraSessionHook {
             .await;
         self.ensure_live_output_flusher();
         let runtime_context = crate::tool_call_lifecycle::runtime::current_tool_runtime_context();
-        let workspace_cwd = runtime_context
-            .as_ref()
-            .and_then(|runtime| runtime.workspace_cwd.clone());
+        let workspace = crate::tool_call_lifecycle::runtime::ToolWorkspaceScope {
+            workspace_cwd: runtime_context
+                .as_ref()
+                .and_then(|runtime| runtime.workspace_cwd.clone()),
+            workspace_root: runtime_context
+                .as_ref()
+                .and_then(|runtime| runtime.workspace_root.clone()),
+            workspace_authority: runtime_context
+                .as_ref()
+                .and_then(|runtime| runtime.workspace_authority),
+        };
         let correlation = runtime_context
             .as_ref()
             .and_then(|runtime| runtime.correlation.clone());
@@ -167,10 +175,10 @@ impl DefraSessionHook {
             .unwrap_or_default();
         tokio::spawn(async move {
             let execution = AssertUnwindSafe(async {
-                crate::tool_call_lifecycle::runtime::scope_request_tool_execution_with_trigger_context(
+                crate::tool_call_lifecycle::runtime::scope_request_tool_execution_with_workspace_overlay(
                     Some(background_deadline_at),
                     cancellation_token.clone(),
-                    workspace_cwd,
+                    workspace,
                     Some(live_output_writer),
                     Some(execution_session_id.clone()),
                     correlation,

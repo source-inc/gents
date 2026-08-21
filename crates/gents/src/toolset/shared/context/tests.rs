@@ -136,3 +136,54 @@ async fn request_runtime_workspace_overrides_static_base() {
 
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn request_runtime_workspace_root_replaces_static_root() {
+    let baked =
+        std::env::temp_dir().join(format!("gents-tool-context-baked-{}", uuid::Uuid::new_v4()));
+    let placement = std::env::temp_dir().join(format!(
+        "gents-tool-context-placement-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&baked).unwrap();
+    std::fs::create_dir_all(&placement).unwrap();
+    std::fs::write(baked.join("secret.txt"), "nope").unwrap();
+    std::fs::write(placement.join("notes.txt"), "ok").unwrap();
+
+    let context = ToolContext::new(baked.clone(), false).unwrap();
+    let (inside, denied) =
+        crate::tool_call_lifecycle::runtime::scope_request_tool_execution_with_workspace_overlay(
+            None,
+            tokio_util::sync::CancellationToken::new(),
+            crate::tool_call_lifecycle::runtime::ToolWorkspaceScope {
+                workspace_cwd: Some(placement.clone()),
+                workspace_root: Some(std::fs::canonicalize(&placement).unwrap()),
+                workspace_authority: Some(crate::toolset::WorkspaceAuthority::ReadWrite),
+            },
+            None,
+            None,
+            None,
+            Default::default(),
+            false,
+            async {
+                let inside = context.resolve_existing_file("notes.txt")?;
+                let denied =
+                    context.resolve_existing_file(baked.join("secret.txt").to_str().unwrap());
+                anyhow::Ok((inside, denied.err().map(|error| error.to_string())))
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        inside,
+        std::fs::canonicalize(placement.join("notes.txt")).unwrap()
+    );
+    assert!(
+        denied.unwrap().contains("outside the allowed tool root"),
+        "bound overlay must deny the baked behavior root"
+    );
+
+    let _ = std::fs::remove_dir_all(baked);
+    let _ = std::fs::remove_dir_all(placement);
+}

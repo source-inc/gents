@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::FailureClass;
 use crate::background_tools::LiveToolOutputWriter;
-use crate::toolset::CommandPolicyDenial;
+use crate::toolset::{CommandPolicyDenial, WorkspaceAuthority};
 
 /// The typed outcome of one tool dispatch.
 ///
@@ -164,6 +164,23 @@ fn strip_error_prefixes(mut value: &str) -> &str {
     }
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct ToolWorkspaceScope {
+    pub workspace_cwd: Option<PathBuf>,
+    pub workspace_root: Option<PathBuf>,
+    pub workspace_authority: Option<WorkspaceAuthority>,
+}
+
+impl ToolWorkspaceScope {
+    pub(crate) fn cwd_only(workspace_cwd: Option<PathBuf>) -> Self {
+        Self {
+            workspace_cwd,
+            workspace_root: None,
+            workspace_authority: None,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ToolRuntimeScope {
     deadline_at: Option<DateTime<Utc>>,
@@ -184,6 +201,8 @@ pub(crate) struct CurrentToolRuntimeContext {
     pub(crate) deadline_at: Option<DateTime<Utc>>,
     pub(crate) cancellation_token: CancellationToken,
     pub(crate) workspace_cwd: Option<PathBuf>,
+    pub(crate) workspace_root: Option<PathBuf>,
+    pub(crate) workspace_authority: Option<WorkspaceAuthority>,
     pub(crate) session_id: Option<String>,
     pub(crate) live_output: Option<LiveToolOutputWriter>,
     pub(crate) background: bool,
@@ -193,6 +212,7 @@ pub(crate) struct CurrentToolRuntimeContext {
 
 tokio::task_local! {
     static TOOL_RUNTIME_SCOPE: ToolRuntimeScope;
+    static WORKSPACE_OVERLAY: ToolWorkspaceScope;
 }
 
 #[cfg(test)]
@@ -282,6 +302,12 @@ pub(crate) async fn scope_request_tool_execution_with_trigger_context<F, T>(
 where
     F: Future<Output = T>,
 {
+    let workspace_cwd = workspace_cwd.or_else(|| {
+        TOOL_RUNTIME_SCOPE
+            .try_with(|scope| scope.workspace_cwd.clone())
+            .ok()
+            .flatten()
+    });
     TOOL_RUNTIME_SCOPE
         .scope(
             ToolRuntimeScope {
@@ -295,6 +321,44 @@ where
                 source_fields,
             },
             future,
+        )
+        .await
+}
+
+pub(crate) async fn scope_request_tool_execution_with_workspace_overlay<F, T>(
+    deadline_at: Option<DateTime<Utc>>,
+    cancellation_token: CancellationToken,
+    workspace: ToolWorkspaceScope,
+    live_output: Option<LiveToolOutputWriter>,
+    session_id: Option<String>,
+    correlation: Option<String>,
+    source_fields: std::collections::BTreeMap<String, String>,
+    background: bool,
+    future: F,
+) -> T
+where
+    F: Future<Output = T>,
+{
+    let cwd = workspace
+        .workspace_cwd
+        .clone()
+        .or_else(|| workspace.workspace_root.clone());
+    WORKSPACE_OVERLAY
+        .scope(
+            workspace,
+            TOOL_RUNTIME_SCOPE.scope(
+                ToolRuntimeScope {
+                    deadline_at,
+                    cancellation_token,
+                    workspace_cwd: cwd,
+                    session_id,
+                    live_output,
+                    background,
+                    correlation,
+                    source_fields,
+                },
+                future,
+            ),
         )
         .await
 }
@@ -335,19 +399,25 @@ where
 }
 
 pub(crate) fn current_tool_runtime_context() -> Option<CurrentToolRuntimeContext> {
-    TOOL_RUNTIME_SCOPE
-        .try_with(Clone::clone)
-        .ok()
-        .map(|scope| CurrentToolRuntimeContext {
+    TOOL_RUNTIME_SCOPE.try_with(Clone::clone).ok().map(|scope| {
+        let overlay = WORKSPACE_OVERLAY.try_with(Clone::clone).ok();
+        CurrentToolRuntimeContext {
             deadline_at: scope.deadline_at,
             cancellation_token: scope.cancellation_token,
             workspace_cwd: scope.workspace_cwd,
+            workspace_root: overlay
+                .as_ref()
+                .and_then(|overlay| overlay.workspace_root.clone()),
+            workspace_authority: overlay
+                .as_ref()
+                .and_then(|overlay| overlay.workspace_authority),
             session_id: scope.session_id,
             live_output: scope.live_output,
             background: scope.background,
             correlation: scope.correlation,
             source_fields: scope.source_fields,
-        })
+        }
+    })
 }
 
 /// Execute `tool` under the ambient runtime scope's deadline/cancellation

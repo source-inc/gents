@@ -140,7 +140,22 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
         effective_seed: Option<i64>,
     ) -> Result<HandleRequestOutcome> {
         let request_deadline = lifecycle.claimed_deadline_at();
-        let workspace_cwd = request_workspace_cwd(request);
+        let workspace = match crate::workspace::resolve_request_workspace_overlay(
+            self.node.as_ref(),
+            request,
+            self.operator_tool_root.as_deref(),
+        )
+        .await?
+        {
+            Some(overlay) => crate::tool_call_lifecycle::runtime::ToolWorkspaceScope {
+                workspace_cwd: Some(overlay.cwd),
+                workspace_root: Some(overlay.root),
+                workspace_authority: Some(overlay.authority),
+            },
+            None => crate::tool_call_lifecycle::runtime::ToolWorkspaceScope::cwd_only(
+                request_workspace_cwd(request),
+            ),
+        };
         let trigger_context = crate::lifecycle::TriggerExecutionContext::parse(
             request.caused_by_trigger_context.as_deref(),
         )?;
@@ -153,7 +168,7 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
             .unwrap_or("")
             .to_string();
         let has_deadline = !deadline_at.is_empty();
-        let workspace_cwd_set = workspace_cwd.is_some();
+        let workspace_cwd_set = workspace.workspace_cwd.is_some();
 
         let request_context_message =
             render_request_context_message(self.node.as_ref(), &self.behavior, request)?;
@@ -179,7 +194,7 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
         // ever called. Do not install one here: a second scope would restart
         // the per-kind label sequence and hand the inference loop a label the
         // summarizer's scope had already used.
-        let inference = async {
+        let inference = Box::pin(async {
                 let hook = DefraSessionHook::resume_or_create_with_identity_policy(
                     self.node.clone(),
                     &request.session_id,
@@ -508,7 +523,7 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                                     crate::tool_call_lifecycle::runtime::scope_request_tool_execution_with_trigger_context(
                                         request_deadline,
                                         request_token.clone(),
-                                        workspace_cwd.clone(),
+                                        None,
                                         None,
                                         Some(session_id.clone()),
                                         trigger_correlation.clone(),
@@ -685,13 +700,24 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                 workspace_cwd_set,
                 attempt = attempt_index,
                 retry_attempt = false,
-            ));
+            )));
 
         // The capture scope installed by `handle_request` spans both the
         // stream's construction and its drain loop: the SSE transports connect
         // lazily on first poll, so the HTTP send that the capturing transport
         // intercepts usually happens during polling.
-        let outcome = inference.await?;
+        let outcome = crate::tool_call_lifecycle::runtime::scope_request_tool_execution_with_workspace_overlay(
+            request_deadline,
+            request_token.clone(),
+            workspace,
+            None,
+            Some(session_id.clone()),
+            trigger_correlation.clone(),
+            trigger_context.source_fields.clone(),
+            false,
+            inference,
+        )
+        .await?;
 
         Ok(outcome)
     }

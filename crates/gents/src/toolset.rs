@@ -54,13 +54,17 @@ pub use session_history::{
     build_session_history_tool, load_session_history_snapshot, SessionHistoryRow,
     SessionHistorySnapshot, SESSION_HISTORY_TOOL_NAME,
 };
+#[cfg(test)]
+pub(crate) use shared::apply_workspace_authority;
 pub(crate) use shared::parse_argv_prefixes;
 pub(crate) use shared::{
-    admit_host_executable, default_lsp_network_mode, lsp_sandbox_for_effective,
-    prepare_managed_command,
+    admit_host_executable, default_lsp_network_mode, effective_command_policy,
+    lsp_sandbox_for_effective, normalize_workspace_lifecycle_state, prepare_managed_command,
+    workspace_write_sandbox_enforced,
 };
 pub use shared::{
     CommandConstraints, CommandExecutionMode, CommandExecutionPolicy, CommandNetworkMode,
+    WorkspaceAuthority,
 };
 
 pub(crate) fn default_read_only_command_policy() -> CommandExecutionPolicy {

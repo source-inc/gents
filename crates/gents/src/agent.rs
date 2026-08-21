@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -122,6 +123,7 @@ pub struct Gents {
     rendered_request_capture_factory:
         Option<crate::rendered_request::RenderedRequestCaptureFactory>,
     pub(crate) manual_trigger_handle: Arc<OnceCell<ManualTriggerHandle>>,
+    operator_tool_root: Option<PathBuf>,
 }
 
 impl Gents {
@@ -212,6 +214,7 @@ impl Gents {
             // arbitrary sink that could acknowledge without persisting.
             rendered_request_capture_factory: Some(rendered_request_capture_factory),
             manual_trigger_handle: Arc::new(OnceCell::new()),
+            operator_tool_root: options.tool_ceiling.root().map(PathBuf::from),
         })
     }
 
@@ -258,6 +261,10 @@ impl Gents {
 
     pub(crate) fn document_runtime_context(&self) -> Option<&DocumentResolveContext> {
         self.document_runtime_context.as_ref()
+    }
+
+    pub(crate) fn operator_tool_root(&self) -> Option<&std::path::Path> {
+        self.operator_tool_root.as_deref()
     }
 
     #[allow(dead_code)]
