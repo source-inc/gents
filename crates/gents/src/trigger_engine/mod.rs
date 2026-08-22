@@ -70,6 +70,36 @@ impl FireIntent {
 }
 
 #[derive(Debug, Clone)]
+pub struct MaterializeSkip {
+    pub reason: String,
+}
+
+impl std::fmt::Display for MaterializeSkip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.reason)
+    }
+}
+
+impl std::error::Error for MaterializeSkip {}
+
+pub(crate) fn fire_result_from_materialize(result: anyhow::Result<String>) -> FireResult {
+    match result {
+        Ok(request_id) => FireResult::Fired { request_id },
+        Err(error) => {
+            if let Some(skip) = error.downcast_ref::<MaterializeSkip>() {
+                FireResult::Skipped {
+                    reason: skip.reason.clone(),
+                }
+            } else {
+                FireResult::Errored {
+                    error: format!("materialize: {error}"),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum FireResult {
     #[allow(dead_code)]
     Fired {
@@ -458,30 +488,19 @@ impl TriggerEngine {
         } else {
             None
         };
-        let request_id = match self
-            .materializer
-            .materialize(
-                &intent.task,
-                intent.trigger_id.as_deref(),
-                intent.trigger_kind,
-                source_doc_id.as_deref(),
-                intent.correlation.as_deref(),
-                intent.trigger_context.as_deref(),
-                &rendered,
-            )
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                let result = FireResult::Errored {
-                    error: format!("materialize: {e}"),
-                };
-                (intent.on_result)(result.clone());
-                return result;
-            }
-        };
-
-        let result = FireResult::Fired { request_id };
+        let result = fire_result_from_materialize(
+            self.materializer
+                .materialize(
+                    &intent.task,
+                    intent.trigger_id.as_deref(),
+                    intent.trigger_kind,
+                    source_doc_id.as_deref(),
+                    intent.correlation.as_deref(),
+                    intent.trigger_context.as_deref(),
+                    &rendered,
+                )
+                .await,
+        );
         (intent.on_result)(result.clone());
         result
     }

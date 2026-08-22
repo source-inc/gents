@@ -1,3 +1,6 @@
+use gents::watcher::workspace_bound_request_claimable;
+use gents::workspace::{action_journal_prefix_legal, ActionJournalEntry, ActionJournalState};
+
 use crate::lean_vocab_test::lean_callback_cases;
 
 fn later_than_validated(state: &str) -> bool {
@@ -16,7 +19,7 @@ fn result_emitted_ok(state: &str, journal: &[String], result_emitted: bool) -> b
 }
 
 fn denied_failed_no_execute(state: &str, journal: &[String]) -> bool {
-    !(state == "denied" || state == "failed") || journal.is_empty()
+    state != "denied" || journal.is_empty()
 }
 
 fn invocation_legal(state: &str, journal: &[String], result_emitted: bool) -> bool {
@@ -40,6 +43,7 @@ fn generated_callback_cases_match_lean_predicate() {
         "result_emitted_on_succeeded_with_complete_journal_legal",
         "denied_empty_journal_legal",
         "denied_executing_journal_illegal",
+        "failed_after_result_docs_no_emit_legal",
     ] {
         assert!(
             names.iter().any(|name| *name == required),
@@ -54,4 +58,32 @@ fn generated_callback_cases_match_lean_predicate() {
             case.name
         );
     }
+}
+
+#[test]
+fn runtime_journal_prefix_matches_lean_witnesses() {
+    let illegal = vec![
+        ActionJournalEntry::new(0, ActionJournalState::Validated),
+        ActionJournalEntry::new(1, ActionJournalState::Executing),
+    ];
+    assert!(!action_journal_prefix_legal(&illegal));
+    let legal = vec![
+        ActionJournalEntry::new(0, ActionJournalState::ResultDocsWritten),
+        ActionJournalEntry::new(1, ActionJournalState::Executing),
+    ];
+    assert!(action_journal_prefix_legal(&legal));
+}
+
+#[test]
+fn runtime_owner_routing_does_not_claim_on_replica() {
+    assert!(workspace_bound_request_claimable(
+        Some("deploy-owner"),
+        Some("ws-1"),
+        Some("deploy-owner")
+    ));
+    assert!(!workspace_bound_request_claimable(
+        Some("deploy-replica"),
+        Some("ws-1"),
+        Some("deploy-owner")
+    ));
 }

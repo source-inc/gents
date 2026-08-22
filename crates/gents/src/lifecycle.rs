@@ -21,7 +21,10 @@ mod task_title;
 mod transition;
 
 pub use manual::{write_manual_agent_request, write_manual_agent_request_with_conversation_title};
-pub(crate) use materialize::write_pending_agent_request_with_lineage_and_conversation_title;
+pub(crate) use materialize::{
+    write_pending_agent_request_with_lineage_and_conversation_title,
+    write_pending_agent_request_with_lineage_workspace_and_conversation_title,
+};
 pub use task_title::task_run_conversation_title;
 
 pub const DEFAULT_REQUEST_MAX_RETRIES: u32 = 3;
@@ -125,6 +128,63 @@ pub struct TriggerLineage {
     pub source_doc_id: Option<String>,
     pub correlation: Option<String>,
     pub trigger_context: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WorkspaceLineage {
+    pub workspace_id: Option<String>,
+    pub workspace_authority: Option<String>,
+    pub workspace_owner_deployment_id: Option<String>,
+    pub workspace_seal_hash: Option<String>,
+}
+
+impl WorkspaceLineage {
+    pub fn from_trigger_context(trigger_context: Option<&str>) -> Result<Self> {
+        let context = TriggerExecutionContext::parse(trigger_context)?;
+        let field = |name: &str| {
+            context
+                .source_fields
+                .get(name)
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        Ok(Self {
+            workspace_id: field("workspace_id"),
+            workspace_authority: field("workspace_authority"),
+            workspace_owner_deployment_id: field("workspace_owner_deployment_id"),
+            workspace_seal_hash: field("workspace_seal_hash"),
+        })
+    }
+
+    pub fn is_bound(&self) -> bool {
+        self.workspace_id
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+            || self
+                .workspace_owner_deployment_id
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+    }
+
+    pub fn require_authority_if_workspace_id(&self) -> Result<()> {
+        let has_workspace_id = self
+            .workspace_id
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+        let has_authority = self
+            .workspace_authority
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+        if has_workspace_id && !has_authority {
+            anyhow::bail!("workspace-bound request requires workspace_authority");
+        }
+        Ok(())
+    }
 }
 
 pub const MAX_TRIGGER_CONTEXT_BYTES: usize = 16 * 1024;

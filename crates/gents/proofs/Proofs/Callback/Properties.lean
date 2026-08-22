@@ -21,9 +21,10 @@ def resultEmittedOk (inv : CallbackInvocation) : Bool :=
     (decide (inv.state = .succeeded) &&
       inv.journal.all (fun e => decide (e.state = .resultDocsWritten)))
 
+-- Denied never executes host actions. Failed after observe/docs may keep a
+-- journal; it still must not emit CallbackResult.
 def deniedFailedNoExecute (inv : CallbackInvocation) : Bool :=
-  !(decide (inv.state = .denied) || decide (inv.state = .failed)) ||
-    inv.journal.isEmpty
+  !decide (inv.state = .denied) || inv.journal.isEmpty
 
 def invocationLegal (inv : CallbackInvocation) : Bool :=
   journalPrefixOk inv.journal && resultEmittedOk inv && deniedFailedNoExecute inv
@@ -50,11 +51,11 @@ theorem identity_fields_preserved
     post.ownerDeploymentId = pre.ownerDeploymentId := by
   cases h <;> simp_all
 
-theorem denied_failed_keep_empty_journal
+theorem denied_or_failed_do_not_emit
     {pre post : CallbackInvocation}
     (h : Transition pre post)
     (hterm : post.state = .denied ∨ post.state = .failed) :
-    post.journal = [] ∧ post.resultEmitted = false := by
+    post.resultEmitted = false := by
   cases h with
   | claim _ hpost =>
       simp [hpost] at hterm
@@ -62,12 +63,50 @@ theorem denied_failed_keep_empty_journal
       simp [hpost] at hterm
   | succeed _ _ hpost =>
       simp [hpost] at hterm
-  | fail _ hjournal hpost =>
-      simp [hpost, hjournal]
+  | fail _ hpost =>
+      simp [hpost]
+  | deny_claimed _ _ hpost =>
+      simp [hpost]
+  | deny_running _ _ hpost =>
+      simp [hpost]
+
+theorem denied_keeps_empty_journal
+    {pre post : CallbackInvocation}
+    (h : Transition pre post)
+    (hden : post.state = .denied) :
+    post.journal = [] := by
+  cases h with
+  | claim _ hpost =>
+      simp [hpost] at hden
+  | run _ hpost =>
+      simp [hpost] at hden
+  | succeed _ _ hpost =>
+      simp [hpost] at hden
+  | fail _ hpost =>
+      simp [hpost] at hden
   | deny_claimed _ hjournal hpost =>
       simp [hpost, hjournal]
   | deny_running _ hjournal hpost =>
       simp [hpost, hjournal]
+
+theorem fail_preserves_journal
+    {pre post : CallbackInvocation}
+    (h : Transition pre post)
+    (hfail : post.state = .failed) :
+    post.journal = pre.journal ∧ post.resultEmitted = false := by
+  cases h with
+  | claim _ hpost =>
+      simp [hpost] at hfail
+  | run _ hpost =>
+      simp [hpost] at hfail
+  | succeed _ _ hpost =>
+      simp [hpost] at hfail
+  | fail _ hpost =>
+      simp [hpost]
+  | deny_claimed _ _ hpost =>
+      simp [hpost] at hfail
+  | deny_running _ _ hpost =>
+      simp [hpost] at hfail
 
 theorem result_emitted_only_on_success
     (inv : CallbackInvocation)

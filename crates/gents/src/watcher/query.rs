@@ -79,7 +79,12 @@ impl DefraWatcher {
             return Ok(None);
         }
         match row.clone().into_agent_request() {
-            Ok(request) => Ok(Some(request)),
+            Ok(request) => {
+                if !self.request_is_locally_claimable(&request) {
+                    return Ok(None);
+                }
+                Ok(Some(request))
+            }
             Err(error) => {
                 self.terminalize_incoherent_pending_request(&row, &error)
                     .await;
@@ -129,6 +134,12 @@ impl DefraWatcher {
         prioritize_aged_background_wakes(claimable_pending_rows_from_rows(rows), chrono::Utc::now())
             .into_iter()
             .map(AgentRequestRow::into_agent_request)
+            .filter(|request| {
+                request
+                    .as_ref()
+                    .map(|request| self.request_is_locally_claimable(request))
+                    .unwrap_or(true)
+            })
             .collect()
     }
 

@@ -95,6 +95,57 @@ async fn durable_group_marker_matches_all_four_lineage_discriminators() {
         .unwrap());
 }
 
+#[tokio::test]
+async fn materializer_skips_workspace_bound_request_for_other_deployment() {
+    let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
+    ensure_runtime_schemas(node.as_ref()).await.unwrap();
+    let snapshot =
+        snapshot_with_behavior_and_schedules(integration_test_behavior("general"), HashMap::new());
+    let (_snapshot_tx, snapshot_rx) = watch::channel(snapshot);
+    let materializer =
+        ProductionMaterializer::new(node, snapshot_rx).with_local_deployment_id("deploy-replica");
+    let task = ResolvedTask {
+        task_id: "task-ws".to_string(),
+        name: None,
+        behavior_id: "general".to_string(),
+        prompt_template: "patch".to_string(),
+        output_schema_ref: None,
+    };
+    let context = serde_json::json!({
+        "version": 1,
+        "source_fields": {
+            "workspace_id": "ws-1",
+            "workspace_authority": "readWrite",
+            "workspace_owner_deployment_id": "deploy-owner"
+        }
+    })
+    .to_string();
+    let error = materializer
+        .materialize(
+            &task,
+            Some("trigger-ws"),
+            TriggerKind::Event,
+            Some("src-1"),
+            Some("corr-1"),
+            Some(&context),
+            "prompt",
+        )
+        .await
+        .expect_err("replica must not enqueue workspace-bound work");
+    assert!(
+        error
+            .downcast_ref::<crate::trigger_engine::MaterializeSkip>()
+            .is_some(),
+        "{error}"
+    );
+    match crate::trigger_engine::fire_result_from_materialize(Err(error)) {
+        FireResult::Skipped { reason } => {
+            assert!(reason.contains("another deployment"), "{reason}");
+        }
+        other => panic!("expected Skipped, got {other:?}"),
+    }
+}
+
 /// Per-group Serial/LatestOnly gates include correlation; per-document gates
 /// deliberately omit it and remain trigger-wide. Prove both query shapes and
 /// the matching supersede mutation against persisted rows.

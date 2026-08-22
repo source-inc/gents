@@ -18,7 +18,6 @@ inductive Transition : CallbackInvocation → CallbackInvocation → Prop where
       Transition pre post
   | fail {pre post : CallbackInvocation} :
       pre.state = .running →
-      pre.journal = [] →
       post = { pre with state := .failed, resultEmitted := false } →
       Transition pre post
   | deny_claimed {pre post : CallbackInvocation} :

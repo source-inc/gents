@@ -937,7 +937,7 @@ fn executable_name_lookup_key(raw: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn is_secret_env_name(key: &str) -> bool {
+pub(crate) fn is_secret_env_name(key: &str) -> bool {
     let key = key.to_ascii_uppercase();
     key.contains("KEY")
         || key.contains("SECRET")

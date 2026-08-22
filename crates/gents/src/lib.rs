@@ -13,6 +13,7 @@ pub mod backend_registry;
 pub mod background_completion;
 mod background_completion_diagnostics;
 pub(crate) mod background_tools;
+pub(crate) mod callback;
 pub mod chatgpt_codex;
 pub mod chatgpt_oauth_refresh;
 pub mod codex_shim_binding;
@@ -252,7 +253,7 @@ pub use trigger_engine::subagent_source::SubagentSource;
 pub use trigger_engine::subscription_source::UpdateSubscriptionSource;
 pub use trigger_engine::{FireIntent, FireResult, TriggerKind, TriggerSource};
 pub use truncation::{DefraSpillTruncator, TruncationLimits, TruncationMode, Truncator};
-pub use watcher::{AgentRequest, DefraWatcher, Watcher};
+pub use watcher::{workspace_bound_request_claimable, AgentRequest, DefraWatcher, Watcher};
 
 #[doc(hidden)]
 pub mod __test_internals {
