@@ -24,7 +24,7 @@
   },
   "default_prompt": "${GENTS_DEFENDING_PROMPT:-Map the repository's trust boundaries, find plausible exploitable vulnerabilities, adversarially verify them, and draft minimal reviewable fixes for confirmed findings.}",
   "expect": {
-    "trigger_ids": ["defend-threat-model", "defend-plan", "defend-scan", "defend-verification-plan", "defend-verifier", "defend-triage", "defend-cluster", "defend-contract-review", "defend-remediation-plan", "defend-patch", "defend-patch-validation", "defend-patch-review", "defend-patch-security-review", "defend-report"],
+    "trigger_ids": ["defend-threat-model", "defend-plan", "defend-scan", "defend-verification-plan", "defend-verifier", "defend-triage", "defend-cluster", "defend-contract-review", "defend-remediation-plan", "defend-patch", "defend-patch-skip", "defend-patch-validation", "defend-patch-review", "defend-patch-security-review", "defend-report"],
     "trigger_request_count_sources": {
       "defend-scan": {
         "collection": "DefenseReviewArea",
@@ -44,26 +44,36 @@
       "defend-patch": {
         "collection": "DefensePatchAssignment",
         "correlation_field": "run_id",
-        "expected_count_field": "expected_total"
+        "match_field": "status",
+        "match_value": "ready"
+      },
+      "defend-patch-skip": {
+        "collection": "DefensePatchAssignment",
+        "correlation_field": "run_id",
+        "match_field": "status",
+        "match_value": "skipped"
       },
       "defend-patch-validation": {
-        "collection": "DefensePatchCandidate",
+        "collection": "DefensePatchAssignment",
         "correlation_field": "run_id",
-        "expected_count_field": "expected_total"
+        "match_field": "status",
+        "match_value": "ready"
       },
       "defend-patch-review": {
-        "collection": "DefensePatchValidation",
+        "collection": "DefensePatchAssignment",
         "correlation_field": "run_id",
-        "expected_count_field": "expected_total"
+        "match_field": "status",
+        "match_value": "ready"
       },
       "defend-patch-security-review": {
-        "collection": "DefensePatchReview",
+        "collection": "DefensePatchAssignment",
         "correlation_field": "run_id",
-        "expected_count_field": "expected_total"
+        "match_field": "status",
+        "match_value": "ready"
       }
     },
     "signed_provenance": true,
-    "required_tool_call_trigger_ids": ["defend-threat-model", "defend-plan", "defend-scan", "defend-verification-plan", "defend-verifier", "defend-triage", "defend-cluster", "defend-contract-review", "defend-remediation-plan", "defend-patch", "defend-patch-validation", "defend-patch-review", "defend-patch-security-review", "defend-report"],
+    "required_tool_call_trigger_ids": ["defend-threat-model", "defend-plan", "defend-scan", "defend-verification-plan", "defend-verifier", "defend-triage", "defend-cluster", "defend-contract-review", "defend-remediation-plan", "defend-patch", "defend-patch-skip", "defend-patch-validation", "defend-patch-review", "defend-patch-security-review", "defend-report"],
     "prompt_tool_contracts": [
       {"task_id": "defend-threat-model-task", "required_tool_names": ["write_defense_threat_model"]},
       {"task_id": "defend-plan-task", "required_tool_names": ["write_defense_review_area"]},

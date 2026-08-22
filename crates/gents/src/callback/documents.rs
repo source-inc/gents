@@ -270,29 +270,11 @@ pub fn validate_callback_binding(binding: &CallbackBindingDoc) -> Result<()> {
             binding.event_kind
         );
     }
-    if let Some(filter) = binding
-        .filter
-        .as_deref()
-        .map(str::trim)
-        .filter(|filter| !filter.is_empty())
-    {
-        crate::graphql::validate_graphql_filter_fragment(filter)?;
-        if let Some(field) = secret_field_in_filter(filter) {
-            anyhow::bail!(
-                "CallbackBinding {} filter field `{field}` is secret-bearing",
-                binding.binding_id
-            );
-        }
-    }
-    for field in binding.projected_fields()? {
-        crate::graphql::validate_graphql_name(&field)?;
-        if crate::toolset::is_secret_env_name(&field) {
-            anyhow::bail!(
-                "CallbackBinding {} source field `{field}` is secret-bearing",
-                binding.binding_id
-            );
-        }
-    }
+    reject_secret_bearing_callback_fields(
+        &binding.binding_id,
+        binding.filter.as_deref(),
+        binding.source_fields.as_deref(),
+    )?;
     let builtin = binding
         .builtin_emitter
         .as_deref()
@@ -319,6 +301,26 @@ pub fn validate_callback_binding(binding: &CallbackBindingDoc) -> Result<()> {
         ),
         (Some(_), None) => Ok(()),
     }
+}
+
+pub fn reject_secret_bearing_callback_fields(
+    binding_id: &str,
+    filter: Option<&str>,
+    source_fields: Option<&str>,
+) -> Result<()> {
+    if let Some(filter) = filter.map(str::trim).filter(|filter| !filter.is_empty()) {
+        crate::graphql::validate_graphql_filter_fragment(filter)?;
+        if let Some(field) = secret_field_in_filter(filter) {
+            anyhow::bail!("CallbackBinding {binding_id} filter field `{field}` is secret-bearing");
+        }
+    }
+    for field in parse_string_list(source_fields) {
+        crate::graphql::validate_graphql_name(&field)?;
+        if crate::toolset::is_secret_env_name(&field) {
+            anyhow::bail!("CallbackBinding {binding_id} source field `{field}` is secret-bearing");
+        }
+    }
+    Ok(())
 }
 
 fn secret_field_in_filter(filter: &str) -> Option<String> {

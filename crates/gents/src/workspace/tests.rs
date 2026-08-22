@@ -139,7 +139,7 @@ impl Fixture {
                 host_path: self.repo.clone(),
                 enabled: true,
             },
-            ceiling: Some(self.parent()),
+            ceiling: Some(&self.repo),
             capabilities: caps,
             writer_principal: "did:key:zWriter".to_string(),
             integrator_principal: "did:key:zIntegrator".to_string(),
@@ -328,9 +328,12 @@ fn existing_target_mismatch_does_not_overwrite_or_cleanup() {
         &fx.repo,
         &action.workspace_id,
         &action.branch,
-        Some(fx.parent()),
+        Some(&fx.repo),
     )
     .unwrap();
+    if let Some(parent) = planned.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
     fs::rename(&dest, &planned).unwrap();
     fs::write(planned.join("keep-me.txt"), "untouched\n").unwrap();
 
@@ -502,16 +505,53 @@ fn make_worktree_clones_artifacts_git_worktree_does_not() {
 #[test]
 fn destination_escaping_ceiling_is_denied() {
     let fx = Fixture::new();
+    let other = fx.parent().join("other-ceiling");
+    fs::create_dir_all(&other).unwrap();
     let mut docs = MemoryWorkspaceDocuments::default();
     let action = fx.action("ws-escape", "unit-1", "topic-escape");
     let plan = emit_create_workspace_plan(action);
     let mut journal = Vec::new();
     let mut ctx = fx.ctx(&mut docs, git_worktree_caps());
-    ctx.ceiling = Some(&fx.repo);
+    ctx.ceiling = Some(&other);
     let err =
         execute_create_workspace_plan(&plan, &mut journal, &mut ctx).expect_err("ceiling escape");
     assert!(matches!(err, HostExecuteError::Denied { .. }), "{err}");
     assert!(docs.workspaces.is_empty());
+}
+
+#[test]
+fn provision_succeeds_when_ceiling_is_repository_checkout() {
+    let fx = Fixture::new();
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let action = fx.action("ws-under", "unit-1", "topic-under");
+    let plan = emit_create_workspace_plan(action);
+    let mut journal = Vec::new();
+    let mut ctx = fx.ctx(&mut docs, git_worktree_caps());
+    ctx.ceiling = Some(&fx.repo);
+    let created = execute_create_workspace_plan(&plan, &mut journal, &mut ctx)
+        .expect("provision under checkout ceiling");
+    let dest = PathBuf::from(&created.placement.host_path);
+    let checkout = fx.repo.canonicalize().unwrap();
+    let dest = dest.canonicalize().unwrap_or(dest);
+    assert!(
+        dest.starts_with(&checkout),
+        "dest {} must sit under checkout {}",
+        dest.display(),
+        checkout.display()
+    );
+    assert_ne!(dest, checkout);
+    assert!(dest.join("README.md").is_file());
+    let exclude = git(&fx.repo, &["rev-parse", "--git-path", "info/exclude"]);
+    let exclude_path = if Path::new(&exclude).is_absolute() {
+        PathBuf::from(&exclude)
+    } else {
+        fx.repo.join(exclude)
+    };
+    let body = fs::read_to_string(exclude_path).unwrap();
+    assert!(
+        body.contains(".gents/"),
+        "nested dest must stay out of operator git status: {body}"
+    );
 }
 
 #[test]
@@ -1363,9 +1403,12 @@ fn provision_failed_and_sealed_rejected_remain_until_cleanup() {
         &fx.repo,
         &action.workspace_id,
         &action.branch,
-        Some(fx.parent()),
+        Some(&fx.repo),
     )
     .unwrap();
+    if let Some(parent) = planned.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
     fs::rename(&dest, &planned).unwrap();
     fs::write(planned.join("keep-me.txt"), "untouched\n").unwrap();
     let plan = emit_create_workspace_plan(action);

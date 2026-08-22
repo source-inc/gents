@@ -138,8 +138,7 @@ pub struct WorkspaceLineage {
     pub workspace_seal_hash: Option<String>,
 }
 
-/// Snapshot workspace lineage from a source document, then overlay the
-/// EventTrigger edge authority when the source collection does not carry it.
+/// Trigger workspace_authority overwrites any source value.
 pub fn snapshot_workspace_lineage_source_fields(
     source_doc: &serde_json::Value,
     source_fields: &mut std::collections::BTreeMap<String, String>,
@@ -155,7 +154,21 @@ pub fn snapshot_workspace_lineage_source_fields(
         "seal_hash",
         "caused_by_correlation",
     ];
+    const BIND_KEYS: &[&str] = &[
+        "workspace_id",
+        "workspace_authority",
+        "workspace_owner_deployment_id",
+        "owner_deployment_id",
+        "workspace_seal_hash",
+        "seal_hash",
+    ];
+    let trigger_authority = trigger_authority
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     for key in SOURCE_KEYS {
+        if trigger_authority.is_none() && BIND_KEYS.contains(key) {
+            continue;
+        }
         if source_fields.contains_key(*key) {
             continue;
         }
@@ -169,10 +182,7 @@ pub fn snapshot_workspace_lineage_source_fields(
             source_fields.insert("workspace_seal_hash".to_string(), hash);
         }
     }
-    if let Some(authority) = trigger_authority
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(authority) = trigger_authority {
         source_fields.insert("workspace_authority".to_string(), authority.to_string());
     }
 }
@@ -755,6 +765,24 @@ mod tests {
         assert_eq!(
             fields.get("workspace_authority").map(String::as_str),
             Some("integrate")
+        );
+    }
+
+    #[test]
+    fn snapshot_without_trigger_authority_does_not_bind_workspace_id() {
+        let source = serde_json::json!({
+            "workspace_id": "ws-1",
+            "seal_hash": "tree-1",
+            "caused_by_correlation": "run-1"
+        });
+        let mut fields = std::collections::BTreeMap::new();
+        snapshot_workspace_lineage_source_fields(&source, &mut fields, None);
+        assert!(fields.get("workspace_id").is_none());
+        assert!(fields.get("workspace_authority").is_none());
+        assert!(fields.get("workspace_seal_hash").is_none());
+        assert_eq!(
+            fields.get("caused_by_correlation").map(String::as_str),
+            Some("run-1")
         );
     }
 }

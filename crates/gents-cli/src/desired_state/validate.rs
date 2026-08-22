@@ -743,14 +743,6 @@ pub(crate) fn validate_manifest(manifest: &DesiredStateManifest, errors: &mut Ve
                     trig.trigger_id
                 ));
             }
-        } else if matches!(
-            trig.source_collection.trim(),
-            "CallbackResult" | "WorkspaceReceipt"
-        ) {
-            errors.push(format!(
-                "event_trigger {} source {} requires workspace_authority",
-                trig.trigger_id, trig.source_collection
-            ));
         }
 
         match trig.concurrency.trim() {
@@ -955,6 +947,13 @@ pub(crate) fn validate_manifest(manifest: &DesiredStateManifest, errors: &mut Ve
             errors.push(format!(
                 "callback_binding {binding_id} needs builtin_emitter or module_id"
             ));
+        }
+        if let Err(error) = gents::reject_secret_bearing_callback_fields(
+            binding_id,
+            binding.filter.as_deref(),
+            binding.source_fields.as_deref(),
+        ) {
+            errors.push(error.to_string());
         }
     }
 

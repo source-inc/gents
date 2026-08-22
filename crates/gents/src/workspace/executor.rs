@@ -121,8 +121,8 @@ pub struct CreateWorkspaceOutcome {
     pub placement: WorkspacePlacementDoc,
 }
 
-/// Host-chosen dest: deterministic child of the source-checkout parent from
-/// `(workspace_id, branch)`, rejected if it escapes the operator ceiling.
+/// Host-chosen dest lives under the checkout so `--tool-root` can be the
+/// operator repo without the placement escaping that ceiling.
 pub fn workspace_host_path(
     repository_checkout: &Path,
     workspace_id: &str,
@@ -142,13 +142,10 @@ pub fn workspace_host_path(
             repository_checkout.display()
         );
     };
-    let parent = checkout.parent().ok_or_else(|| {
-        anyhow!(
-            "repository checkout {} has no parent for worktree placement",
-            checkout.display()
-        )
-    })?;
-    let dest = parent.join(dest_name(workspace_id, branch));
+    let dest = checkout
+        .join(".gents")
+        .join("workspaces")
+        .join(dest_name(workspace_id, branch));
     if dest == checkout {
         bail!("workspace destination collides with the source checkout");
     }

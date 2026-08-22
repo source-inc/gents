@@ -30,16 +30,40 @@
   },
   "default_prompt": "${GENTS_MAINTENANCE_PROMPT:-Find the next small, behavior-preserving repository cleanup wave and package the strongest work into focused 1-3 finding commits on one shared branch and worktree.}",
   "expect": {
-    "trigger_ids": ["maintenance-recon", "maintenance-scan", "maintenance-verify", "maintenance-triage", "maintenance-execute", "maintenance-publish"],
+    "trigger_ids": ["maintenance-recon", "maintenance-scan", "maintenance-verify", "maintenance-triage", "maintenance-execute", "maintenance-execute-skip", "maintenance-integrate", "maintenance-publish"],
     "trigger_request_count_sources": {
       "maintenance-scan": {
         "collection": "MaintenanceArea",
         "correlation_field": "run_id",
         "expected_count_field": "expected_total"
+      },
+      "maintenance-execute": {
+        "collection": "MaintenanceReport",
+        "correlation_field": "run_id",
+        "match_field": "status",
+        "match_value": "planned"
+      },
+      "maintenance-execute-skip": {
+        "collection": "MaintenanceReport",
+        "correlation_field": "run_id",
+        "match_field": "status",
+        "match_value": "skipped"
+      },
+      "maintenance-integrate": {
+        "collection": "MaintenanceReport",
+        "correlation_field": "run_id",
+        "match_field": "status",
+        "match_value": "planned"
+      },
+      "maintenance-publish": {
+        "collection": "MaintenanceReport",
+        "correlation_field": "run_id",
+        "match_field": "status",
+        "match_value": "planned"
       }
     },
     "signed_provenance": true,
-    "required_tool_call_trigger_ids": ["maintenance-recon", "maintenance-scan", "maintenance-verify", "maintenance-triage", "maintenance-execute", "maintenance-publish"],
+    "required_tool_call_trigger_ids": ["maintenance-recon", "maintenance-scan", "maintenance-verify", "maintenance-triage", "maintenance-execute", "maintenance-execute-skip", "maintenance-publish"],
     "prompt_tool_contracts": [
       {
         "task_id": "maintenance-recon-task",

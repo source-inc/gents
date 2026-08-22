@@ -1156,6 +1156,43 @@ mod load_manifest_root {
     }
 
     #[test]
+    fn rejects_secret_bearing_callback_source_fields() {
+        let tmp = tempdir().unwrap();
+        write_minimal_root(tmp.path());
+
+        let binding_dir = tmp.path().join("callback-bindings").join("secret-bind");
+        fs::create_dir_all(&binding_dir).unwrap();
+        fs::write(
+            binding_dir.join("object.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "binding_id": "secret-bind",
+                "source_collection": "DefensePatchAssignment",
+                "event_kind": "created",
+                "source_fields": "[\"assignment_id\",\"api_token\"]",
+                "builtin_emitter": "create_workspace",
+                "principal_did": "did:key:zPlaceholder",
+                "enabled": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let (_manifest, report) = load_manifest_root(tmp.path());
+        assert!(
+            !report.ok,
+            "secret-bearing source_fields must fail validate"
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("secret-bearing")),
+            "expected secret-bearing error, got {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn projection_acp_binding_round_trips_per_doc_dir() {
         let tmp = tempdir().unwrap();
         write_minimal_root(tmp.path());

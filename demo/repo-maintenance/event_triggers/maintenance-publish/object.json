@@ -1,10 +1,10 @@
 {
   "trigger_id": "maintenance-publish",
   "task_id": "maintenance-publish-task",
-  "source_collection": "MaintenanceExecutionSummary",
+  "source_collection": "WorkspaceReceipt",
   "event_kind": "created",
-  "filter": null,
-  "correlation_field": "run_id",
+  "filter": "{ kind: { _eq: \"integrator\" } }",
+  "correlation_field": "caused_by_correlation",
   "fire_mode": "per_document",
   "expected_count": null,
   "expected_count_field": null,

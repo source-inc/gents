@@ -20,7 +20,7 @@
   "subagent_targets": [],
   "backgroundable_tool_names": [],
   "write_tools": [],
-  "datastore_tool_surface_ids": ["maintenance-execute-writes"],
+  "datastore_tool_surface_ids": ["maintenance-execute-writes", "maintenance-publish-writes"],
   "subagent_spawn_enabled": false,
   "orchestration_enabled": false,
   "subagent_steering_enabled": false,
