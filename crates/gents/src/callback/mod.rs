@@ -19,6 +19,7 @@ mod documents;
 mod host;
 mod run;
 mod scan;
+mod wasm;
 
 #[cfg(test)]
 mod tests;

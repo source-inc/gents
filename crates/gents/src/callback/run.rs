@@ -7,19 +7,23 @@ use serde_json::Value;
 
 use crate::workspace::journal::{advance, current_state};
 use crate::workspace::{
-    emit_create_workspace_plan, execute_create_workspace_plan, ActionJournalEntry,
-    ActionJournalState, ActionPlan, CreateWorkspaceAction, CreationPolicy, HostAction,
-    HostExecuteError, HostExecutorContext, IsolatedWorkspaceDoc, MemoryWorkspaceDocuments,
-    WorkspaceAdapterKind, WorkspaceDocuments, WorkspacePlacementDoc,
+    action_plan_canonical_json, emit_create_workspace_plan, execute_create_workspace_plan,
+    parse_action_plan_json, ActionJournalEntry, ActionJournalState, ActionPlan,
+    CreateWorkspaceAction, CreationPolicy, HostAction, HostExecuteError, HostExecutorContext,
+    IsolatedWorkspaceDoc, MemoryWorkspaceDocuments, WorkspaceAdapterKind, WorkspaceDocuments,
+    WorkspacePlacementDoc,
 };
 
 use super::claim::{claim_invocation, invocation_is_claimable};
 use super::documents::{
-    create_callback_result, flush_workspace_docs, load_binding, load_callback_result,
-    load_memory_workspace_docs, load_repository_placement, update_invocation, CallbackBindingDoc,
-    CallbackInvocationDoc, CallbackResultDoc,
+    create_callback_result, flush_workspace_docs, load_binding, load_callback_module,
+    load_callback_result, load_memory_workspace_docs, load_repository_placement,
+    load_trusted_callback_signers, strip_secret_fields, update_invocation,
+    validate_callback_binding, CallbackBindingDoc, CallbackInvocationDoc, CallbackModuleDoc,
+    CallbackResultDoc,
 };
 use super::scan::fetch_source_for_invocation;
+use super::wasm::{plan_from_wasm_module, validate_callback_module};
 use super::{
     BUILTIN_CREATE_WORKSPACE, LIFECYCLE_CLAIMED, LIFECYCLE_DENIED, LIFECYCLE_FAILED,
     LIFECYCLE_RUNNING, LIFECYCLE_SUCCEEDED,
@@ -73,20 +77,68 @@ pub fn decode_journal(raw: Option<&str>) -> Result<Vec<ActionJournalEntry>> {
     Ok(serde_json::from_str(raw)?)
 }
 
+#[cfg(test)]
 pub fn emit_plan_from_source(
     binding: &CallbackBindingDoc,
     source: &Value,
 ) -> Result<ActionPlan, String> {
+    plan_from_binding(binding, source, None)
+}
+
+pub fn plan_from_binding(
+    binding: &CallbackBindingDoc,
+    source: &Value,
+    module: Option<&CallbackModuleDoc>,
+) -> Result<ActionPlan, String> {
+    let source = strip_secret_fields(source.clone());
     let builtin = binding
         .builtin_emitter
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    match builtin {
-        Some(BUILTIN_CREATE_WORKSPACE) => emit_create_workspace_from_source(source),
-        Some(other) => Err(format!("unknown builtin_emitter `{other}`")),
-        None => Err("WASM planner is not implemented".to_string()),
+    let module_id = binding
+        .module_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (builtin, module_id) {
+        (Some(BUILTIN_CREATE_WORKSPACE), None) => emit_create_workspace_from_source(&source),
+        (Some(other), None) => Err(format!("unknown builtin_emitter `{other}`")),
+        (None, Some(id)) => {
+            let module = module
+                .ok_or_else(|| format!("CallbackModule {id} was not loaded for WASM planner"))?;
+            plan_from_wasm_module(module, &source, &binding.capabilities())
+        }
+        (None, None) => Err("CallbackBinding needs builtin_emitter or module_id".into()),
+        (Some(_), Some(_)) => {
+            Err("CallbackBinding module_id and builtin_emitter are mutually exclusive".into())
+        }
     }
+}
+
+async fn load_planner_module(
+    node: &EmbeddedNode,
+    binding: &CallbackBindingDoc,
+) -> Result<Option<CallbackModuleDoc>, String> {
+    let Some(module_id) = binding
+        .module_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let Some(module) = load_callback_module(node, module_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Err(format!("CallbackModule {module_id} not found"));
+    };
+    let trusted = load_trusted_callback_signers(node)
+        .await
+        .map_err(|error| error.to_string())?;
+    validate_callback_module(&module, &trusted)?;
+    Ok(Some(module))
 }
 
 fn emit_create_workspace_from_source(source: &Value) -> Result<ActionPlan, String> {
@@ -157,15 +209,23 @@ fn stored_action_plan(invocation: &CallbackInvocationDoc) -> Result<Option<Actio
     else {
         return Ok(None);
     };
-    serde_json::from_str(raw)
-        .map(Some)
-        .map_err(|error| format!("stored ActionPlan is invalid: {error}"))
+    parse_action_plan_json(raw).map(Some)
 }
 
+#[cfg(test)]
 pub fn resolve_action_plan(
     invocation: &CallbackInvocationDoc,
     binding: &CallbackBindingDoc,
     source: &Value,
+) -> Result<ActionPlan, String> {
+    resolve_action_plan_with_module(invocation, binding, source, None)
+}
+
+pub fn resolve_action_plan_with_module(
+    invocation: &CallbackInvocationDoc,
+    binding: &CallbackBindingDoc,
+    source: &Value,
+    module: Option<&CallbackModuleDoc>,
 ) -> Result<ActionPlan, String> {
     if let Some(plan) = stored_action_plan(invocation)? {
         return Ok(plan);
@@ -175,7 +235,34 @@ pub fn resolve_action_plan(
     if !journal.is_empty() {
         return Err("missing stored ActionPlan with a non-empty journal".to_string());
     }
-    emit_plan_from_source(binding, source)
+    plan_from_binding(binding, source, module)
+}
+
+/// Host adapter may already have run; recovery must observe, not wipe.
+pub(crate) fn journal_has_started_host_execution(journal: &[ActionJournalEntry]) -> bool {
+    journal.iter().any(|entry| {
+        matches!(
+            entry.state,
+            ActionJournalState::Validated
+                | ActionJournalState::Executing
+                | ActionJournalState::EffectObserved
+                | ActionJournalState::ResultDocsWritten
+        )
+    })
+}
+
+/// Denied wipes the journal only before host execution. After Validated the
+/// journal is kept and the invocation is Failed so recovery can observe.
+pub(crate) fn apply_planner_deny(invocation: &mut CallbackInvocationDoc, reason: &str) {
+    let journal = decode_journal(invocation.action_journal.as_deref()).unwrap_or_default();
+    if journal_has_started_host_execution(&journal) {
+        invocation.lifecycle_state = LIFECYCLE_FAILED.to_string();
+        invocation.error = Some(reason.to_string());
+        return;
+    }
+    invocation.action_journal = Some("[]".to_string());
+    invocation.lifecycle_state = LIFECYCLE_DENIED.to_string();
+    invocation.error = Some(reason.to_string());
 }
 
 pub async fn run_owned_invocation(
@@ -242,16 +329,46 @@ async fn execute_running_invocation(
     source: &Value,
     ceiling: Option<&Path>,
 ) -> Result<()> {
+    if let Err(error) = validate_callback_binding(binding) {
+        return deny(node, invocation, &error.to_string()).await;
+    }
+
     let mut journal = decode_journal(invocation.action_journal.as_deref())?;
     if !crate::workspace::action_journal_prefix_legal(&journal) {
         return deny(node, invocation, "illegal action journal prefix").await;
     }
 
-    let plan = match resolve_action_plan(invocation, binding, source) {
+    // Recovery with a stored plan must not reload/re-validate the WASM module.
+    // A missing module or empty trusted-signer set would otherwise deny() and
+    // wipe an Executing journal the host may already have acted on.
+    let stored = match stored_action_plan(invocation) {
         Ok(plan) => plan,
         Err(reason) => return deny(node, invocation, &reason).await,
     };
-    invocation.action_plan = Some(serde_json::to_string(&plan)?);
+    let plan = if let Some(plan) = stored {
+        plan
+    } else if !journal.is_empty() {
+        return deny(
+            node,
+            invocation,
+            "missing stored ActionPlan with a non-empty journal",
+        )
+        .await;
+    } else {
+        let module = match load_planner_module(node, binding).await {
+            Ok(module) => module,
+            Err(reason) => return deny(node, invocation, &reason).await,
+        };
+        match emit_new_plan(binding, source, module).await {
+            Ok(plan) => plan,
+            Err(reason) => return deny(node, invocation, &reason).await,
+        }
+    };
+    let canonical = match action_plan_canonical_json(&plan) {
+        Ok(json) => json,
+        Err(reason) => return deny(node, invocation, &reason).await,
+    };
+    invocation.action_plan = Some(canonical);
     if let Err(error) = plan.validate_against(&binding.capabilities()) {
         return deny(node, invocation, &error.to_string()).await;
     }
@@ -373,14 +490,28 @@ async fn persist_journal(
     Ok(())
 }
 
+async fn emit_new_plan(
+    binding: &CallbackBindingDoc,
+    source: &Value,
+    module: Option<CallbackModuleDoc>,
+) -> Result<ActionPlan, String> {
+    if module.is_some() {
+        let binding = binding.clone();
+        let source = source.clone();
+        tokio::task::spawn_blocking(move || plan_from_binding(&binding, &source, module.as_ref()))
+            .await
+            .map_err(|error| format!("WASM planner task failed: {error}"))?
+    } else {
+        plan_from_binding(binding, source, None)
+    }
+}
+
 async fn deny(
     node: &EmbeddedNode,
     invocation: &mut CallbackInvocationDoc,
     reason: &str,
 ) -> Result<()> {
-    invocation.action_journal = Some("[]".to_string());
-    invocation.lifecycle_state = LIFECYCLE_DENIED.to_string();
-    invocation.error = Some(reason.to_string());
+    apply_planner_deny(invocation, reason);
     if !update_invocation(node, invocation, None).await? {
         anyhow::bail!(
             "CallbackInvocation {} deny persist matched no row",

@@ -12,6 +12,9 @@ mod executor;
 pub(crate) mod journal;
 pub(crate) mod overlay;
 
+pub(crate) use action_plan::{
+    action_plan_canonical_json, canonical_json_string, parse_action_plan_json, ACTION_PLAN_ABI,
+};
 pub use action_plan::{
     emit_create_workspace_plan, ActionPlan, CreateWorkspaceAction, CreationPolicy, HostAction,
     WorkspaceAdapterKind, CAP_CLONE_ARTIFACTS, CAP_CREATE_WORKSPACE, CAP_OBSERVE_DIRTY_BASE,

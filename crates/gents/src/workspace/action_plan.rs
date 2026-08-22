@@ -1,8 +1,8 @@
-use std::collections::BTreeSet;
-use std::path::{Component, Path};
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub const CAP_CREATE_WORKSPACE: &str = "create_workspace";
 pub const CAP_OBSERVE_DIRTY_BASE: &str = "observe_dirty_base";
@@ -89,6 +89,105 @@ pub fn emit_create_workspace_plan(action: CreateWorkspaceAction) -> ActionPlan {
     ActionPlan {
         abi: ACTION_PLAN_ABI,
         actions: vec![HostAction::CreateWorkspace(action)],
+    }
+}
+
+/// Sorted-key JSON for a validated ActionPlan. Rejects NaN/Inf and host paths.
+pub(crate) fn action_plan_canonical_json(plan: &ActionPlan) -> Result<String, String> {
+    let value = serde_json::to_value(plan).map_err(|error| error.to_string())?;
+    reject_illegal_plan_value(&value)?;
+    canonical_json_string(&value)
+}
+
+/// Parse ActionPlan JSON. Unknown action types, extra fields, NaN, and host
+/// paths deny the entire plan.
+pub(crate) fn parse_action_plan_json(raw: &str) -> Result<ActionPlan, String> {
+    let value: Value =
+        serde_json::from_str(raw).map_err(|error| format!("ActionPlan is not JSON: {error}"))?;
+    reject_illegal_plan_value(&value)?;
+    serde_json::from_value(value).map_err(|error| {
+        let text = error.to_string();
+        if text.contains("unknown variant") {
+            format!("unknown ActionPlan action type: {text}")
+        } else {
+            format!("ActionPlan schema rejected: {text}")
+        }
+    })
+}
+
+/// Sorted object keys, no NaN/Inf. Used for module_id and planner input.
+pub(crate) fn canonical_json_string(value: &Value) -> Result<String, String> {
+    reject_non_finite_numbers(value)?;
+    serde_json::to_string(&sort_json(value)).map_err(|error| error.to_string())
+}
+
+fn reject_non_finite_numbers(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Number(number) if number.as_f64().is_some_and(|float| !float.is_finite()) => {
+            Err("JSON must not contain NaN or Infinity".into())
+        }
+        Value::Array(items) => {
+            for item in items {
+                reject_non_finite_numbers(item)?;
+            }
+            Ok(())
+        }
+        Value::Object(map) => {
+            for child in map.values() {
+                reject_non_finite_numbers(child)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn sort_json(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(sort_json).collect()),
+        Value::Object(map) => {
+            let sorted = map
+                .iter()
+                .map(|(key, child)| (key.clone(), sort_json(child)))
+                .collect::<BTreeMap<_, _>>();
+            Value::Object(sorted.into_iter().collect())
+        }
+        other => other.clone(),
+    }
+}
+
+fn reject_illegal_plan_value(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Null | Value::Bool(_) => Ok(()),
+        Value::Number(number) => {
+            if number.as_f64().is_some_and(|float| !float.is_finite()) {
+                Err("ActionPlan JSON must not contain NaN or Infinity".into())
+            } else {
+                Ok(())
+            }
+        }
+        Value::String(text) => {
+            if looks_like_host_path(text) {
+                Err(format!("ActionPlan must not contain host path `{text}`"))
+            } else {
+                Ok(())
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                reject_illegal_plan_value(item)?;
+            }
+            Ok(())
+        }
+        Value::Object(map) => {
+            for (key, child) in map {
+                if key.eq_ignore_ascii_case("host_path") {
+                    return Err("ActionPlan must not contain host_path".into());
+                }
+                reject_illegal_plan_value(child)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -185,22 +284,31 @@ fn require_capability(capabilities: &BTreeSet<String>, cap: &str) -> Result<()> 
     }
 }
 
-fn assert_relative_artifact(path: &str) -> Result<()> {
-    let path = Path::new(path);
-    if path.is_absolute() {
-        bail!(
-            "clone artifact must be a relative path, got {}",
-            path.display()
-        );
+/// Platform-independent host-path shape: leading `/` `\`, `~`, `file:`,
+/// single-letter drive (`C:`, `C:foo`, `C:\...`), or a `..` segment split on
+/// `/` or `\`. Does not use `Path` so Windows separators are visible on Unix.
+pub(crate) fn looks_like_host_path(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return false;
     }
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        bail!(
-            "clone artifact must not contain '..', got {}",
-            path.display()
-        );
+    if text.starts_with('/') || text.starts_with('\\') || text.starts_with('~') {
+        return true;
+    }
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("file:") {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return true;
+    }
+    text.split(['/', '\\']).any(|segment| segment == "..")
+}
+
+fn assert_relative_artifact(path: &str) -> Result<()> {
+    if looks_like_host_path(path) {
+        bail!("clone artifact must be a relative path, got {path}");
     }
     Ok(())
 }

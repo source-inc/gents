@@ -41,6 +41,7 @@ case "${suite}" in
       gents-lean-contract
       gents-migration
       gents-lens-fixture-add-label
+      gents-callback-fixture-create-workspace
       gents-fs-runner
       gents-protocol
       gents-schemas

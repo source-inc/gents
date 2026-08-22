@@ -14,6 +14,7 @@ members = [
     "crates/gents-lean-contract",
     "crates/gents-migration",
     "crates/gents-lenses/fixture_add_label",
+    "crates/gents-callbacks/fixture_create_workspace",
     "crates/gents-fs-runner",
     "crates/gents-protocol",
     "crates/gents-schemas",
