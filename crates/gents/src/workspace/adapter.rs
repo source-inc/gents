@@ -118,6 +118,7 @@ pub(crate) fn provision(
     action: &CreateWorkspaceAction,
     resolved_base: &str,
 ) -> Result<ProvisioningObservation> {
+    exclude_nested_workspace_dir(source)?;
     add_worktree(source, dest, &action.branch, resolved_base)?;
     write_identity(dest, &action.identity())?;
     let mut observation = ProvisioningObservation {
@@ -497,8 +498,8 @@ fn commit_tree_from_isolated_index(trunk: &Path, diff: &[u8], seal_hash: &str) -
 /// Remove the worker tree. Never deletes the source checkout. Idempotent when
 /// `dest` is already gone. Not called implicitly on request terminal.
 ///
-/// `expected` is the host-chosen dest from `(workspace_id, branch)`. Mismatch,
-/// ancestor-of-source, and non-sibling leftovers refuse `remove_dir_all`.
+/// `expected` is the host-chosen dest from `(workspace_id, branch)`. Mismatch
+/// and ancestor-of-source leftovers refuse `remove_dir_all`.
 pub(crate) fn cleanup_workspace_tree(
     source: &Path,
     dest: &Path,
@@ -696,6 +697,16 @@ pub(crate) fn is_worktree_of(source: &Path, dest: &Path) -> Result<bool> {
     if !dest.exists() {
         return Ok(false);
     }
+    let dest_canon = fs::canonicalize(dest).unwrap_or_else(|_| dest.to_path_buf());
+    let dest_toplevel = match git_output(dest, &["rev-parse", "--show-toplevel"]) {
+        Ok(value) => value,
+        Err(_) => return Ok(false),
+    };
+    let dest_toplevel =
+        fs::canonicalize(&dest_toplevel).unwrap_or_else(|_| PathBuf::from(&dest_toplevel));
+    if dest_toplevel != dest_canon {
+        return Ok(false);
+    }
     let dest_common = match git_output(dest, &["rev-parse", "--absolute-git-common-dir"]) {
         Ok(value) => value,
         Err(_) => return Ok(false),
@@ -708,12 +719,47 @@ pub(crate) fn is_worktree_of(source: &Path, dest: &Path) -> Result<bool> {
     Ok(dest_common == source_common)
 }
 
+fn exclude_nested_workspace_dir(source: &Path) -> Result<()> {
+    let raw = git_output(source, &["rev-parse", "--git-path", "info/exclude"])?;
+    let path = Path::new(raw.trim());
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        source.join(path)
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating exclude parent {}", parent.display()))?;
+    }
+    let existing = fs::read_to_string(&path).unwrap_or_default();
+    if existing
+        .lines()
+        .any(|line| matches!(line.trim(), ".gents/" | "/.gents/" | ".gents" | "/.gents"))
+    {
+        return Ok(());
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        writeln!(file)?;
+    }
+    writeln!(file, ".gents/")?;
+    Ok(())
+}
+
 fn add_worktree(source: &Path, dest: &Path, branch: &str, base_sha: &str) -> Result<()> {
     if dest.exists() {
         bail!(
             "refusing to create worktree: destination {} already exists",
             dest.display()
         );
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating workspace dest parent {}", parent.display()))?;
     }
     let branch_ref = format!("refs/heads/{branch}");
     if git_ok(source, &["show-ref", "--verify", "--quiet", &branch_ref]) {

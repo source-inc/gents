@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-scan-task",
+  "name": "Discover candidates in one threat-scoped area",
+  "description": null,
+  "behavior_id": "defend-scan",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

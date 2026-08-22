@@ -162,7 +162,12 @@ struct PackExpect {
 struct TriggerRequestCountSource {
     collection: String,
     correlation_field: String,
+    #[serde(default)]
     expected_count_field: String,
+    #[serde(default)]
+    match_field: Option<String>,
+    #[serde(default)]
+    match_value: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -589,7 +594,30 @@ fn validate_manifest(manifest: &PackManifest) -> Result<()> {
         }
         validate_collection_identifier(&source.collection)?;
         gents::graphql::validate_graphql_name(&source.correlation_field)?;
-        gents::graphql::validate_graphql_name(&source.expected_count_field)?;
+        match (
+            source
+                .match_field
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty()),
+            source
+                .match_value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty()),
+        ) {
+            (Some(match_field), Some(_)) => {
+                gents::graphql::validate_graphql_name(match_field)?;
+            }
+            (None, None) => {
+                gents::graphql::validate_graphql_name(&source.expected_count_field)?;
+            }
+            _ => {
+                bail!(
+                    "expect.trigger_request_count_sources[{trigger_id}] needs both match_field and match_value"
+                );
+            }
+        }
     }
     if let Some(fan_in) = &manifest.expect.fan_in {
         if fan_in.min_expected_count == Some(0) || fan_in.max_expected_count == Some(0) {
@@ -1602,6 +1630,36 @@ async fn sourced_trigger_request_count(
     correlation: &str,
 ) -> Result<Option<usize>> {
     let correlation = escape_graphql_string(correlation);
+    if let (Some(match_field), Some(match_value)) = (
+        source
+            .match_field
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        source
+            .match_value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+    ) {
+        let query = format!(
+            r#"{{ {collection}(filter: {{ {correlation_field}: {{ _eq: "{correlation}" }} }}) {{ {match_field} }} }}"#,
+            collection = source.collection,
+            correlation_field = source.correlation_field,
+            match_field = match_field,
+        );
+        let rows = graphql_rows(graphql, &source.collection, &query).await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let count = rows
+            .iter()
+            .filter(|row| {
+                row.get(match_field).and_then(Value::as_str).map(str::trim) == Some(match_value)
+            })
+            .count();
+        return Ok(Some(count));
+    }
     let query = format!(
         r#"{{ {collection}(filter: {{ {correlation_field}: {{ _eq: "{correlation}" }} }}) {{ {expected_count_field} }} }}"#,
         collection = source.collection,
@@ -3429,7 +3487,21 @@ mod tests {
         )
         .expect("maintenance execute trigger should load");
         assert_eq!(execute_trigger["concurrency"], "serial");
-        assert_eq!(execute_trigger["source_collection"], "MaintenanceReport");
+        assert_eq!(execute_trigger["source_collection"], "CallbackResult");
+        assert_eq!(execute_trigger["workspace_authority"], "readWrite");
+
+        let execute_writes = read_pack_json_defaults(
+            &pack
+                .join("datastore-tool-surfaces")
+                .join("maintenance-execute-writes")
+                .join("object.json"),
+        )
+        .expect("maintenance execute writes should load");
+        let encoded = execute_writes.to_string();
+        assert!(
+            !encoded.contains("work_package_count"),
+            "execute must not fill expected_total from CallbackResult.work_package_count"
+        );
 
         let execute_prompt = std::fs::read_to_string(
             pack.join("tasks")
@@ -3438,10 +3510,11 @@ mod tests {
         )
         .expect("maintenance execute prompt should load");
         assert!(execute_prompt.contains("single execution owner"));
-        assert!(execute_prompt.contains("On a fresh execution with no prior results"));
-        assert!(execute_prompt.contains("On a valid completed-prefix resume"));
         assert!(execute_prompt.contains("Process packages strictly in numeric order"));
         assert!(execute_prompt.contains("write_maintenance_execution_summary"));
+        assert!(!execute_prompt.contains("make worktree BRANCH="));
+        assert!(execute_prompt.contains("Do not run `git commit`"));
+        assert!(execute_prompt.contains("Do not run `make worktree`"));
 
         let makefile = std::fs::read_to_string(pack.join("../../Makefile"))
             .expect("repository Makefile should load");
@@ -3454,10 +3527,12 @@ mod tests {
                 .join("object.json"),
         )
         .expect("maintenance publish trigger should load");
+        assert_eq!(publish_trigger["source_collection"], "WorkspaceReceipt");
         assert_eq!(
-            publish_trigger["source_collection"],
-            "MaintenanceExecutionSummary"
+            publish_trigger["filter"],
+            "{ kind: { _eq: \"integrator\" } }"
         );
+        assert!(publish_trigger.get("workspace_authority").is_none());
 
         let publish_prompt = std::fs::read_to_string(
             pack.join("tasks")
@@ -3470,6 +3545,140 @@ mod tests {
         assert!(publish_prompt.contains("cargo fmt --all --check"));
         assert!(publish_prompt.contains("poll at intervals no longer than 60 seconds"));
         assert!(publish_prompt.contains("Never kill by port or broad process-name match"));
+        assert!(!publish_prompt.contains("make worktree BRANCH="));
+        assert!(publish_prompt.contains("Do not run `make worktree`"));
+    }
+
+    #[test]
+    fn workspace_packs_bind_callback_bindings_and_forbid_prompt_worktrees() {
+        let demo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../demo");
+        for (pack_name, binding_id, source) in [
+            (
+                "defending-code",
+                "defense-patch-workspace",
+                "DefensePatchAssignment",
+            ),
+            (
+                "repo-maintenance",
+                "maintenance-execute-workspace",
+                "MaintenanceReport",
+            ),
+        ] {
+            let pack = demo.join(pack_name);
+            let binding = read_pack_json_defaults(
+                &pack
+                    .join("callback-bindings")
+                    .join(binding_id)
+                    .join("object.json"),
+            )
+            .unwrap_or_else(|error| panic!("{pack_name} callback binding should load: {error:#}"));
+            assert_eq!(binding["binding_id"], binding_id);
+            assert_eq!(binding["source_collection"], source);
+            assert_eq!(binding["builtin_emitter"], "create_workspace");
+            let experiment = read_pack_json_defaults(&pack.join("experiment.json"))
+                .unwrap_or_else(|error| panic!("{pack_name} experiment.json: {error:#}"));
+            let trigger_ids = experiment["expect"]["trigger_ids"]
+                .as_array()
+                .expect("trigger_ids");
+            if pack_name == "repo-maintenance" {
+                assert!(trigger_ids
+                    .iter()
+                    .any(|id| id == "maintenance-execute-skip"));
+                assert_eq!(
+                    experiment["expect"]["trigger_request_count_sources"]["maintenance-execute"]
+                        ["match_value"],
+                    "planned"
+                );
+                assert_eq!(
+                    experiment["expect"]["trigger_request_count_sources"]
+                        ["maintenance-execute-skip"]["match_value"],
+                    "skipped"
+                );
+            } else {
+                assert!(trigger_ids.iter().any(|id| id == "defend-patch-skip"));
+                assert_eq!(
+                    experiment["expect"]["trigger_request_count_sources"]["defend-patch"]
+                        ["match_value"],
+                    "ready"
+                );
+                assert_eq!(
+                    experiment["expect"]["trigger_request_count_sources"]["defend-patch-skip"]
+                        ["match_value"],
+                    "skipped"
+                );
+                let skip_writes = read_pack_json_defaults(
+                    &pack
+                        .join("datastore-tool-surfaces")
+                        .join("defend-patch-skip-writes")
+                        .join("object.json"),
+                )
+                .expect("defending skip writes should load");
+                let skip_collections: Vec<&str> = skip_writes["entries"]
+                    .as_array()
+                    .expect("skip write entries")
+                    .iter()
+                    .filter_map(|entry| entry["collection"].as_str())
+                    .collect();
+                for collection in [
+                    "DefensePatchCandidate",
+                    "DefensePatchValidation",
+                    "DefensePatchReview",
+                    "DefensePatchSecurityReview",
+                ] {
+                    assert!(
+                        skip_collections.contains(&collection),
+                        "all-skip must write {collection} sentinels for collection_counts"
+                    );
+                }
+                let review_trigger = read_pack_json_defaults(
+                    &pack
+                        .join("event_triggers")
+                        .join("defend-patch-review")
+                        .join("object.json"),
+                )
+                .expect("defend-patch-review trigger should load");
+                assert_eq!(
+                    review_trigger["filter"],
+                    "{ _and: [ { workspace_id: { _neq: null } }, { workspace_id: { _ne: \"\" } } ] }"
+                );
+                let security_trigger = read_pack_json_defaults(
+                    &pack
+                        .join("event_triggers")
+                        .join("defend-patch-security-review")
+                        .join("object.json"),
+                )
+                .expect("defend-patch-security-review trigger should load");
+                assert_eq!(
+                    security_trigger["filter"],
+                    "{ _and: [ { workspace_id: { _neq: null } }, { workspace_id: { _ne: \"\" } } ] }"
+                );
+                let skip_prompt = std::fs::read_to_string(
+                    pack.join("tasks/defend-patch-skip-task/prompt.md"),
+                )
+                .expect("skip prompt should load");
+                assert!(
+                    !skip_prompt.contains("workspace_id=none"),
+                    "skip must not use the string none as workspace_id"
+                );
+            }
+
+            let patch_or_execute = if pack_name == "defending-code" {
+                pack.join("tasks/defend-patch-task/prompt.md")
+            } else {
+                pack.join("tasks/maintenance-execute-task/prompt.md")
+            };
+            let prompt = std::fs::read_to_string(patch_or_execute)
+                .unwrap_or_else(|error| panic!("{pack_name} worker prompt: {error}"));
+            assert!(
+                !prompt.contains("make worktree BRANCH="),
+                "{pack_name} must not instruct make worktree"
+            );
+            assert!(
+                prompt.contains("Do not run `git commit`")
+                    || prompt.contains("Do not run git commit"),
+                "{pack_name} must forbid git commit"
+            );
+        }
     }
 
     #[test]

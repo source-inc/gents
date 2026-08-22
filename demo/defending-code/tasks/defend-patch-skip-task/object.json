@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-patch-skip-task",
+  "name": "Record an explicit no-patch sentinel",
+  "description": null,
+  "behavior_id": "defend-patch-skip",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

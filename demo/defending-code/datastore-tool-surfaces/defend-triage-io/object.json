@@ -1,0 +1,86 @@
+{
+  "surface_id": "defend-triage-io",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Adversarial triage reads and writes",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_defense_candidate",
+      "collection": "DefenseCandidateFinding",
+      "description": "Load every static vulnerability candidate for this run.",
+      "fields": ["finding_id", "area_id", "source_revision", "source_tree_state", "claim_kind", "root_cause_key", "category", "path", "line", "title", "description", "exploit_scenario", "recommendation", "threat_ids"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_verdict",
+      "collection": "DefenseFindingVerdict",
+      "description": "Load the completed independent adjudication ledger for this run; join each row to its candidate by finding_id.",
+      "fields": ["finding_id", "area_id", "repository_path", "verdict", "source_revision", "source_tree_state", "adjudicated_claim_kind", "security_boundary", "attacker_identity", "attacker_controlled_input", "control_source", "entry_point", "sink", "attacker_control", "default_reachable", "required_configuration", "required_privileges", "guard_checked", "fails_closed", "violated_invariant", "impact", "contract_surface", "severity", "confidence", "evidence", "verification", "preconditions", "access_level", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_defending_finding",
+      "collection": "DefendingFinding",
+      "description": "Promote one confirmed verdict into the durable operator-facing finding ledger.",
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "finding_id", "required": true},
+        {"name": "area_id", "required": true},
+        {"name": "source_revision", "required": true},
+        {"name": "source_tree_state", "required": true},
+        {"name": "claim_kind", "required": true},
+        {"name": "root_cause_key", "required": true},
+        {"name": "security_boundary", "required": true},
+        {"name": "attacker_identity", "required": true},
+        {"name": "attacker_controlled_input", "required": true},
+        {"name": "control_source", "required": true},
+        {"name": "entry_point", "required": true},
+        {"name": "sink", "required": true},
+        {"name": "attacker_control", "required": true},
+        {"name": "default_reachable", "required": true},
+        {"name": "required_configuration", "required": true},
+        {"name": "required_privileges", "required": true},
+        {"name": "guard_checked", "required": true},
+        {"name": "fails_closed", "required": true},
+        {"name": "violated_invariant", "required": true},
+        {"name": "impact", "required": true},
+        {"name": "contract_surface", "required": true},
+        {"name": "category", "required": true},
+        {"name": "severity", "required": true},
+        {"name": "confidence", "required": true},
+        {"name": "path", "required": true},
+        {"name": "line", "required": true},
+        {"name": "title", "required": true},
+        {"name": "description", "required": true},
+        {"name": "exploit_scenario", "required": true},
+        {"name": "recommendation", "required": true},
+        {"name": "evidence", "required": true},
+        {"name": "verification", "required": true},
+        {"name": "preconditions", "required": true},
+        {"name": "access_level", "required": true},
+        {"name": "owner_hint", "required": true},
+        {"name": "threat_ids", "required": true},
+        {"name": "verdict", "required": true}
+      ]
+    },
+    {
+      "tool_name": "write_defense_triage_summary",
+      "collection": "DefenseTriageSummary",
+      "description": "Close the exact candidate/verdict ledger after confirmed findings are promoted.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "repository_path", "required": false, "fill": {"source_field": "repository_path"}},
+        {"name": "scan_ledger_status", "required": true},
+        {"name": "candidate_count", "required": true},
+        {"name": "confirmed_count", "required": true},
+        {"name": "refuted_count", "required": true},
+        {"name": "duplicate_count", "required": true},
+        {"name": "promoted_count", "required": true},
+        {"name": "summary", "required": true}
+      ]
+    }
+  ]
+}

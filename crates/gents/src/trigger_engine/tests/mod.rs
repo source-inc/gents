@@ -502,6 +502,7 @@ fn resolved_event_trigger_with_concurrency(
         expected_count_field: None,
         group_timeout_secs: None,
         group_min_count: 1,
+        workspace_authority: None,
     }
 }
 

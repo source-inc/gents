@@ -360,6 +360,11 @@ fn wasm_recovery_reuses_stored_plan_without_reloading_module() {
         crate::workspace::HostAction::CreateWorkspace(action) => {
             assert_eq!(action.workspace_id, "ws-stored");
         }
+        crate::workspace::HostAction::SealWorkspace(_)
+        | crate::workspace::HostAction::IntegrateWorkspace(_)
+        | crate::workspace::HostAction::CleanupWorkspace(_) => {
+            panic!("expected create_workspace")
+        }
     }
     assert!(journal_has_started_host_execution(&journal));
 
@@ -376,6 +381,25 @@ fn wasm_recovery_reuses_stored_plan_without_reloading_module() {
     apply_planner_deny(&mut pre_exec, "CallbackModule missing");
     assert_eq!(pre_exec.lifecycle_state, LIFECYCLE_DENIED);
     assert_eq!(pre_exec.action_journal.as_deref(), Some("[]"));
+}
+
+#[test]
+fn builtin_emitter_accepts_assignment_and_base_revision_aliases() {
+    let source = json!({
+        "assignment_id": "cluster:patch",
+        "repository_id": "defending-code",
+        "base_revision": "abc123"
+    });
+    let plan = emit_plan_from_source(&binding(), &source).expect("plan");
+    match &plan.actions[0] {
+        crate::workspace::HostAction::CreateWorkspace(action) => {
+            assert_eq!(action.work_unit_id, "cluster:patch");
+            assert_eq!(action.base_sha, "abc123");
+            assert_eq!(action.branch, "gents/cluster-patch");
+            assert_eq!(action.workspace_id, "cluster:patch");
+        }
+        _ => panic!("expected create_workspace"),
+    }
 }
 
 #[test]
@@ -950,6 +974,9 @@ fn fixture_wasm_emits_valid_create_workspace_plan() {
             assert_eq!(action.work_unit_id, "unit-1");
             assert_eq!(action.adapter.as_str(), "git_worktree");
         }
+        HostAction::SealWorkspace(_)
+        | HostAction::IntegrateWorkspace(_)
+        | HostAction::CleanupWorkspace(_) => panic!("expected create_workspace"),
     }
     plan.validate_against(&caps).expect("capabilities");
 

@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-report-task",
+  "name": "Publish the closed defense campaign report",
+  "description": null,
+  "behavior_id": "defend-report",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

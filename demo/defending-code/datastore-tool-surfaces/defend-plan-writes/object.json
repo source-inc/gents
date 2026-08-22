@@ -1,0 +1,29 @@
+{
+  "surface_id": "defend-plan-writes",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Threat-scoped review-area writes",
+  "enabled": true,
+  "entries": [
+    {
+      "tool_name": "write_defense_review_area",
+      "collection": "DefenseReviewArea",
+      "description": "Create one member of the closed static-review area set.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1, "expected_count_field": "expected_total"},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "area_id", "required": true},
+        {"name": "repository_path", "required": false, "fill": {"source_field": "repository_path"}},
+        {"name": "source_revision", "required": false, "fill": {"source_field": "source_revision"}},
+        {"name": "source_tree_state", "required": false, "fill": {"source_field": "source_tree_state"}},
+        {"name": "status", "required": true},
+        {"name": "focus", "required": true},
+        {"name": "threat_ids", "required": true},
+        {"name": "threat_context", "required": true},
+        {"name": "trust_boundary", "required": true},
+        {"name": "reachable_assets", "required": true},
+        {"name": "instructions", "required": true},
+        {"name": "expected_total", "required": true}
+      ]
+    }
+  ]
+}

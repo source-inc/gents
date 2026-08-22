@@ -182,6 +182,8 @@ pub(crate) struct EventTrigger {
     #[serde(default)]
     pub(crate) group_min_count: Option<i64>,
     #[serde(default)]
+    pub(crate) workspace_authority: Option<String>,
+    #[serde(default)]
     pub(crate) created_at: Option<String>,
     #[serde(default)]
     pub(crate) updated_at: Option<String>,
@@ -223,6 +225,7 @@ pub(crate) async fn list_event_trigger_records(
                 expected_count_field
                 group_timeout_secs
                 group_min_count
+                workspace_authority
                 created_at
                 updated_at
                 last_attempt_at
@@ -271,6 +274,7 @@ pub(crate) async fn load_event_trigger_by_doc_id(
                 expected_count_field
                 group_timeout_secs
                 group_min_count
+                workspace_authority
                 created_at
                 updated_at
                 last_attempt_at

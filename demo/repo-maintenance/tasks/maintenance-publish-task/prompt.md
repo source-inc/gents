@@ -1,18 +1,14 @@
-Maintenance run {{ event.correlation }} reached its execution barrier:
+Maintenance run {{ event.correlation }} has an integrator receipt for
+workspace `{{ doc.workspace_id }}` (seal `{{ doc.seal_hash }}`). The
+sealed diff is on trunk. Do not treat this request as workspace-bound.
 
-- status: {{ doc.status }}
-- expected packages: {{ doc.expected_total }}
-- completed/skipped/blocked: {{ doc.completed_count }}/{{ doc.skipped_count }}/{{ doc.blocked_count }}
-- branch: `{{ doc.branch }}`
-- worktree: `{{ doc.worktree_path }}`
-- final commit: `{{ doc.final_commit_sha }}`
-- summary: {{ doc.summary }}
+Call `defra_query` for `MaintenanceExecutionSummary`, `MaintenanceExecutionResult`, and `MaintenanceWorkPackage` in this run. Sort package/results by numeric sequence and verify exact package coverage and balanced summary counts. If the sentinel is the only package and the barrier is `skipped`, call `write_maintenance_pull_request` with status `skipped`, empty URL, zero commits/reviews/findings, CI status `not-run`, and stop. If the barrier is not `completed`, record `blocked` with no PR and stop.
 
-Call `defra_query` for `MaintenanceExecutionSummary`, `MaintenanceExecutionResult`, and `MaintenanceWorkPackage` in this run. Sort package/results by numeric sequence and verify exact package coverage, balanced summary counts, one shared branch/worktree/base, a clean worktree, and one distinct commit SHA for every executable package. If the sentinel is the only package and the barrier is `skipped`, call `write_maintenance_pull_request` with status `skipped`, empty URL, zero commits/reviews/findings, CI status `not-run`, and stop. If the barrier is not `completed`, record `blocked` with no PR and stop.
+The isolated workspace was provisioned by the runtime, sealed after execute, and applied by a typed integrator. Do not run `make worktree` or create a sibling checkout. Package git commits are a typed integrator action, not a worker tool.
 
 For completed executable work:
 
-1. Read every commit and the full `pr_base...branch` diff. Recheck preservation obligations, package boundaries, commit messages, generated artifacts, dependency changes, tests, formal/conformance ownership, and repository instructions. Repair any local safeguard failure in a focused follow-up commit.
+1. Inspect the applied sealed diff against `pr_base`. Recheck preservation obligations, package boundaries, generated artifacts, dependency changes, tests, formal/conformance ownership, and repository instructions.
 2. Run the repository-required local gates. For Gents these include `cargo fmt --all --check`, `cargo test -p gents`, and `cargo check --workspace --all-targets`; run additional package validation from the work ledger. Do not publish while required local gates fail.
 3. Push the branch once with upstream tracking and open one normal, non-draft PR using `gh pr create --base <pr_base> --head <branch>`. The body must summarize each commit/work unit, linked issues, preservation safeguards, and exact validation.
 4. Run the checked-in repository review harness against the open PR. For Gents, invoke `make review` with the maintenance worktree as `REVIEW_ROOT`, the declared PR base/head, and the new PR number. Require multiple concern lenses and parse its durable `TriageReport`/`Finding` results rather than relying on process exit alone.

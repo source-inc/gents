@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-verifier-task",
+  "name": "Independently verify one vulnerability candidate",
+  "description": "Per-assignment event-triggered verifier; one durable verdict per request.",
+  "behavior_id": "defend-verifier",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

@@ -164,6 +164,7 @@ impl SelfConfigCore {
                         expected_count_field
                         group_timeout_secs
                         group_min_count
+                        workspace_authority
                         enabled
                         concurrency
                     }}

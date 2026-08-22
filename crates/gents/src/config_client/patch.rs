@@ -277,6 +277,7 @@ impl SelfConfigTarget {
                 "expected_count_field",
                 "group_timeout_secs",
                 "group_min_count",
+                "workspace_authority",
                 "created_at",
                 "updated_at",
                 "last_attempt_at",
@@ -427,6 +428,7 @@ impl SelfConfigTarget {
                 "expected_count_field",
                 "group_timeout_secs",
                 "group_min_count",
+                "workspace_authority",
             ],
         }
     }

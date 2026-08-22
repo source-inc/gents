@@ -19,7 +19,7 @@
       {"name": "changed_paths", "required": true},
       {"name": "validation", "required": true},
       {"name": "summary", "required": true},
-      {"name": "expected_total", "required": false, "fill": {"source_field": "work_package_count"}}
+      {"name": "expected_total", "required": true}
     ]
   }, {
     "tool_name": "write_maintenance_execution_summary",
@@ -28,7 +28,7 @@
     "output_obligation": {"scope": "trigger", "minimum_writes": 1},
     "fields": [
       {"name": "run_id", "required": false, "fill": "correlation"},
-      {"name": "expected_total", "required": false, "fill": {"source_field": "work_package_count"}},
+      {"name": "expected_total", "required": true},
       {"name": "completed_count", "required": true},
       {"name": "skipped_count", "required": true},
       {"name": "blocked_count", "required": true},

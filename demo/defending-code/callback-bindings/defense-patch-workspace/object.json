@@ -1,0 +1,11 @@
+{
+  "binding_id": "defense-patch-workspace",
+  "source_collection": "DefensePatchAssignment",
+  "event_kind": "created",
+  "filter": "{ status: { _eq: \"ready\" } }",
+  "source_fields": "[\"assignment_id\",\"repository_id\",\"base_revision\"]",
+  "builtin_emitter": "create_workspace",
+  "principal_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "capability_set": "[\"create_workspace\",\"observe_dirty_base\",\"clone_artifacts\"]",
+  "enabled": true
+}

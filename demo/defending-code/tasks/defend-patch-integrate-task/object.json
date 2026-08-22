@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-patch-integrate-task",
+  "name": "Apply a sealed accepted patch",
+  "description": null,
+  "behavior_id": "defend-patch-integrate",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

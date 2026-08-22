@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-patch-validation-task",
+  "name": "Mechanically validate one patch in isolation",
+  "description": "Records apply, format, compile, test, and proof evidence.",
+  "behavior_id": "defend-patch-validation",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

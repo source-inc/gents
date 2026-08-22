@@ -1,0 +1,11 @@
+{
+  "binding_id": "maintenance-execute-workspace",
+  "source_collection": "MaintenanceReport",
+  "event_kind": "created",
+  "filter": "{ status: { _eq: \"planned\" } }",
+  "source_fields": "[\"work_unit_id\",\"repository_id\",\"base_sha\",\"branch\"]",
+  "builtin_emitter": "create_workspace",
+  "principal_did": "did:key:zMaintenanceAgentPlaceholder0000000000000000000000000",
+  "capability_set": "[\"create_workspace\",\"observe_dirty_base\",\"clone_artifacts\"]",
+  "enabled": true
+}

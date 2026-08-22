@@ -74,6 +74,7 @@ const RESULT_FIELDS: &str = r#"
     invocation_id
     owner_deployment_id
     workspace_id
+    work_unit_id
     caused_by_correlation
     created_at
 "#;
@@ -208,6 +209,8 @@ pub struct CallbackResultDoc {
     #[serde(default)]
     pub workspace_id: Option<String>,
     #[serde(default)]
+    pub work_unit_id: Option<String>,
+    #[serde(default)]
     pub caused_by_correlation: Option<String>,
     #[serde(default)]
     pub created_at: Option<String>,
@@ -267,29 +270,11 @@ pub fn validate_callback_binding(binding: &CallbackBindingDoc) -> Result<()> {
             binding.event_kind
         );
     }
-    if let Some(filter) = binding
-        .filter
-        .as_deref()
-        .map(str::trim)
-        .filter(|filter| !filter.is_empty())
-    {
-        crate::graphql::validate_graphql_filter_fragment(filter)?;
-        if let Some(field) = secret_field_in_filter(filter) {
-            anyhow::bail!(
-                "CallbackBinding {} filter field `{field}` is secret-bearing",
-                binding.binding_id
-            );
-        }
-    }
-    for field in binding.projected_fields()? {
-        crate::graphql::validate_graphql_name(&field)?;
-        if crate::toolset::is_secret_env_name(&field) {
-            anyhow::bail!(
-                "CallbackBinding {} source field `{field}` is secret-bearing",
-                binding.binding_id
-            );
-        }
-    }
+    reject_secret_bearing_callback_fields(
+        &binding.binding_id,
+        binding.filter.as_deref(),
+        binding.source_fields.as_deref(),
+    )?;
     let builtin = binding
         .builtin_emitter
         .as_deref()
@@ -316,6 +301,26 @@ pub fn validate_callback_binding(binding: &CallbackBindingDoc) -> Result<()> {
         ),
         (Some(_), None) => Ok(()),
     }
+}
+
+pub fn reject_secret_bearing_callback_fields(
+    binding_id: &str,
+    filter: Option<&str>,
+    source_fields: Option<&str>,
+) -> Result<()> {
+    if let Some(filter) = filter.map(str::trim).filter(|filter| !filter.is_empty()) {
+        crate::graphql::validate_graphql_filter_fragment(filter)?;
+        if let Some(field) = secret_field_in_filter(filter) {
+            anyhow::bail!("CallbackBinding {binding_id} filter field `{field}` is secret-bearing");
+        }
+    }
+    for field in parse_string_list(source_fields) {
+        crate::graphql::validate_graphql_name(&field)?;
+        if crate::toolset::is_secret_env_name(&field) {
+            anyhow::bail!("CallbackBinding {binding_id} source field `{field}` is secret-bearing");
+        }
+    }
+    Ok(())
 }
 
 fn secret_field_in_filter(filter: &str) -> Option<String> {
@@ -794,6 +799,7 @@ pub async fn create_callback_result(
         .clone()
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
     let workspace = result.workspace_id.as_deref().unwrap_or("");
+    let work_unit_id = result.work_unit_id.as_deref().unwrap_or("");
     let correlation = result.caused_by_correlation.as_deref().unwrap_or("");
     let mutation = format!(
         r#"mutation {{
@@ -802,6 +808,7 @@ pub async fn create_callback_result(
                 invocation_id: "{invocation_id}",
                 owner_deployment_id: "{owner}",
                 workspace_id: "{workspace}",
+                work_unit_id: "{work_unit_id}",
                 caused_by_correlation: "{correlation}",
                 created_at: "{created_at}"
             }}) {{ _docID }}
@@ -810,6 +817,7 @@ pub async fn create_callback_result(
         invocation_id = escape_graphql_string(&result.invocation_id),
         owner = escape_graphql_string(&result.owner_deployment_id),
         workspace = escape_graphql_string(workspace),
+        work_unit_id = escape_graphql_string(work_unit_id),
         correlation = escape_graphql_string(correlation),
         created_at = escape_graphql_string(&now),
     );

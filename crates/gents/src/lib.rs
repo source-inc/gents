@@ -110,6 +110,7 @@ pub mod truncation;
 pub mod watcher;
 pub mod workspace;
 
+pub use callback::reject_secret_bearing_callback_fields;
 pub use collection::Collection;
 
 pub use adapter_projection::{

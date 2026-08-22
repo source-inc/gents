@@ -1,0 +1,41 @@
+{
+  "surface_id": "defend-cluster-io",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Confirmed findings to root-cause clusters",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_defending_finding",
+      "collection": "DefendingFinding",
+      "description": "Load the closed promoted finding ledger for this run.",
+      "fields": ["finding_id", "area_id", "source_revision", "source_tree_state", "claim_kind", "root_cause_key", "security_boundary", "attacker_identity", "attacker_controlled_input", "control_source", "entry_point", "sink", "attacker_control", "default_reachable", "required_configuration", "required_privileges", "guard_checked", "fails_closed", "violated_invariant", "impact", "contract_surface", "category", "severity", "confidence", "path", "line", "title", "description", "exploit_scenario", "recommendation", "evidence", "verification", "preconditions", "access_level", "owner_hint", "threat_ids", "verdict"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_defense_root_cause_cluster",
+      "collection": "DefenseRootCauseCluster",
+      "description": "Persist one closed remediation unit or the no-findings sentinel.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1, "expected_count_field": "expected_total"},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "cluster_id", "required": true},
+        {"name": "repository_path", "required": false, "fill": {"source_field": "repository_path"}},
+        {"name": "base_revision", "required": true},
+        {"name": "base_tree_state", "required": true},
+        {"name": "status", "required": true},
+        {"name": "primary_finding_id", "required": true},
+        {"name": "member_finding_ids", "required": true},
+        {"name": "consequence_finding_ids", "required": true},
+        {"name": "canonical_title", "required": true},
+        {"name": "canonical_root_cause", "required": true},
+        {"name": "claim_kind", "required": true},
+        {"name": "severity", "required": true},
+        {"name": "security_boundary", "required": true},
+        {"name": "affected_paths", "required": true},
+        {"name": "remediation_scope", "required": true},
+        {"name": "expected_total", "required": true}
+      ]
+    }
+  ]
+}

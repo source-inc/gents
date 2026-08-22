@@ -1,0 +1,19 @@
+type DefenseRootCauseCluster {
+  run_id: String @index @immutable
+  cluster_id: String @index(unique: true) @immutable
+  repository_path: String @immutable
+  base_revision: String @immutable
+  base_tree_state: String @immutable
+  status: String @immutable
+  primary_finding_id: String @immutable
+  member_finding_ids: String @immutable
+  consequence_finding_ids: String @immutable
+  canonical_title: String @immutable
+  canonical_root_cause: String @immutable
+  claim_kind: String @immutable
+  severity: String @immutable
+  security_boundary: String @immutable
+  affected_paths: String @immutable
+  remediation_scope: String @immutable
+  expected_total: String @immutable
+}

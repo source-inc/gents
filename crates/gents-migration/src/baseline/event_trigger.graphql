@@ -1,0 +1,22 @@
+type EventTrigger @branchable {
+    trigger_id: String @index(unique: true)
+    task_id: String @index
+    source_collection: String @index
+    event_kind: String @index
+    filter: String
+    enabled: Boolean @index
+    concurrency: String @index
+    correlation_field: String
+    fire_mode: String @index
+    expected_count: Int
+    expected_count_field: String
+    group_timeout_secs: Int
+    group_min_count: Int
+    created_at: DateTime @index(direction: DESC)
+    updated_at: DateTime @index(direction: DESC)
+    last_attempt_at: DateTime @index(direction: DESC)
+    last_fired_source_doc_id: String
+    last_status: String @index
+    last_error: String
+    fire_count: Int
+}

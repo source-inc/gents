@@ -36,6 +36,12 @@ pub(crate) fn normalize_manifest(manifest: &mut DesiredStateManifest) {
     manifest
         .event_triggers
         .sort_by(|left, right| left.trigger_id.cmp(&right.trigger_id));
+    manifest
+        .callback_bindings
+        .sort_by(|left, right| left.binding_id.cmp(&right.binding_id));
+    manifest
+        .repository_placements
+        .sort_by(|left, right| left.repository_id.cmp(&right.repository_id));
 
     for behavior in &mut manifest.agent_behaviors {
         normalize_optional_string(&mut behavior.display_name);

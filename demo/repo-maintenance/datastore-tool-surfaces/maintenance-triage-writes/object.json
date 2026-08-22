@@ -69,6 +69,11 @@
       "output_obligation": {"scope": "trigger", "minimum_writes": 1},
       "fields": [
         {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "status", "required": true},
+        {"name": "work_unit_id", "required": false, "fill": "correlation"},
+        {"name": "repository_id", "required": true},
+        {"name": "base_sha", "required": false, "fill": {"source_field": "base_ref"}},
+        {"name": "branch", "required": false, "fill": {"source_field": "suggested_branch"}},
         {"name": "high_priority_count", "required": true},
         {"name": "confirmed_count", "required": true},
         {"name": "refuted_count", "required": true},

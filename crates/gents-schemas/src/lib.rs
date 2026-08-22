@@ -408,6 +408,9 @@ mod tests {
         }
         assert!(AGENT_REQUEST.contains("workspace_id: String @index @immutable"));
         assert!(AGENT_REQUEST.contains("workspace_authority: String @immutable"));
+        assert!(EVENT_TRIGGER.contains("workspace_authority: String"));
+        assert!(CALLBACK_RESULT.contains("work_unit_id: String @index"));
+        assert!(WORKSPACE_RECEIPT.contains("caused_by_correlation: String @index @immutable"));
         assert!(AGENT_REQUEST.contains("workspace_owner_deployment_id: String @index @immutable"));
         assert!(AGENT_REQUEST.contains("workspace_seal_hash: String @immutable"));
     }

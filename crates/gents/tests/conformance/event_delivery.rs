@@ -834,6 +834,7 @@ fn active_snapshot_with_event_trigger() -> Arc<ActiveRuntimeSnapshot> {
         expected_count_field: None,
         group_timeout_secs: None,
         group_min_count: 1,
+        workspace_authority: None,
     };
     active_snapshot(
         HashMap::from([(trigger.trigger_id.clone(), trigger)]),

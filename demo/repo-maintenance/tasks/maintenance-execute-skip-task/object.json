@@ -1,0 +1,9 @@
+{
+  "task_id": "maintenance-execute-skip-task",
+  "name": "Record a zero-finding maintenance skip",
+  "description": null,
+  "behavior_id": "maintenance-execute-skip",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

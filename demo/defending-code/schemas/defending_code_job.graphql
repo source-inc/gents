@@ -1,0 +1,8 @@
+type DefendingCodeJob {
+  run_id: String @index(unique: true) @immutable
+  repository_path: String @immutable
+  focus: String @immutable
+  area_min: String @immutable
+  area_max: String @immutable
+  engagement_context: String @immutable
+}

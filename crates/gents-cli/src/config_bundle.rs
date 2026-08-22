@@ -611,6 +611,8 @@ pub(crate) fn live_manifest_from_bundle(
                 tasks: Vec::new(),
                 schedules: Vec::new(),
                 event_triggers: Vec::new(),
+                callback_bindings: Vec::new(),
+                repository_placements: Vec::new(),
             },
         ))
     }

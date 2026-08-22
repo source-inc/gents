@@ -6,11 +6,12 @@ use serde::Deserialize;
 use super::normalize::normalize_manifest;
 use super::validate::validate_manifest;
 use super::{
-    DesiredAgentBehavior, DesiredAgentPrincipal, DesiredDatastoreToolSurface, DesiredEventTrigger,
-    DesiredInferenceBackend, DesiredInferenceProfile, DesiredPeerPairing,
-    DesiredProjectionAcpBinding, DesiredSchedule, DesiredSkill, DesiredStateCounts,
+    DesiredAgentBehavior, DesiredAgentPrincipal, DesiredCallbackBinding,
+    DesiredDatastoreToolSurface, DesiredEventTrigger, DesiredInferenceBackend,
+    DesiredInferenceProfile, DesiredPeerPairing, DesiredProjectionAcpBinding,
+    DesiredRepositoryPlacement, DesiredSchedule, DesiredSkill, DesiredStateCounts,
     DesiredStateManifest, DesiredStateValidationReport, DesiredTask, DesiredToolSelection,
-    DesiredToolServiceRegistry, HasUniqueId,
+    DesiredToolServiceRegistry, HasUniqueId, CALLBACK_BINDINGS_DIR, REPOSITORY_PLACEMENTS_DIR,
 };
 use gents::Collection;
 
@@ -52,6 +53,14 @@ pub(crate) fn load_manifest_root(
         load_per_doc_collection(root, Collection::Schedule, &mut errors);
     let event_triggers: Vec<DesiredEventTrigger> =
         load_per_doc_collection(root, Collection::EventTrigger, &mut errors);
+    let callback_bindings: Vec<DesiredCallbackBinding> =
+        load_per_doc_dir(root, CALLBACK_BINDINGS_DIR, "binding_id", &mut errors);
+    let repository_placements: Vec<DesiredRepositoryPlacement> = load_per_doc_dir(
+        root,
+        REPOSITORY_PLACEMENTS_DIR,
+        "repository_id",
+        &mut errors,
+    );
 
     for behavior in &mut agent_behaviors {
         let dir = per_doc_dir(root, Collection::AgentBehavior, behavior.unique_id());
@@ -85,6 +94,8 @@ pub(crate) fn load_manifest_root(
         tasks: tasks.len(),
         schedules: schedules.len(),
         event_triggers: event_triggers.len(),
+        callback_bindings: callback_bindings.len(),
+        repository_placements: repository_placements.len(),
     };
 
     let agent_did = principal.as_ref().map(|p| p.agent_did.clone());
@@ -104,6 +115,8 @@ pub(crate) fn load_manifest_root(
             tasks,
             schedules,
             event_triggers,
+            callback_bindings,
+            repository_placements,
         };
         normalize_manifest(&mut manifest);
         validate_manifest(&manifest, &mut errors);
@@ -286,6 +299,18 @@ where
     let dir_name = collection
         .dir_name()
         .expect("load_per_doc_collection called with a non-directory collection");
+    load_per_doc_dir(root, dir_name, collection.unique_field(), errors)
+}
+
+pub(crate) fn load_per_doc_dir<T>(
+    root: &Path,
+    dir_name: &str,
+    unique_field: &str,
+    errors: &mut Vec<String>,
+) -> Vec<T>
+where
+    T: for<'de> Deserialize<'de> + HasUniqueId,
+{
     let collection_path = root.join(dir_name);
     if !collection_path.exists() {
         return Vec::new();
@@ -370,7 +395,7 @@ where
         if let Some(prior) = id_to_handle.get(parsed.unique_id()) {
             errors.push(format!(
                 "duplicate {} '{}' across {}/ and {}/",
-                collection.unique_field(),
+                unique_field,
                 parsed.unique_id(),
                 prior,
                 handle
@@ -382,7 +407,7 @@ where
         if parsed.unique_id() != handle {
             errors.push(format!(
                 "directory name '{handle}' does not match {} '{}' in {}",
-                collection.unique_field(),
+                unique_field,
                 parsed.unique_id(),
                 object_path.display()
             ));

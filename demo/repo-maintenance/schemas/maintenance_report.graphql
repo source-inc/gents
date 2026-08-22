@@ -1,5 +1,10 @@
 type MaintenanceReport {
   run_id: String @index(unique: true) @immutable
+  status: String @immutable
+  work_unit_id: String @immutable
+  repository_id: String @immutable
+  base_sha: String @immutable
+  branch: String @immutable
   high_priority_count: String
   confirmed_count: String
   refuted_count: String

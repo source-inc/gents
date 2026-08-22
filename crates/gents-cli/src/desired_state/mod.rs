@@ -4,6 +4,7 @@ pub(crate) mod diff;
 pub(crate) mod interpolate;
 pub(crate) mod load;
 pub(crate) mod normalize;
+pub(crate) mod provision;
 pub(crate) mod prune;
 #[cfg(test)]
 mod tests;
@@ -20,6 +21,7 @@ pub(crate) use load::load_manifest_root;
 pub(crate) use normalize::{
     strip_deprecated_inference_backend_fields, strip_retired_tool_selection_fields,
 };
+pub(crate) use provision::apply_workspace_provisioning;
 pub(crate) use write::write_manifest_root;
 
 use serde::de::Error as _;
@@ -125,8 +127,47 @@ pub(crate) struct DesiredEventTrigger {
     pub(crate) group_timeout_secs: Option<i64>,
     #[serde(default)]
     pub(crate) group_min_count: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) workspace_authority: Option<String>,
     pub(crate) enabled: bool,
     pub(crate) concurrency: String,
+}
+
+pub(crate) const CALLBACK_BINDINGS_DIR: &str = "callback-bindings";
+pub(crate) const REPOSITORY_PLACEMENTS_DIR: &str = "repository-placements";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DesiredCallbackBinding {
+    pub(crate) binding_id: String,
+    pub(crate) source_collection: String,
+    #[serde(default = "default_event_kind")]
+    pub(crate) event_kind: String,
+    #[serde(default)]
+    pub(crate) filter: Option<String>,
+    #[serde(default)]
+    pub(crate) source_fields: Option<String>,
+    #[serde(default)]
+    pub(crate) module_id: Option<String>,
+    #[serde(default)]
+    pub(crate) builtin_emitter: Option<String>,
+    pub(crate) principal_did: String,
+    #[serde(default)]
+    pub(crate) capability_set: Option<String>,
+    #[serde(default)]
+    pub(crate) retry_policy: Option<String>,
+    #[serde(default)]
+    pub(crate) owner_deployment_id: Option<String>,
+    pub(crate) enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DesiredRepositoryPlacement {
+    pub(crate) repository_id: String,
+    pub(crate) host_path: String,
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
 }
 
 fn default_event_kind() -> String {
@@ -521,6 +562,8 @@ pub(crate) struct DesiredStateManifest {
     pub(crate) tasks: Vec<DesiredTask>,
     pub(crate) schedules: Vec<DesiredSchedule>,
     pub(crate) event_triggers: Vec<DesiredEventTrigger>,
+    pub(crate) callback_bindings: Vec<DesiredCallbackBinding>,
+    pub(crate) repository_placements: Vec<DesiredRepositoryPlacement>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -727,6 +770,8 @@ pub(crate) struct DesiredStateCounts {
     pub(crate) tasks: usize,
     pub(crate) schedules: usize,
     pub(crate) event_triggers: usize,
+    pub(crate) callback_bindings: usize,
+    pub(crate) repository_placements: usize,
 }
 
 impl DesiredStateCounts {
@@ -745,6 +790,8 @@ impl DesiredStateCounts {
             tasks: 0,
             schedules: 0,
             event_triggers: 0,
+            callback_bindings: 0,
+            repository_placements: 0,
         }
     }
 }
@@ -896,6 +943,16 @@ impl HasUniqueId for DesiredSchedule {
 impl HasUniqueId for DesiredEventTrigger {
     fn unique_id(&self) -> &str {
         &self.trigger_id
+    }
+}
+impl HasUniqueId for DesiredCallbackBinding {
+    fn unique_id(&self) -> &str {
+        &self.binding_id
+    }
+}
+impl HasUniqueId for DesiredRepositoryPlacement {
+    fn unique_id(&self) -> &str {
+        &self.repository_id
     }
 }
 

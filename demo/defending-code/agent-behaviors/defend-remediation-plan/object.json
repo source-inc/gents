@@ -1,0 +1,18 @@
+{
+  "behavior_id": "defend-remediation-plan",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Remediation work planner",
+  "description": "Joins the closed cluster and contract ledgers into one patch assignment per cluster.",
+  "summary": null,
+  "system_prompt": "./system_prompt.md",
+  "request_context_template": null,
+  "backend_id": "defending-backend",
+  "model_name": "${GENTS_DEFENDING_MODEL:-GLM-5.2}",
+  "tool_selection_id": "defend-remediation-plan-tools",
+  "inference_profile_id": "defending-profile",
+  "compaction_strategy": "StripThenSummarize",
+  "compaction_threshold": ${GENTS_DEFENDING_COMPACTION_THRESHOLD:-0.762939453125},
+  "enabled": true,
+  "skill_refs": [],
+  "skill_excludes": []
+}

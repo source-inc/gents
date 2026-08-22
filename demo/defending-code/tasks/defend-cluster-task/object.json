@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-cluster-task",
+  "name": "Cluster confirmed findings into remediation units",
+  "description": "Produces a closed root-cause ledger for parallel contract review.",
+  "behavior_id": "defend-cluster",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

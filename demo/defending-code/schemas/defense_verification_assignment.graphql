@@ -1,0 +1,12 @@
+type DefenseVerificationAssignment {
+  run_id: String @index @immutable
+  assignment_id: String @index(unique: true) @immutable
+  finding_id: String @index @immutable
+  area_id: String @immutable
+  repository_path: String @immutable
+  source_revision: String @immutable
+  source_tree_state: String @immutable
+  status: String @index @immutable
+  scan_ledger_status: String @immutable
+  expected_total: String @immutable
+}

@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use gents::Collection;
 
-use super::{DesiredStateManifest, HasUniqueId};
+use super::{DesiredStateManifest, HasUniqueId, CALLBACK_BINDINGS_DIR, REPOSITORY_PLACEMENTS_DIR};
 
 pub(crate) fn check_filesystem_safe_id(id: &str) -> Result<(), String> {
     if id.is_empty() {
@@ -57,6 +57,8 @@ fn validate_handles(manifest: &DesiredStateManifest) -> Result<(), String> {
     validate_vec(&manifest.tasks, "task_id")?;
     validate_vec(&manifest.schedules, "schedule_id")?;
     validate_vec(&manifest.event_triggers, "trigger_id")?;
+    validate_vec(&manifest.callback_bindings, "binding_id")?;
+    validate_vec(&manifest.repository_placements, "repository_id")?;
     Ok(())
 }
 
@@ -136,6 +138,18 @@ pub(crate) fn write_manifest_root(
         &manifest.event_triggers,
         no_sidecar,
     )?;
+    write_per_doc_dir(
+        root,
+        CALLBACK_BINDINGS_DIR,
+        &manifest.callback_bindings,
+        no_sidecar,
+    )?;
+    write_per_doc_dir(
+        root,
+        REPOSITORY_PLACEMENTS_DIR,
+        &manifest.repository_placements,
+        no_sidecar,
+    )?;
 
     Ok(())
 }
@@ -199,6 +213,37 @@ where
 
         let mut body = serde_json::to_value(doc)
             .map_err(|e| format!("serializing {} '{handle}' failed: {e}", collection))?;
+        spill(&doc_dir, &mut body)?;
+        write_json_file(&doc_dir.join("object.json"), &body)?;
+    }
+    Ok(())
+}
+
+fn write_per_doc_dir<T>(
+    root: &Path,
+    dir_name: &str,
+    docs: &[T],
+    mut spill: impl FnMut(&Path, &mut Value) -> Result<(), String>,
+) -> Result<(), String>
+where
+    T: serde::Serialize + HasUniqueId,
+{
+    if docs.is_empty() {
+        return Ok(());
+    }
+    let collection_dir = root.join(dir_name);
+    fs::create_dir_all(&collection_dir)
+        .map_err(|e| format!("creating {} failed: {e}", collection_dir.display()))?;
+
+    for doc in docs {
+        let handle = doc.unique_id();
+        check_filesystem_safe_id(handle)?;
+        let doc_dir = collection_dir.join(handle);
+        fs::create_dir_all(&doc_dir)
+            .map_err(|e| format!("creating {} failed: {e}", doc_dir.display()))?;
+
+        let mut body = serde_json::to_value(doc)
+            .map_err(|e| format!("serializing {dir_name} '{handle}' failed: {e}"))?;
         spill(&doc_dir, &mut body)?;
         write_json_file(&doc_dir.join("object.json"), &body)?;
     }

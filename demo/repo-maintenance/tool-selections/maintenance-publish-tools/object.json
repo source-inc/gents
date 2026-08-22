@@ -4,7 +4,7 @@
   "display_name": "Review, publish, and repair one maintenance PR",
   "enable_file_tools": true,
   "file_tools_mode": "ReadWrite",
-  "file_tool_root": "${GENTS_MAINTENANCE_WORKTREE_PARENT:-..}",
+  "file_tool_root": "${GENTS_MAINTENANCE_ROOT:-.}",
   "enable_bash": true,
   "bash_mode": "Unrestricted",
   "command_execution_policy": "unrestricted",
