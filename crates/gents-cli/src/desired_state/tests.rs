@@ -30,6 +30,8 @@ fn empty_manifest(agent_did: &str) -> DesiredStateManifest {
         tasks: Vec::new(),
         schedules: Vec::new(),
         event_triggers: Vec::new(),
+        callback_bindings: Vec::new(),
+        repository_placements: Vec::new(),
     }
 }
 
@@ -525,6 +527,7 @@ fn sample_event_trigger() -> DesiredEventTrigger {
         expected_count_field: None,
         group_timeout_secs: None,
         group_min_count: None,
+        workspace_authority: None,
         enabled: true,
         concurrency: "serial".into(),
     }
@@ -1084,6 +1087,72 @@ mod load_manifest_root {
         );
         assert_eq!(manifest.event_triggers[0].event_kind, "created");
         assert!(manifest.event_triggers[0].enabled);
+    }
+
+    #[test]
+    fn loads_callback_binding_and_repository_placement() {
+        let tmp = tempdir().unwrap();
+        write_minimal_root(tmp.path());
+
+        let binding_dir = tmp
+            .path()
+            .join("callback-bindings")
+            .join("defense-patch-workspace");
+        fs::create_dir_all(&binding_dir).unwrap();
+        fs::write(
+            binding_dir.join("object.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "binding_id": "defense-patch-workspace",
+                "source_collection": "DefensePatchAssignment",
+                "event_kind": "created",
+                "filter": "{ status: { _eq: \"ready\" } }",
+                "source_fields": "[\"assignment_id\",\"repository_id\",\"base_revision\",\"branch\"]",
+                "builtin_emitter": "create_workspace",
+                "principal_did": "did:key:zPlaceholder",
+                "capability_set": "[\"create_workspace\",\"observe_dirty_base\",\"clone_artifacts\"]",
+                "enabled": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let placement_dir = tmp
+            .path()
+            .join("repository-placements")
+            .join("defending-code");
+        fs::create_dir_all(&placement_dir).unwrap();
+        fs::write(
+            placement_dir.join("object.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "repository_id": "defending-code",
+                "host_path": "/tmp/repo",
+                "enabled": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let (manifest, report) = load_manifest_root(tmp.path());
+        assert!(
+            report.ok,
+            "expected valid manifest, got {:?}",
+            report.errors
+        );
+        let manifest = manifest.expect("manifest should load");
+        assert_eq!(report.counts.callback_bindings, 1);
+        assert_eq!(report.counts.repository_placements, 1);
+        assert_eq!(
+            manifest.callback_bindings[0].binding_id,
+            "defense-patch-workspace"
+        );
+        assert_eq!(
+            manifest.callback_bindings[0].builtin_emitter.as_deref(),
+            Some("create_workspace")
+        );
+        assert_eq!(
+            manifest.repository_placements[0].repository_id,
+            "defending-code"
+        );
     }
 
     #[test]
@@ -2318,6 +2387,7 @@ fn sample_event_trigger_for(trigger_id: &str, task_id: &str) -> DesiredEventTrig
         expected_count_field: None,
         group_timeout_secs: None,
         group_min_count: None,
+        workspace_authority: None,
         enabled: true,
         concurrency: "serial".to_string(),
     }
@@ -2791,6 +2861,8 @@ pub(super) mod write_manifest_root {
             }],
             schedules: Vec::new(),
             event_triggers: Vec::new(),
+            callback_bindings: Vec::new(),
+            repository_placements: Vec::new(),
         }
     }
 

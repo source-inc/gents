@@ -715,6 +715,8 @@ pub struct EventTriggerRow {
     #[serde(default)]
     pub group_min_count: Option<i64>,
     #[serde(default)]
+    pub workspace_authority: Option<String>,
+    #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
     pub updated_at: Option<String>,

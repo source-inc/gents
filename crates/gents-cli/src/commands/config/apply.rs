@@ -117,6 +117,9 @@ pub(crate) async fn apply_bound_desired_manifest(
         counts
     };
 
+    let provisioning =
+        desired_state::apply_workspace_provisioning(access, desired_manifest).await?;
+
     let remaining_bundle = build_desired_state_live_bundle(&access, desired_manifest).await?;
     let (remaining_principal, remaining_manifest) =
         live_manifest_from_bundle(desired_manifest, &remaining_bundle)?;
@@ -129,7 +132,10 @@ pub(crate) async fn apply_bound_desired_manifest(
         false,
     );
 
-    let changed = config_apply_counts_changed(&applied) || config_apply_counts_changed(&pruned);
+    let changed = config_apply_counts_changed(&applied)
+        || config_apply_counts_changed(&pruned)
+        || provisioning.callback_bindings > 0
+        || provisioning.repository_placements > 0;
     let report = ConfigApplyReport {
         status: if changed { "applied" } else { "noop" },
         ok: !diff_has_pending_apply(&remaining.counts),

@@ -7,12 +7,14 @@ MaintenanceJob -> recon -> N MaintenanceArea scanners
                -> MaintenanceCandidate + MaintenanceScanResult
                -> adversarial verifier -> MaintenanceVerdict + MaintenanceVerificationSummary
                -> commit planning -> MaintenanceFinding + MaintenanceWorkPackage + MaintenanceReport
-               -> one execution owner commits the ordered plan in one isolated worktree
+               -> CallbackBinding provisions one IsolatedWorkspace
+               -> one execution owner edits the bound workspace (no git commit)
+               -> host seal + typed integrate_workspace
                -> MaintenanceExecutionResult + MaintenanceExecutionSummary barrier
                -> review + CI repair loop -> one MaintenancePullRequest
 ```
 
-Recon, scanning, verification, and commit planning are read-only. The round creates one sibling worktree and one branch. Each work package contains one to three verified findings and becomes one focused commit. A single execution owner reads the closed package ledger and executes it in numeric order, because package document arrival order is not an execution callback. Only its count-balanced completion barrier can start publishing. A terminal agent runs the checked-in review pack, adds focused safeguard commits for confirmed findings, opens one normal GitHub PR, watches required checks, and performs bounded CI repairs. Long local gates and CI waits are polled rather than assigned short wall-clock deadlines. It never merges the PR.
+Recon, scanning, verification, and commit planning are read-only. The runtime provisions one isolated workspace and one branch before execute. Each work package contains one to three verified findings and is one focused edit unit. A single execution owner reads the closed package ledger and implements it in numeric order in the bound placement. Workers do not `make worktree` or `git commit`. Only its count-balanced completion barrier can start publishing. A terminal agent reviews the applied result, opens one normal GitHub PR, watches required checks, and performs bounded CI repairs. Long local gates and CI waits are polled rather than assigned short wall-clock deadlines. It never merges the PR.
 
 ## Stable maintenance categories
 
@@ -35,9 +37,9 @@ make maintain MAINTENANCE_AREAS=7 MAINTENANCE_HISTORY_DEPTH=400
 make maintain MAINTENANCE_KEEP_HOME=1 MAINTENANCE_JOB_ID=cleanup-2026-08
 ```
 
-`MAINTENANCE_ROOT` defaults to the current repository and `MAINTENANCE_WORKTREE_PARENT` to its parent directory. The parent is the operator tool ceiling so execution and review can use the sibling worktree; read-only stages remain explicitly rooted at the source repository. `MAINTENANCE_HEAD` defaults to `HEAD` and `MAINTENANCE_PR_BASE` to `main`. History identifies prior cleanup patterns and avoids reopening merged work; it does not restrict findings to a diff. Automatic runs use 5-10 areas. The usual provider/profile controls mirror `make review` with a `MAINTENANCE_` prefix.
+`MAINTENANCE_ROOT` defaults to the current repository and is the operator tool ceiling. The runtime places the isolated worktree under that ceiling; execute does not `cd` into a sibling the model created. `MAINTENANCE_HEAD` defaults to `HEAD` and `MAINTENANCE_PR_BASE` to `main`. History identifies prior cleanup patterns and avoids reopening merged work; it does not restrict findings to a diff. Automatic runs use 5-10 areas. The usual provider/profile controls mirror `make review` with a `MAINTENANCE_` prefix.
 
-Every run lands under `demo/repo-maintenance/runs/<job-id>/`. `results.json` contains the report, confirmed findings, commit plan, execution ledger, and terminal PR status. A zero-finding run emits one no-safe-work sentinel and records `skipped` without creating a worktree or PR. `green` means the final review has no confirmed findings and every required GitHub check succeeded; all other terminal states retain exact evidence.
+Every run lands under `demo/repo-maintenance/runs/<job-id>/`. `results.json` contains the report, confirmed findings, commit plan, execution ledger, and terminal PR status. A zero-finding run emits one no-safe-work sentinel and records `skipped` without creating a workspace or PR. `green` means the final review has no confirmed findings and every required GitHub check succeeded; all other terminal states retain exact evidence.
 
 ## False-positive policy
 

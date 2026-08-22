@@ -138,6 +138,60 @@ pub struct WorkspaceLineage {
     pub workspace_seal_hash: Option<String>,
 }
 
+/// Snapshot workspace lineage from a source document, then overlay the
+/// EventTrigger edge authority when the source collection does not carry it.
+pub fn snapshot_workspace_lineage_source_fields(
+    source_doc: &serde_json::Value,
+    source_fields: &mut std::collections::BTreeMap<String, String>,
+    trigger_authority: Option<&str>,
+) {
+    const SOURCE_KEYS: &[&str] = &[
+        "workspace_id",
+        "workspace_authority",
+        "workspace_owner_deployment_id",
+        "owner_deployment_id",
+        "work_unit_id",
+        "workspace_seal_hash",
+        "seal_hash",
+        "caused_by_correlation",
+    ];
+    for key in SOURCE_KEYS {
+        if source_fields.contains_key(*key) {
+            continue;
+        }
+        let Some(value) = source_string_field(source_doc, key) else {
+            continue;
+        };
+        source_fields.insert((*key).to_string(), value);
+    }
+    if !source_fields.contains_key("workspace_seal_hash") {
+        if let Some(hash) = source_fields.get("seal_hash").cloned() {
+            source_fields.insert("workspace_seal_hash".to_string(), hash);
+        }
+    }
+    if let Some(authority) = trigger_authority
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        source_fields.insert("workspace_authority".to_string(), authority.to_string());
+    }
+}
+
+fn source_string_field(source_doc: &serde_json::Value, name: &str) -> Option<String> {
+    match source_doc.get(name)? {
+        serde_json::Value::String(value) => {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        serde_json::Value::Number(value)
+            if value.as_i64().is_some() || value.as_u64().is_some() =>
+        {
+            Some(value.to_string())
+        }
+        _ => None,
+    }
+}
+
 impl WorkspaceLineage {
     pub fn from_trigger_context(trigger_context: Option<&str>) -> Result<Self> {
         let context = TriggerExecutionContext::parse(trigger_context)?;
@@ -154,7 +208,7 @@ impl WorkspaceLineage {
             workspace_authority: field("workspace_authority"),
             workspace_owner_deployment_id: field("workspace_owner_deployment_id")
                 .or_else(|| field("owner_deployment_id")),
-            workspace_seal_hash: field("workspace_seal_hash"),
+            workspace_seal_hash: field("workspace_seal_hash").or_else(|| field("seal_hash")),
         })
     }
 
@@ -644,5 +698,63 @@ mod tests {
         .to_string();
         let lineage = WorkspaceLineage::from_trigger_context(Some(&context)).unwrap();
         assert_eq!(lineage.owner_deployment_id(), Some("deploy-explicit"));
+    }
+
+    #[test]
+    fn workspace_lineage_maps_receipt_seal_hash() {
+        let context = serde_json::json!({
+            "version": 1,
+            "source_fields": {
+                "workspace_id": "ws-1",
+                "seal_hash": "tree-1"
+            }
+        })
+        .to_string();
+        let lineage = WorkspaceLineage::from_trigger_context(Some(&context)).unwrap();
+        assert_eq!(lineage.workspace_seal_hash.as_deref(), Some("tree-1"));
+    }
+
+    #[test]
+    fn snapshot_overlays_event_trigger_workspace_authority() {
+        let source = serde_json::json!({
+            "workspace_id": "ws-1",
+            "owner_deployment_id": "deploy-owner",
+            "seal_hash": "tree-1"
+        });
+        let mut fields = std::collections::BTreeMap::new();
+        snapshot_workspace_lineage_source_fields(&source, &mut fields, Some("readOnly"));
+        assert_eq!(fields.get("workspace_id").map(String::as_str), Some("ws-1"));
+        assert_eq!(
+            fields.get("workspace_authority").map(String::as_str),
+            Some("readOnly")
+        );
+        assert_eq!(
+            fields.get("workspace_seal_hash").map(String::as_str),
+            Some("tree-1")
+        );
+        let encoded = serde_json::to_string(&TriggerExecutionContext {
+            version: 1,
+            source_fields: fields,
+        })
+        .unwrap();
+        let lineage = WorkspaceLineage::from_trigger_context(Some(&encoded)).unwrap();
+        lineage.require_authority_if_workspace_id().unwrap();
+        assert_eq!(lineage.workspace_authority.as_deref(), Some("readOnly"));
+        assert_eq!(lineage.owner_deployment_id(), Some("deploy-owner"));
+        assert_eq!(lineage.workspace_seal_hash.as_deref(), Some("tree-1"));
+    }
+
+    #[test]
+    fn snapshot_trigger_authority_wins_over_source_document() {
+        let source = serde_json::json!({
+            "workspace_id": "ws-1",
+            "workspace_authority": "readWrite"
+        });
+        let mut fields = std::collections::BTreeMap::new();
+        snapshot_workspace_lineage_source_fields(&source, &mut fields, Some("integrate"));
+        assert_eq!(
+            fields.get("workspace_authority").map(String::as_str),
+            Some("integrate")
+        );
     }
 }

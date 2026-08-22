@@ -15,8 +15,8 @@ use super::common::{
 /// This writer must ONLY read, write, or compare apply-owned fields:
 /// `trigger_id`, `task_id`, `source_collection`, `event_kind`, `filter`,
 /// `correlation_field`, `fire_mode`, `expected_count`, `expected_count_field`,
-/// `group_timeout_secs`, `group_min_count`, `enabled`, `concurrency`,
-/// `created_at`, `updated_at`.
+/// `group_timeout_secs`, `group_min_count`, `workspace_authority`, `enabled`,
+/// `concurrency`, `created_at`, `updated_at`.
 ///
 /// Runtime-owned fields — `last_attempt_at`, `last_fired_source_doc_id`,
 /// `last_status`, `last_error`, `fire_count` — are written exclusively by
@@ -199,6 +199,7 @@ async fn query_event_trigger_rows(
                 expected_count_field
                 group_timeout_secs
                 group_min_count
+                workspace_authority
                 enabled
                 concurrency
                 created_at

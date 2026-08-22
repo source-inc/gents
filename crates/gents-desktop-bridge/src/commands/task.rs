@@ -180,6 +180,7 @@ pub async fn save_event_trigger_config(
             expected_count_field: None,
             group_timeout_secs: None,
             group_min_count: None,
+            workspace_authority: None,
             created_at: None,
             updated_at: None,
             last_attempt_at: None,

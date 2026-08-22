@@ -207,6 +207,8 @@ fn counts_for_manifest(manifest: &DesiredStateManifest) -> DesiredStateCounts {
         tasks: manifest.tasks.len(),
         schedules: manifest.schedules.len(),
         event_triggers: manifest.event_triggers.len(),
+        callback_bindings: manifest.callback_bindings.len(),
+        repository_placements: manifest.repository_placements.len(),
     }
 }
 
@@ -368,6 +370,9 @@ fn manifest_agent_dids(manifest: &DesiredStateManifest) -> BTreeSet<String> {
             insert_nonempty(&mut dids, agent_did);
         }
     }
+    for binding in &manifest.callback_bindings {
+        insert_nonempty(&mut dids, &binding.principal_did);
+    }
     dids
 }
 
@@ -406,6 +411,11 @@ fn rebind_manifest_agent_did(manifest: &mut DesiredStateManifest, target_did: &s
             .is_some_and(|did| !did.trim().is_empty())
         {
             binding.agent_did = Some(target_did.to_string());
+        }
+    }
+    for binding in &mut manifest.callback_bindings {
+        if source_local_dids.contains(binding.principal_did.trim()) {
+            binding.principal_did = target_did.to_string();
         }
     }
 }
@@ -496,6 +506,8 @@ mod tests {
             tasks: Vec::new(),
             schedules: Vec::new(),
             event_triggers: Vec::new(),
+            callback_bindings: Vec::new(),
+            repository_placements: Vec::new(),
         }
     }
 

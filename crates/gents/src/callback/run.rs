@@ -142,10 +142,14 @@ async fn load_planner_module(
 }
 
 fn emit_create_workspace_from_source(source: &Value) -> Result<ActionPlan, String> {
-    let work_unit_id = required_string(source, "work_unit_id")?;
+    let work_unit_id = required_string(source, "work_unit_id")
+        .or_else(|_| required_string(source, "assignment_id"))?;
     let repository_id = required_string(source, "repository_id")?;
-    let base_sha = required_string(source, "base_sha")?;
-    let branch = required_string(source, "branch")?;
+    let base_sha = required_string(source, "base_sha")
+        .or_else(|_| required_string(source, "base_revision"))?;
+    let branch = optional_string(source, "branch")
+        .or_else(|| optional_string(source, "suggested_branch"))
+        .unwrap_or_else(|| git_branch_from_work_unit(&work_unit_id));
     let workspace_id =
         optional_string(source, "workspace_id").unwrap_or_else(|| work_unit_id.clone());
     let creation_policy = match optional_string(source, "creation_policy").as_deref() {
@@ -194,6 +198,18 @@ fn optional_string(source: &Value, field: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn git_branch_from_work_unit(work_unit_id: &str) -> String {
+    let mut branch = String::from("gents/");
+    for ch in work_unit_id.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            branch.push(ch);
+        } else {
+            branch.push('-');
+        }
+    }
+    branch
+}
+
 fn correlation_from_source(source: &Value) -> String {
     optional_string(source, "caused_by_correlation")
         .or_else(|| optional_string(source, "correlation"))
@@ -221,6 +237,7 @@ pub fn resolve_action_plan(
     resolve_action_plan_with_module(invocation, binding, source, None)
 }
 
+#[cfg(test)]
 pub fn resolve_action_plan_with_module(
     invocation: &CallbackInvocationDoc,
     binding: &CallbackBindingDoc,
@@ -577,6 +594,7 @@ async fn emit_result_then_succeed(
             invocation_id: invocation.invocation_id.clone(),
             owner_deployment_id: invocation.owner_deployment_id.clone(),
             workspace_id: Some(workspace.workspace_id.clone()),
+            work_unit_id: Some(workspace.work_unit_id.clone()),
             caused_by_correlation: Some(correlation),
             created_at: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         },

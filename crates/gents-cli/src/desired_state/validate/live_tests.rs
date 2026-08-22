@@ -67,6 +67,8 @@ fn manifest_with_subagent_targets(targets: Vec<SubagentTarget>) -> DesiredStateM
         tasks: Vec::new(),
         schedules: Vec::new(),
         event_triggers: Vec::new(),
+        callback_bindings: Vec::new(),
+        repository_placements: Vec::new(),
     }
 }
 
@@ -96,6 +98,7 @@ async fn live_validate_rejects_invalid_event_trigger_collection_identifier() -> 
         expected_count_field: None,
         group_timeout_secs: None,
         group_min_count: None,
+        workspace_authority: None,
         enabled: true,
         concurrency: "serial".to_string(),
     });
@@ -623,6 +626,8 @@ async fn all_subagent_fields_persist_and_apply_is_idempotent() -> Result<()> {
             tasks: Vec::new(),
             schedules: Vec::new(),
             event_triggers: Vec::new(),
+            callback_bindings: Vec::new(),
+            repository_placements: Vec::new(),
         }
     };
 
@@ -789,6 +794,8 @@ async fn behavior_description_and_summary_persist_and_apply_is_idempotent() -> R
             tasks: Vec::new(),
             schedules: Vec::new(),
             event_triggers: Vec::new(),
+            callback_bindings: Vec::new(),
+            repository_placements: Vec::new(),
         }
     };
 

@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-patch-task",
+  "name": "Draft one unapplied security patch",
+  "description": null,
+  "behavior_id": "defend-patch",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

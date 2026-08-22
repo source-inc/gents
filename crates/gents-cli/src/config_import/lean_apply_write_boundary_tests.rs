@@ -836,6 +836,8 @@ fn desired_manifest_from_lean(
             .into_iter()
             .map(desired_event_trigger)
             .collect(),
+        callback_bindings: Vec::new(),
+        repository_placements: Vec::new(),
     }
 }
 
@@ -1072,6 +1074,7 @@ fn desired_event_trigger(doc: &LeanApplyDesiredDoc) -> desired_state::DesiredEve
         expected_count_field: None,
         group_timeout_secs: None,
         group_min_count: None,
+        workspace_authority: None,
         enabled: true,
         concurrency: "serial".to_string(),
     }

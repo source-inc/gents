@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-plan-task",
+  "name": "Partition the threat model into review areas",
+  "description": null,
+  "behavior_id": "defend-plan",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

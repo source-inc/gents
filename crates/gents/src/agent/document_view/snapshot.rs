@@ -768,6 +768,12 @@ fn resolve_event_triggers(
             expected_count_field,
             group_timeout_secs,
             group_min_count,
+            workspace_authority: trigger
+                .workspace_authority
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
         };
         active_event_triggers.insert(resolved_trigger.trigger_id.clone(), resolved_trigger);
     }

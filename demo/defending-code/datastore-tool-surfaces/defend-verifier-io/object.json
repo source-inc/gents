@@ -1,0 +1,79 @@
+{
+  "surface_id": "defend-verifier-io",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Independent candidate verification",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_defense_threat_model",
+      "collection": "DefenseThreatModel",
+      "description": "Load the threat model for this run; run_id is runtime-filled.",
+      "fields": ["repository_path", "source_revision", "source_tree_state", "provenance_status", "focus", "system_context", "assets", "entry_points", "threats", "deprioritized", "open_questions", "mitigations", "provenance"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_defense_candidate",
+      "collection": "DefenseCandidateFinding",
+      "description": "Load exactly the candidate named by the triggering assignment.",
+      "fields": ["finding_id", "area_id", "source_revision", "source_tree_state", "claim_kind", "root_cause_key", "security_boundary", "attacker_identity", "attacker_controlled_input", "control_source", "entry_point", "sink", "default_reachable", "required_configuration", "required_privileges", "guard_checked", "fails_closed", "violated_invariant", "category", "claimed_severity", "confidence", "path", "line", "title", "description", "exploit_scenario", "recommendation", "evidence", "threat_ids"],
+      "filter_fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "finding_id", "required": false, "fill": {"source_field": "finding_id"}}
+      ]
+    },
+    {
+      "tool_name": "write_defense_verdict",
+      "collection": "DefenseFindingVerdict",
+      "description": "Persist exactly one adversarial confirmed/refuted verdict for the assigned candidate.",
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "finding_id", "required": false, "fill": {"source_field": "finding_id"}},
+        {"name": "area_id", "required": false, "fill": {"source_field": "area_id"}},
+        {"name": "repository_path", "required": false, "fill": {"source_field": "repository_path"}},
+        {"name": "verdict", "required": true},
+        {"name": "source_revision", "required": false, "fill": {"source_field": "source_revision"}},
+        {"name": "source_tree_state", "required": false, "fill": {"source_field": "source_tree_state"}},
+        {"name": "adjudicated_claim_kind", "required": true},
+        {"name": "security_boundary", "required": true},
+        {"name": "attacker_identity", "required": true},
+        {"name": "attacker_controlled_input", "required": true},
+        {"name": "control_source", "required": true},
+        {"name": "entry_point", "required": true},
+        {"name": "sink", "required": true},
+        {"name": "attacker_control", "required": true},
+        {"name": "default_reachable", "required": true},
+        {"name": "required_configuration", "required": true},
+        {"name": "required_privileges", "required": true},
+        {"name": "guard_checked", "required": true},
+        {"name": "fails_closed", "required": true},
+        {"name": "violated_invariant", "required": true},
+        {"name": "impact", "required": true},
+        {"name": "contract_surface", "required": true},
+        {"name": "severity", "required": true},
+        {"name": "confidence", "required": true},
+        {"name": "evidence", "required": true},
+        {"name": "verification", "required": true},
+        {"name": "preconditions", "required": true},
+        {"name": "access_level", "required": true},
+        {"name": "expected_total", "required": false, "fill": {"source_field": "expected_total"}}
+      ]
+    },
+    {
+      "tool_name": "write_defense_verification_completion",
+      "collection": "DefenseVerificationCompletion",
+      "description": "Close exactly one verification assignment after its verdict is durable, or close the empty-set sentinel.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "assignment_id", "required": false, "fill": {"source_field": "assignment_id"}},
+        {"name": "finding_id", "required": false, "fill": {"source_field": "finding_id"}},
+        {"name": "repository_path", "required": false, "fill": {"source_field": "repository_path"}},
+        {"name": "status", "required": true},
+        {"name": "scan_ledger_status", "required": false, "fill": {"source_field": "scan_ledger_status"}},
+        {"name": "expected_total", "required": false, "fill": {"source_field": "expected_total"}}
+      ]
+    }
+  ]
+}

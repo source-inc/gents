@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-patch-review-task",
+  "name": "Independently review one static patch",
+  "description": null,
+  "behavior_id": "defend-patch-review",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

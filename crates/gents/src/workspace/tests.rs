@@ -257,6 +257,8 @@ fn isolated_workspace_mutation_has_no_host_path() {
         kind: "writer".into(),
         base_sha: "abc".into(),
         seal_hash: "tree".into(),
+        work_unit_id: Some("unit-1".into()),
+        caused_by_correlation: Some("corr-1".into()),
         head_sha: None,
         changed_files: None,
         diff_artifact: None,

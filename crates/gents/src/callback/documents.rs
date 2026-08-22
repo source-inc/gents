@@ -74,6 +74,7 @@ const RESULT_FIELDS: &str = r#"
     invocation_id
     owner_deployment_id
     workspace_id
+    work_unit_id
     caused_by_correlation
     created_at
 "#;
@@ -207,6 +208,8 @@ pub struct CallbackResultDoc {
     pub owner_deployment_id: String,
     #[serde(default)]
     pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub work_unit_id: Option<String>,
     #[serde(default)]
     pub caused_by_correlation: Option<String>,
     #[serde(default)]
@@ -794,6 +797,7 @@ pub async fn create_callback_result(
         .clone()
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
     let workspace = result.workspace_id.as_deref().unwrap_or("");
+    let work_unit_id = result.work_unit_id.as_deref().unwrap_or("");
     let correlation = result.caused_by_correlation.as_deref().unwrap_or("");
     let mutation = format!(
         r#"mutation {{
@@ -802,6 +806,7 @@ pub async fn create_callback_result(
                 invocation_id: "{invocation_id}",
                 owner_deployment_id: "{owner}",
                 workspace_id: "{workspace}",
+                work_unit_id: "{work_unit_id}",
                 caused_by_correlation: "{correlation}",
                 created_at: "{created_at}"
             }}) {{ _docID }}
@@ -810,6 +815,7 @@ pub async fn create_callback_result(
         invocation_id = escape_graphql_string(&result.invocation_id),
         owner = escape_graphql_string(&result.owner_deployment_id),
         workspace = escape_graphql_string(workspace),
+        work_unit_id = escape_graphql_string(work_unit_id),
         correlation = escape_graphql_string(correlation),
         created_at = escape_graphql_string(&now),
     );

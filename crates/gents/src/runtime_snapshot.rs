@@ -147,6 +147,7 @@ pub struct ResolvedEventTrigger {
     pub expected_count_field: Option<String>,
     pub group_timeout_secs: Option<u64>,
     pub group_min_count: usize,
+    pub workspace_authority: Option<String>,
 }
 
 #[derive(Clone, Debug)]

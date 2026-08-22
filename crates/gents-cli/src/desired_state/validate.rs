@@ -731,6 +731,28 @@ pub(crate) fn validate_manifest(manifest: &DesiredStateManifest, errors: &mut Ve
             ));
         }
 
+        if let Some(authority) = trig
+            .workspace_authority
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if let Err(error) = gents::toolset::WorkspaceAuthority::parse(authority) {
+                errors.push(format!(
+                    "event_trigger {} has invalid workspace_authority {authority:?}: {error}",
+                    trig.trigger_id
+                ));
+            }
+        } else if matches!(
+            trig.source_collection.trim(),
+            "CallbackResult" | "WorkspaceReceipt"
+        ) {
+            errors.push(format!(
+                "event_trigger {} source {} requires workspace_authority",
+                trig.trigger_id, trig.source_collection
+            ));
+        }
+
         match trig.concurrency.trim() {
             "parallel" | "serial" | "latest_only" => {}
             other => errors.push(format!(
@@ -887,6 +909,67 @@ pub(crate) fn validate_manifest(manifest: &DesiredStateManifest, errors: &mut Ve
                     )),
                 }
             }
+        }
+    }
+
+    for binding in &manifest.callback_bindings {
+        let binding_id = binding.binding_id.trim();
+        if binding_id.is_empty() {
+            errors.push(
+                "callback-bindings manifest contains a binding with an empty binding_id"
+                    .to_string(),
+            );
+            continue;
+        }
+        if binding.source_collection.trim().is_empty() {
+            errors.push(format!(
+                "callback_binding {binding_id} must contain a non-empty source_collection"
+            ));
+        } else if let Err(error) =
+            gents::graphql::validate_collection_identifier(binding.source_collection.trim())
+        {
+            errors.push(format!(
+                "callback_binding {binding_id} has invalid source_collection {:?}: {error}",
+                binding.source_collection
+            ));
+        }
+        if binding.event_kind.trim() != "created" {
+            errors.push(format!(
+                "callback_binding {binding_id} uses unsupported event_kind {:?} (v1 supports only \"created\")",
+                binding.event_kind
+            ));
+        }
+        if binding
+            .builtin_emitter
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+            && binding
+                .module_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+        {
+            errors.push(format!(
+                "callback_binding {binding_id} needs builtin_emitter or module_id"
+            ));
+        }
+    }
+
+    for placement in &manifest.repository_placements {
+        if placement.repository_id.trim().is_empty() {
+            errors.push(
+                "repository-placements manifest contains a placement with an empty repository_id"
+                    .to_string(),
+            );
+        }
+        if placement.host_path.trim().is_empty() {
+            errors.push(format!(
+                "repository_placement {} must contain a non-empty host_path",
+                placement.repository_id
+            ));
         }
     }
 }
@@ -1816,6 +1899,8 @@ mod tests {
                 .unwrap_or_default(),
             schedules: Vec::new(),
             event_triggers: Vec::new(),
+            callback_bindings: Vec::new(),
+            repository_placements: Vec::new(),
         }
     }
 

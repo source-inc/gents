@@ -1,0 +1,34 @@
+{
+  "surface_id": "defend-verification-plan-io",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Candidate ledger to verification assignments",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_defense_candidate",
+      "collection": "DefenseCandidateFinding",
+      "description": "Load the closed candidate ledger for this run.",
+      "fields": ["finding_id", "area_id", "source_revision", "source_tree_state", "claim_kind", "claimed_severity"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_defense_verification_assignment",
+      "collection": "DefenseVerificationAssignment",
+      "description": "Create one member of the closed verifier work set, including the empty-set sentinel.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1, "expected_count_field": "expected_total"},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "assignment_id", "required": true},
+        {"name": "finding_id", "required": true},
+        {"name": "area_id", "required": true},
+        {"name": "repository_path", "required": false, "fill": {"source_field": "repository_path"}},
+        {"name": "source_revision", "required": true},
+        {"name": "source_tree_state", "required": true},
+        {"name": "status", "required": true},
+        {"name": "scan_ledger_status", "required": true},
+        {"name": "expected_total", "required": true}
+      ]
+    }
+  ]
+}

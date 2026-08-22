@@ -275,6 +275,26 @@ const TOOL_SELECTION_ADD_LSP_FIELDS_PATCH: &str = r#"[
   {"op":"add","path":"/ToolSelection/Fields/-","value":{"Name":"lsp_config","Kind":"String"}},
   {"op":"replace","path":"/IsActive","value":false}
 ]"#;
+
+const EVENT_TRIGGER_BASELINE_SDL: &str = include_str!("baseline/event_trigger.graphql");
+const CALLBACK_RESULT_BASELINE_SDL: &str = include_str!("baseline/callback_result.graphql");
+const WORKSPACE_RECEIPT_BASELINE_SDL: &str = include_str!("baseline/workspace_receipt.graphql");
+
+const EVENT_TRIGGER_ADD_WORKSPACE_AUTHORITY_PATCH: &str = r#"[
+  {"op":"add","path":"/EventTrigger/Fields/-","value":{"Name":"workspace_authority","Kind":"String"}},
+  {"op":"replace","path":"/IsActive","value":false}
+]"#;
+
+const CALLBACK_RESULT_ADD_WORK_UNIT_ID_PATCH: &str = r#"[
+  {"op":"add","path":"/CallbackResult/Fields/-","value":{"Name":"work_unit_id","Kind":"String"}},
+  {"op":"replace","path":"/IsActive","value":false}
+]"#;
+
+const WORKSPACE_RECEIPT_ADD_LINEAGE_FIELDS_PATCH: &str = r#"[
+  {"op":"add","path":"/WorkspaceReceipt/Fields/-","value":{"Name":"work_unit_id","Kind":"String"}},
+  {"op":"add","path":"/WorkspaceReceipt/Fields/-","value":{"Name":"caused_by_correlation","Kind":"String"}},
+  {"op":"replace","path":"/IsActive","value":false}
+]"#;
 /// Frozen baseline SDL set, ordered like
 /// `gents_protocol::schemas::{RUNTIME_ALL, ALL}` and feature-invariant (includes
 /// AgentMemory). Collections with post-cutover changes use frozen local SDL
@@ -365,7 +385,7 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
     ),
     baseline_entry!(
         gents_protocol::schemas::WORKSPACE_RECEIPT_NAME,
-        gents_protocol::schemas::WORKSPACE_RECEIPT,
+        WORKSPACE_RECEIPT_BASELINE_SDL,
         "bafyreibhkbakhtousobptnsedlksgpm2x4fwicmdbmutx2ndpvrai5vame"
     ),
     baseline_entry!(
@@ -385,7 +405,7 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
     ),
     baseline_entry!(
         gents_protocol::schemas::CALLBACK_RESULT_NAME,
-        gents_protocol::schemas::CALLBACK_RESULT,
+        CALLBACK_RESULT_BASELINE_SDL,
         "bafyreib7bwk6btbxbumfe6pabj4avfh6alhtgck4jxrifo5odi5qx5l2ru"
     ),
     baseline_entry!(
@@ -486,7 +506,7 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
     ),
     baseline_entry!(
         gents_protocol::schemas::EVENT_TRIGGER_NAME,
-        gents_protocol::schemas::EVENT_TRIGGER,
+        EVENT_TRIGGER_BASELINE_SDL,
         "bafyreidtnxrndbqf7bkw7nzydp45hxgutjewh5w3ug2naxx3f4oudsnymq"
     ),
     baseline_entry!(
@@ -601,6 +621,33 @@ pub static DEFAULT_STEPS: &[MigrationStep<'static>] = &[
         expected_version: Some("bafyreibzvuogmrsg7z5mz2mlnmb2f5avdas54a35fpoghu2bbwyt4fiame"),
         expected_transform: None,
         expected_state: CollectionExpectation::fields(&["enable_lsp", "lsp_config"]),
+    },
+    MigrationStep::PatchVersioned {
+        id: "event-trigger-add-workspace-authority",
+        collection: gents_protocol::schemas::EVENT_TRIGGER_NAME,
+        patch: EVENT_TRIGGER_ADD_WORKSPACE_AUTHORITY_PATCH,
+        lens: None,
+        expected_version: Some("bafyreig4ta2rafasuureoay2lzsogkgjio52se4n5mmzhzkjvpghtftztu"),
+        expected_transform: None,
+        expected_state: CollectionExpectation::fields(&["workspace_authority"]),
+    },
+    MigrationStep::PatchVersioned {
+        id: "callback-result-add-work-unit-id",
+        collection: gents_protocol::schemas::CALLBACK_RESULT_NAME,
+        patch: CALLBACK_RESULT_ADD_WORK_UNIT_ID_PATCH,
+        lens: None,
+        expected_version: Some("bafyreih6fsebgzwhbn7jlt7v463egogs6nto7lynjjfl5qcxsve3lf6yby"),
+        expected_transform: None,
+        expected_state: CollectionExpectation::fields(&["work_unit_id"]),
+    },
+    MigrationStep::PatchVersioned {
+        id: "workspace-receipt-add-lineage-fields",
+        collection: gents_protocol::schemas::WORKSPACE_RECEIPT_NAME,
+        patch: WORKSPACE_RECEIPT_ADD_LINEAGE_FIELDS_PATCH,
+        lens: None,
+        expected_version: Some("bafyreihrwpefsqgyqikoou4vvd2e5s73lv4y36j2uwjd35uqpge6rn7cjm"),
+        expected_transform: None,
+        expected_state: CollectionExpectation::fields(&["work_unit_id", "caused_by_correlation"]),
     },
 ];
 

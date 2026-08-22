@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-patch-security-review-task",
+  "name": "Adversarially re-attack one reviewed patch",
+  "description": "Checks exploit closure, siblings, bypasses, and contract alignment.",
+  "behavior_id": "defend-patch-security-review",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

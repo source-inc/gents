@@ -1,0 +1,61 @@
+{
+  "surface_id": "defend-scan-writes",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Static candidate and area-sentinel writes",
+  "enabled": true,
+  "entries": [
+    {
+      "tool_name": "write_defense_candidate",
+      "collection": "DefenseCandidateFinding",
+      "description": "Record one plausible, evidenced security candidate for independent verification. Classification invariant: vulnerability requires claimed_severity HIGH, MEDIUM, or LOW; hardening, correctness, operational, and specification require claimed_severity NONE.",
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "finding_id", "required": true},
+        {"name": "area_id", "required": false, "fill": {"source_field": "area_id"}},
+        {"name": "source_revision", "required": false, "fill": {"source_field": "source_revision"}},
+        {"name": "source_tree_state", "required": false, "fill": {"source_field": "source_tree_state"}},
+        {"name": "claim_kind", "required": true},
+        {"name": "root_cause_key", "required": true},
+        {"name": "security_boundary", "required": true},
+        {"name": "attacker_identity", "required": true},
+        {"name": "attacker_controlled_input", "required": true},
+        {"name": "control_source", "required": true},
+        {"name": "entry_point", "required": true},
+        {"name": "sink", "required": true},
+        {"name": "default_reachable", "required": true},
+        {"name": "required_configuration", "required": true},
+        {"name": "required_privileges", "required": true},
+        {"name": "guard_checked", "required": true},
+        {"name": "fails_closed", "required": true},
+        {"name": "violated_invariant", "required": true},
+        {"name": "category", "required": true},
+        {"name": "claimed_severity", "required": true},
+        {"name": "confidence", "required": true},
+        {"name": "path", "required": true},
+        {"name": "line", "required": true},
+        {"name": "title", "required": true},
+        {"name": "description", "required": true},
+        {"name": "exploit_scenario", "required": true},
+        {"name": "recommendation", "required": true},
+        {"name": "evidence", "required": true},
+        {"name": "threat_ids", "required": true}
+      ]
+    },
+    {
+      "tool_name": "write_defense_scan_result",
+      "collection": "DefenseScanResult",
+      "description": "Close one static review area after all of its candidates are recorded.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "area_id", "required": false, "fill": {"source_field": "area_id"}},
+        {"name": "repository_path", "required": false, "fill": {"source_field": "repository_path"}},
+        {"name": "expected_total", "required": false, "fill": {"source_field": "expected_total"}},
+        {"name": "status", "required": true},
+        {"name": "finding_count", "required": true},
+        {"name": "coverage", "required": true},
+        {"name": "summary", "required": true}
+      ]
+    }
+  ]
+}

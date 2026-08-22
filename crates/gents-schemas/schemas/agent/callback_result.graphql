@@ -5,6 +5,7 @@ type CallbackResult @branchable {
     invocation_id: String @index @immutable
     owner_deployment_id: String @index @immutable
     workspace_id: String @index
+    work_unit_id: String @index
     caused_by_correlation: String @index @immutable
     created_at: String @index
 }

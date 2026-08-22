@@ -12,6 +12,7 @@ type EventTrigger @branchable {
     expected_count_field: String
     group_timeout_secs: Int
     group_min_count: Int
+    workspace_authority: String
     created_at: DateTime @index(direction: DESC)
     updated_at: DateTime @index(direction: DESC)
     last_attempt_at: DateTime @index(direction: DESC)

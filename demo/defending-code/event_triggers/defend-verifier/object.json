@@ -1,0 +1,15 @@
+{
+  "trigger_id": "defend-verifier",
+  "task_id": "defend-verifier-task",
+  "source_collection": "DefenseVerificationAssignment",
+  "event_kind": "created",
+  "filter": null,
+  "correlation_field": "run_id",
+  "fire_mode": "per_document",
+  "expected_count": null,
+  "expected_count_field": null,
+  "group_timeout_secs": null,
+  "group_min_count": null,
+  "enabled": true,
+  "concurrency": "parallel"
+}

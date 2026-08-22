@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-verification-plan-task",
+  "name": "Materialize the closed candidate verification work set",
+  "description": "Writes graph-native assignments that trigger verifier requests.",
+  "behavior_id": "defend-verification-plan",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

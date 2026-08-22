@@ -740,6 +740,8 @@ mod tests {
             kind: RECEIPT_KIND_WRITER.to_string(),
             base_sha: "base".into(),
             seal_hash: "hash-1".into(),
+            work_unit_id: Some("unit-1".into()),
+            caused_by_correlation: Some("corr-1".into()),
             head_sha: None,
             changed_files: None,
             diff_artifact: None,

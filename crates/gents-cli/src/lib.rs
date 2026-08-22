@@ -399,7 +399,7 @@ pub(crate) const EXPORT_TASK_FIELDS: &str =
 pub(crate) const EXPORT_SCHEDULE_FIELDS: &str =
     "schedule_id task_id interval_secs cron timezone missed_run_policy enabled concurrency created_at updated_at";
 pub(crate) const EXPORT_EVENT_TRIGGER_FIELDS: &str =
-    "trigger_id task_id source_collection event_kind filter correlation_field fire_mode expected_count expected_count_field group_timeout_secs group_min_count enabled concurrency created_at updated_at";
+    "trigger_id task_id source_collection event_kind filter correlation_field fire_mode expected_count expected_count_field group_timeout_secs group_min_count workspace_authority enabled concurrency created_at updated_at";
 
 pub fn run_cli() -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()

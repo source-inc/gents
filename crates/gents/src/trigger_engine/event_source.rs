@@ -1018,13 +1018,10 @@ impl EventSource {
         trigger: &crate::runtime_snapshot::ResolvedEventTrigger,
         doc: &serde_json::Value,
     ) -> anyhow::Result<Option<String>> {
-        let Some(surface) = snapshot.tool_surface(&trigger.task.behavior_id) else {
-            return Ok(None);
-        };
-        let fields = surface.source_fill_fields();
-        if fields.is_empty() {
-            return Ok(None);
-        }
+        let fields = snapshot
+            .tool_surface(&trigger.task.behavior_id)
+            .map(|surface| surface.source_fill_fields())
+            .unwrap_or_default();
         let mut source_fields = std::collections::BTreeMap::new();
         for field in fields {
             let value = doc.get(&field).ok_or_else(|| {
@@ -1042,6 +1039,14 @@ impl EventSource {
                 ),
             };
             source_fields.insert(field, canonical);
+        }
+        crate::lifecycle::snapshot_workspace_lineage_source_fields(
+            doc,
+            &mut source_fields,
+            trigger.workspace_authority.as_deref(),
+        );
+        if source_fields.is_empty() {
+            return Ok(None);
         }
         let encoded = serde_json::to_string(&crate::lifecycle::TriggerExecutionContext {
             version: 1,

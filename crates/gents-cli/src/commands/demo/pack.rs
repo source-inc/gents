@@ -3429,7 +3429,8 @@ mod tests {
         )
         .expect("maintenance execute trigger should load");
         assert_eq!(execute_trigger["concurrency"], "serial");
-        assert_eq!(execute_trigger["source_collection"], "MaintenanceReport");
+        assert_eq!(execute_trigger["source_collection"], "CallbackResult");
+        assert_eq!(execute_trigger["workspace_authority"], "readWrite");
 
         let execute_prompt = std::fs::read_to_string(
             pack.join("tasks")
@@ -3438,10 +3439,11 @@ mod tests {
         )
         .expect("maintenance execute prompt should load");
         assert!(execute_prompt.contains("single execution owner"));
-        assert!(execute_prompt.contains("On a fresh execution with no prior results"));
-        assert!(execute_prompt.contains("On a valid completed-prefix resume"));
         assert!(execute_prompt.contains("Process packages strictly in numeric order"));
         assert!(execute_prompt.contains("write_maintenance_execution_summary"));
+        assert!(!execute_prompt.contains("make worktree BRANCH="));
+        assert!(execute_prompt.contains("Do not run `git commit`"));
+        assert!(execute_prompt.contains("Do not run `make worktree`"));
 
         let makefile = std::fs::read_to_string(pack.join("../../Makefile"))
             .expect("repository Makefile should load");
@@ -3470,6 +3472,54 @@ mod tests {
         assert!(publish_prompt.contains("cargo fmt --all --check"));
         assert!(publish_prompt.contains("poll at intervals no longer than 60 seconds"));
         assert!(publish_prompt.contains("Never kill by port or broad process-name match"));
+        assert!(!publish_prompt.contains("make worktree BRANCH="));
+        assert!(publish_prompt.contains("Do not run `make worktree`"));
+    }
+
+    #[test]
+    fn workspace_packs_bind_callback_bindings_and_forbid_prompt_worktrees() {
+        let demo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../demo");
+        for (pack_name, binding_id, source) in [
+            (
+                "defending-code",
+                "defense-patch-workspace",
+                "DefensePatchAssignment",
+            ),
+            (
+                "repo-maintenance",
+                "maintenance-execute-workspace",
+                "MaintenanceReport",
+            ),
+        ] {
+            let pack = demo.join(pack_name);
+            let binding = read_pack_json_defaults(
+                &pack
+                    .join("callback-bindings")
+                    .join(binding_id)
+                    .join("object.json"),
+            )
+            .unwrap_or_else(|error| panic!("{pack_name} callback binding should load: {error:#}"));
+            assert_eq!(binding["binding_id"], binding_id);
+            assert_eq!(binding["source_collection"], source);
+            assert_eq!(binding["builtin_emitter"], "create_workspace");
+
+            let patch_or_execute = if pack_name == "defending-code" {
+                pack.join("tasks/defend-patch-task/prompt.md")
+            } else {
+                pack.join("tasks/maintenance-execute-task/prompt.md")
+            };
+            let prompt = std::fs::read_to_string(patch_or_execute)
+                .unwrap_or_else(|error| panic!("{pack_name} worker prompt: {error}"));
+            assert!(
+                !prompt.contains("make worktree BRANCH="),
+                "{pack_name} must not instruct make worktree"
+            );
+            assert!(
+                prompt.contains("Do not run `git commit`")
+                    || prompt.contains("Do not run git commit"),
+                "{pack_name} must forbid git commit"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,40 @@
+type DefendingFinding {
+  run_id: String @index @immutable
+  finding_id: String @index(unique: true) @immutable
+  area_id: String @immutable
+  source_revision: String @immutable
+  source_tree_state: String @immutable
+  claim_kind: String @immutable
+  root_cause_key: String @immutable
+  security_boundary: String @immutable
+  attacker_identity: String @immutable
+  attacker_controlled_input: String @immutable
+  control_source: String @immutable
+  entry_point: String @immutable
+  sink: String @immutable
+  attacker_control: String @immutable
+  default_reachable: String @immutable
+  required_configuration: String @immutable
+  required_privileges: String @immutable
+  guard_checked: String @immutable
+  fails_closed: String @immutable
+  violated_invariant: String @immutable
+  impact: String @immutable
+  contract_surface: String @immutable
+  category: String @immutable
+  severity: String @immutable
+  confidence: String @immutable
+  path: String @immutable
+  line: String @immutable
+  title: String @immutable
+  description: String @immutable
+  exploit_scenario: String @immutable
+  recommendation: String @immutable
+  evidence: String @immutable
+  verification: String @immutable
+  preconditions: String @immutable
+  access_level: String @immutable
+  owner_hint: String @immutable
+  threat_ids: String @immutable
+  verdict: String @immutable
+}

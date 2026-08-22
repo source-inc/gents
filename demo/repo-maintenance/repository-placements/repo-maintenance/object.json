@@ -1,0 +1,5 @@
+{
+  "repository_id": "repo-maintenance",
+  "host_path": "${GENTS_MAINTENANCE_ROOT:-.}",
+  "enabled": true
+}

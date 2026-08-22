@@ -1,0 +1,40 @@
+{
+  "surface_id": "defend-patch-skip-writes",
+  "agent_did": "did:key:zDefendingCodeAgentPlaceholder0000000000000000000000",
+  "display_name": "Skipped-assignment no-patch write",
+  "enabled": true,
+  "entries": [
+    {
+      "tool_name": "write_defense_patch_candidate",
+      "collection": "DefensePatchCandidate",
+      "description": "Persist one explicit no-patch sentinel for a skipped assignment.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "patch_id", "required": false, "fill": {"source_field": "assignment_id"}},
+        {"name": "cluster_id", "required": false, "fill": {"source_field": "cluster_id"}},
+        {"name": "finding_id", "required": false, "fill": {"source_field": "finding_id"}},
+        {"name": "member_finding_ids", "required": false, "fill": {"source_field": "member_finding_ids"}},
+        {"name": "contract_review_id", "required": false, "fill": {"source_field": "contract_review_id"}},
+        {"name": "contract_disposition", "required": false, "fill": {"source_field": "contract_disposition"}},
+        {"name": "status", "required": true},
+        {"name": "workspace_id", "required": true},
+        {"name": "repository_path", "required": false, "fill": {"source_field": "repository_path"}},
+        {"name": "base_revision", "required": false, "fill": {"source_field": "base_revision"}},
+        {"name": "base_tree_state", "required": false, "fill": {"source_field": "base_tree_state"}},
+        {"name": "workspace_requirement", "required": true},
+        {"name": "path", "required": true},
+        {"name": "line", "required": true},
+        {"name": "category", "required": true},
+        {"name": "diff", "required": true},
+        {"name": "diff_sha256", "required": true},
+        {"name": "rationale", "required": true},
+        {"name": "variants_checked", "required": true},
+        {"name": "bypass_considered", "required": true},
+        {"name": "test_note", "required": true},
+        {"name": "validation_plan", "required": true},
+        {"name": "expected_total", "required": false, "fill": {"source_field": "expected_total"}}
+      ]
+    }
+  ]
+}

@@ -13,7 +13,7 @@ const TASK_FIELDS: &str =
     "task_id name description behavior_id prompt_template enabled output_schema_ref created_at updated_at";
 const BEHAVIOR_FIELDS: &str = "behavior_id agent_did display_name description summary backend_id model_name tool_selection_id inference_profile_id compaction_strategy compaction_threshold enabled created_at";
 const SCHEDULE_FIELDS: &str = "schedule_id task_id interval_secs cron timezone missed_run_policy enabled concurrency next_run_at last_attempt_at last_status last_error fire_count created_at updated_at";
-const EVENT_TRIGGER_FIELDS: &str = "trigger_id task_id source_collection event_kind filter correlation_field fire_mode expected_count expected_count_field group_timeout_secs group_min_count enabled concurrency last_attempt_at last_fired_source_doc_id last_status last_error fire_count created_at updated_at";
+const EVENT_TRIGGER_FIELDS: &str = "trigger_id task_id source_collection event_kind filter correlation_field fire_mode expected_count expected_count_field group_timeout_secs group_min_count workspace_authority enabled concurrency last_attempt_at last_fired_source_doc_id last_status last_error fire_count created_at updated_at";
 
 pub(crate) async fn dispatch(command: TaskCommand) -> Result<()> {
     match command {

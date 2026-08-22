@@ -332,12 +332,15 @@ pub(crate) fn manifest_from_export_bundle(
                         "expected_count_field",
                         "group_timeout_secs",
                         "group_min_count",
+                        "workspace_authority",
                         "enabled",
                         "concurrency",
                     ],
                 )
             })
             .collect::<Result<Vec<_>>>()?,
+        callback_bindings: Vec::new(),
+        repository_placements: Vec::new(),
     };
     normalize_manifest(&mut manifest);
     Ok(manifest)

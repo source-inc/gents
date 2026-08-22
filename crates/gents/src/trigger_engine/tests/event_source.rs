@@ -22,6 +22,7 @@ fn resolved_event_trigger(
         expected_count_field: None,
         group_timeout_secs: None,
         group_min_count: 1,
+        workspace_authority: None,
     }
 }
 
@@ -49,6 +50,7 @@ fn resolved_event_trigger_with_filter(
         expected_count_field: None,
         group_timeout_secs: None,
         group_min_count: 1,
+        workspace_authority: None,
     }
 }
 

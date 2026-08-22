@@ -1,0 +1,9 @@
+{
+  "task_id": "defend-remediation-plan-task",
+  "name": "Materialize contract-aware patch assignments",
+  "description": "Creates a closed document-triggered patch work set.",
+  "behavior_id": "defend-remediation-plan",
+  "prompt_template": "./prompt.md",
+  "enabled": true,
+  "output_schema_ref": null
+}

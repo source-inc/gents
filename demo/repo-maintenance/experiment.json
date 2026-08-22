@@ -5,8 +5,8 @@
     "inference_url": "${GENTS_MAINTENANCE_COORDINATOR_ENDPOINT:-http://100.87.27.25:8000/v1}",
     "model_name": "${GENTS_MAINTENANCE_COORDINATOR_MODEL:-GLM-5.2}",
     "tool_package": "write",
-    "tool_root": "${GENTS_MAINTENANCE_WORKTREE_PARENT:-..}",
-    "tool_root_env_var": "GENTS_MAINTENANCE_WORKTREE_PARENT",
+    "tool_root": "${GENTS_MAINTENANCE_ROOT:-.}",
+    "tool_root_env_var": "GENTS_MAINTENANCE_ROOT",
     "tool_root_markers": [],
     "backend_preset": "vllm",
     "openai_wire_api": "chat-completions"
