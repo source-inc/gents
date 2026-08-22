@@ -3630,6 +3630,36 @@ mod tests {
                         "all-skip must write {collection} sentinels for collection_counts"
                     );
                 }
+                let review_trigger = read_pack_json_defaults(
+                    &pack
+                        .join("event_triggers")
+                        .join("defend-patch-review")
+                        .join("object.json"),
+                )
+                .expect("defend-patch-review trigger should load");
+                assert_eq!(
+                    review_trigger["filter"],
+                    "{ status: { _neq: \"skipped\" } }"
+                );
+                let security_trigger = read_pack_json_defaults(
+                    &pack
+                        .join("event_triggers")
+                        .join("defend-patch-security-review")
+                        .join("object.json"),
+                )
+                .expect("defend-patch-security-review trigger should load");
+                assert_eq!(
+                    security_trigger["filter"],
+                    "{ verdict: { _neq: \"skipped\" } }"
+                );
+                let skip_prompt = std::fs::read_to_string(
+                    pack.join("tasks/defend-patch-skip-task/prompt.md"),
+                )
+                .expect("skip prompt should load");
+                assert!(
+                    !skip_prompt.contains("workspace_id=none"),
+                    "skip must not use the string none as workspace_id"
+                );
             }
 
             let patch_or_execute = if pack_name == "defending-code" {

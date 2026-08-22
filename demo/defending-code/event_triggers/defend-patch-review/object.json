@@ -3,7 +3,7 @@
   "task_id": "defend-patch-review-task",
   "source_collection": "DefensePatchValidation",
   "event_kind": "created",
-  "filter": null,
+  "filter": "{ status: { _neq: \"skipped\" } }",
   "correlation_field": "run_id",
   "fire_mode": "per_document",
   "expected_count": null,
