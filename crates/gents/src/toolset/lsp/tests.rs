@@ -2289,6 +2289,7 @@ async fn overlay_read_write_meets_unrestricted_lsp_sandbox_to_workspace_write() 
         execution_mode: CommandExecutionMode::Unrestricted,
         sandbox: CommandExecutionMode::Unrestricted,
         deny_all_argv: false,
+        deny_git_metadata_writes: false,
     };
     let met =
         crate::tool_call_lifecycle::runtime::scope_request_tool_execution_with_workspace_overlay(

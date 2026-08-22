@@ -177,6 +177,7 @@ pub(crate) async fn write_pending_agent_request_with_lineage_and_conversation_ti
         trigger_lineage,
         conversation_title,
         None,
+        None,
     )
     .await
 }
@@ -190,6 +191,7 @@ pub(crate) async fn write_pending_agent_request_with_lineage_workspace_and_conve
     trigger_lineage: TriggerLineage,
     conversation_title: Option<&str>,
     workspace_lineage: Option<&WorkspaceLineage>,
+    request_id: Option<&str>,
 ) -> Result<EnqueuedAgentRequest> {
     if trigger_lineage.trigger_kind.as_deref() == Some("manual")
         && trigger_lineage.trigger_id.is_some()
@@ -201,7 +203,11 @@ pub(crate) async fn write_pending_agent_request_with_lineage_workspace_and_conve
     }
 
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let request_id = uuid::Uuid::new_v4().to_string();
+    let request_id = request_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let session_id = uuid::Uuid::new_v4().to_string();
 
     let escaped_request_id = escape_graphql_string(&request_id);

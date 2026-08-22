@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::action_plan::CreateWorkspaceAction;
 use super::documents::ProvisioningObservation;
+use super::instructions::{InstructionFile, InstructionManifest, DEFAULT_INSTRUCTION_PATHS};
 use super::LogicalWorkspaceIdentity;
 
 const IDENTITY_FILE_NAME: &str = "gents-workspace-identity.json";
@@ -143,6 +144,98 @@ pub(crate) fn write_identity(dest: &Path, identity: &LogicalWorkspaceIdentity) -
 
 pub(crate) fn observed_tree_hash(dest: &Path) -> Result<String> {
     git_output(dest, &["rev-parse", "HEAD^{tree}"])
+}
+
+/// Working-tree identity for seal: temp-index `write-tree`, including
+/// uncommitted writer edits and excluding gitignored paths.
+pub(crate) fn working_tree_hash(dest: &Path) -> Result<String> {
+    Ok(capture_seal_snapshot(dest)?.tree_hash)
+}
+
+pub(crate) struct SealSnapshot {
+    pub tree_hash: String,
+    pub diff: String,
+    pub changed_files: Vec<String>,
+}
+
+pub(crate) fn capture_seal_snapshot(dest: &Path) -> Result<SealSnapshot> {
+    let tmp = tempfile::Builder::new()
+        .prefix("gents-ws-index")
+        .tempdir()
+        .context("creating temporary git index for seal")?;
+    let index = tmp.path().join("index");
+    git_run_with_index(dest, &index, &["add", "-A", "--"])?;
+    let tree_hash = git_output_with_index(dest, &index, &["write-tree"])?;
+    let diff = git_output_with_index(dest, &index, &["diff", "--binary", "--cached", "HEAD"])?;
+    let names = git_output_with_index(dest, &index, &["diff", "--name-only", "--cached", "HEAD"])?;
+    let changed_files = names
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    Ok(SealSnapshot {
+        tree_hash,
+        diff,
+        changed_files,
+    })
+}
+
+/// Read instruction files from `base_sha` blobs. Never reads the live worktree.
+/// Missing paths are omitted; any other `git show` failure fails closed.
+pub(crate) fn capture_instruction_manifest(repo: &Path, base_sha: &str) -> Result<String> {
+    let mut files = Vec::new();
+    for path in DEFAULT_INSTRUCTION_PATHS {
+        match git_show_blob(repo, base_sha, path)? {
+            Some(bytes) => files.push(InstructionFile::from_bytes(path, &bytes)),
+            None => continue,
+        }
+    }
+    Ok(InstructionManifest::new(base_sha, files).to_json_string())
+}
+
+fn git_show_blob(repo: &Path, base_sha: &str, path: &str) -> Result<Option<Vec<u8>>> {
+    let spec = format!("{base_sha}:{path}");
+    let output = git_command(repo, &["show", &spec])
+        .output()
+        .with_context(|| format!("git show {spec} in {}", repo.display()))?;
+    if output.status.success() {
+        return Ok(Some(output.stdout));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if git_blob_missing(&stderr) {
+        return Ok(None);
+    }
+    bail!("git show {spec} failed: {}", stderr.trim())
+}
+
+fn git_blob_missing(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("does not exist") || lower.contains("exists on disk, but not in")
+}
+
+const SEAL_FILE_NAME: &str = "gents-workspace-seal.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct RecordedSeal {
+    seal_hash: String,
+    base_sha: String,
+}
+
+pub(crate) fn write_seal_marker(dest: &Path, seal_hash: &str, base_sha: &str) -> Result<()> {
+    let path = seal_marker_path(dest)?;
+    let recorded = RecordedSeal {
+        seal_hash: seal_hash.to_string(),
+        base_sha: base_sha.to_string(),
+    };
+    let json = serde_json::to_vec_pretty(&recorded).context("serializing workspace seal")?;
+    fs::write(&path, json).with_context(|| format!("writing workspace seal {}", path.display()))?;
+    Ok(())
+}
+
+fn seal_marker_path(dest: &Path) -> Result<PathBuf> {
+    let git_dir = git_output(dest, &["rev-parse", "--absolute-git-dir"])?;
+    Ok(PathBuf::from(git_dir).join(SEAL_FILE_NAME))
 }
 
 pub(crate) fn resolve_base_sha(source: &Path, base_sha: &str) -> Result<String> {
@@ -318,7 +411,15 @@ fn clone_dir(src: &Path, dst: &Path, label: &str) -> Result<()> {
 }
 
 pub(crate) fn git_run(cwd: &Path, args: &[&str]) -> Result<()> {
-    let output = git_command(cwd, args)
+    git_run_inner(git_command(cwd, args), cwd, args)
+}
+
+fn git_run_with_index(cwd: &Path, index: &Path, args: &[&str]) -> Result<()> {
+    git_run_inner(git_command_with_index(cwd, index, args), cwd, args)
+}
+
+fn git_run_inner(mut cmd: Command, cwd: &Path, args: &[&str]) -> Result<()> {
+    let output = cmd
         .output()
         .with_context(|| format!("running git {} in {}", args.join(" "), cwd.display()))?;
     if output.status.success() {
@@ -340,7 +441,15 @@ fn git_ok(cwd: &Path, args: &[&str]) -> bool {
 }
 
 fn git_output(cwd: &Path, args: &[&str]) -> Result<String> {
-    let output = git_command(cwd, args)
+    git_output_inner(git_command(cwd, args), cwd, args)
+}
+
+fn git_output_with_index(cwd: &Path, index: &Path, args: &[&str]) -> Result<String> {
+    git_output_inner(git_command_with_index(cwd, index, args), cwd, args)
+}
+
+fn git_output_inner(mut cmd: Command, cwd: &Path, args: &[&str]) -> Result<String> {
+    let output = cmd
         .output()
         .with_context(|| format!("running git {} in {}", args.join(" "), cwd.display()))?;
     if !output.status.success() {
@@ -361,5 +470,11 @@ fn git_command(cwd: &Path, args: &[&str]) -> Command {
     cmd.env_remove("GIT_COMMON_DIR");
     cmd.env_remove("GIT_INDEX_FILE");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd
+}
+
+fn git_command_with_index(cwd: &Path, index: &Path, args: &[&str]) -> Command {
+    let mut cmd = git_command(cwd, args);
+    cmd.env("GIT_INDEX_FILE", index);
     cmd
 }

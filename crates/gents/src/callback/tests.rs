@@ -306,6 +306,9 @@ fn recovery_reuses_stored_action_plan() {
             assert_eq!(action.workspace_id, "ws-stored");
             assert_eq!(action.branch, "topic");
         }
+        crate::workspace::HostAction::SealWorkspace(_) => {
+            panic!("expected create_workspace")
+        }
     }
     invocation.action_plan = None;
     let missing = resolve_action_plan(&invocation, &binding(), &mutated).unwrap_err();
@@ -390,6 +393,9 @@ fn builtin_emitter_builds_create_workspace_plan() {
         crate::workspace::HostAction::CreateWorkspace(action) => {
             assert_eq!(action.workspace_id, "ws-1");
             assert_eq!(action.work_unit_id, "unit-1");
+        }
+        crate::workspace::HostAction::SealWorkspace(_) => {
+            panic!("expected create_workspace")
         }
     }
 }

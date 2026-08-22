@@ -7,11 +7,19 @@ use anyhow::{anyhow, bail, Context, Result};
 use defra_node::EmbeddedNode;
 use serde::Deserialize;
 
-use crate::graphql::{escape_graphql_string, first_row, graphql_with_transaction_retry, rows};
+use crate::graphql::{
+    escape_graphql_string, first_row, graphql_mutation_with_transaction_retry,
+    graphql_with_transaction_retry, rows,
+};
 use crate::tool_surface::{resolve_configured_tool_root, FileToolMode};
 use crate::toolset::{workspace_write_sandbox_enforced, WorkspaceAuthority};
 use crate::watcher::AgentRequest;
 
+use super::binding::{admit_workspace_binding, new_binding, AdmitBinding};
+use super::documents::{
+    workspace_binding_upsert_mutation, workspace_bindings_upsert_mutation, WorkspaceBindingDoc,
+    BINDING_ACTIVE,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IsolatedWorkspaceRecord {
@@ -19,6 +27,7 @@ pub(crate) struct IsolatedWorkspaceRecord {
     pub owner_deployment_id: String,
     pub lifecycle_state: String,
     pub seal_hash: Option<String>,
+    pub instruction_manifest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +43,9 @@ pub(crate) struct WorkspaceOverlay {
     pub root: PathBuf,
     pub cwd: PathBuf,
     pub authority: WorkspaceAuthority,
+    pub instruction_manifest: String,
+    #[allow(dead_code)]
+    pub seal_hash: Option<String>,
 }
 
 pub(crate) struct WorkspaceBindInput<'a> {
@@ -46,6 +58,7 @@ pub(crate) struct WorkspaceBindInput<'a> {
     pub operator_tool_root: Option<&'a Path>,
     pub enabled_workspace_roots: &'a [PathBuf],
     pub workspace_write_sandbox_enforced: bool,
+    pub live_tree_hash: Option<&'a str>,
 }
 
 pub(crate) fn workspace_authority_file_mode(authority: WorkspaceAuthority) -> FileToolMode {
@@ -76,7 +89,7 @@ pub(crate) async fn resolve_request_workspace_overlay(
                 "workspace-bound request {workspace_id} is missing workspace_owner_deployment_id"
             )
         })?;
-    let workspace = load_isolated_workspace(node, workspace_id)
+    let workspace = load_isolated_workspace_record(node, workspace_id)
         .await?
         .ok_or_else(|| anyhow!("isolated workspace {workspace_id} not found"))?;
     let local_deployment_id = load_local_deployment_id(node).await?;
@@ -87,7 +100,16 @@ pub(crate) async fn resolve_request_workspace_overlay(
         })?;
     let enabled_workspace_roots = load_enabled_workspace_roots(node).await?;
     let request_cwd = request_workspace_cwd(request);
-    bind_workspace_overlay(
+    let sealed = crate::toolset::normalize_workspace_lifecycle_state(&workspace.lifecycle_state)
+        == Some("sealed");
+    let live_tree_hash = if sealed {
+        Some(super::adapter::working_tree_hash(Path::new(
+            &placement.host_path,
+        ))?)
+    } else {
+        None
+    };
+    let overlay = bind_workspace_overlay(
         &workspace,
         &placement,
         WorkspaceBindInput {
@@ -100,9 +122,11 @@ pub(crate) async fn resolve_request_workspace_overlay(
             operator_tool_root,
             enabled_workspace_roots: &enabled_workspace_roots,
             workspace_write_sandbox_enforced: workspace_write_sandbox_enforced(),
+            live_tree_hash: live_tree_hash.as_deref(),
         },
-    )
-    .map(Some)
+    )?;
+    ensure_request_binding(node, request, &workspace, &local_deployment_id, authority).await?;
+    Ok(Some(overlay))
 }
 
 pub(crate) fn bind_workspace_overlay(
@@ -207,6 +231,19 @@ pub(crate) fn bind_workspace_overlay(
                 "placement observed_tree_hash {observed} does not match workspace seal_hash {workspace_hash}"
             );
         }
+        let live = input
+            .live_tree_hash
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                anyhow!(
+                    "sealed workspace {} requires live tree hash",
+                    input.workspace_id
+                )
+            })?;
+        if live != workspace_hash {
+            bail!("live tree hash {live} does not match workspace seal_hash {workspace_hash}");
+        }
     }
 
     let root = canonicalize_placement_path(&placement.host_path)?;
@@ -235,6 +272,8 @@ pub(crate) fn bind_workspace_overlay(
         root,
         cwd,
         authority: input.authority,
+        instruction_manifest: workspace.instruction_manifest.clone(),
+        seal_hash: workspace.seal_hash.clone(),
     })
 }
 
@@ -289,7 +328,7 @@ fn require_under_ceiling(
     Ok(())
 }
 
-pub(super) fn optional_id(value: Option<&str>) -> Option<&str> {
+pub(crate) fn optional_id(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
@@ -312,12 +351,215 @@ pub(crate) fn request_workspace_cwd(request: &AgentRequest) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+async fn ensure_request_binding(
+    node: &EmbeddedNode,
+    request: &AgentRequest,
+    workspace: &IsolatedWorkspaceRecord,
+    local_deployment_id: &str,
+    authority: WorkspaceAuthority,
+) -> Result<()> {
+    let existing = load_workspace_bindings_for(node, &workspace.workspace_id).await?;
+    let candidate = new_binding(
+        &workspace.workspace_id,
+        &request.request_id,
+        &request.doc_id,
+        authority,
+        local_deployment_id,
+        optional_id(request.workspace_seal_hash.as_deref())
+            .or(optional_id(workspace.seal_hash.as_deref())),
+    );
+    let release_previous = matches!(authority, WorkspaceAuthority::ReadWrite)
+        && previous_read_write_is_stale(
+            node,
+            &workspace.workspace_id,
+            &existing,
+            &request.request_id,
+        )
+        .await?;
+    match admit_workspace_binding(
+        &workspace.workspace_id,
+        &workspace.lifecycle_state,
+        optional_id(workspace.seal_hash.as_deref()),
+        &existing,
+        candidate,
+        release_previous,
+    )? {
+        AdmitBinding::Reuse(_) => Ok(()),
+        AdmitBinding::Create { binding, release } => {
+            for released in release {
+                persist_workspace_binding_doc(node, &released).await?;
+            }
+            persist_workspace_binding_doc(node, &binding).await
+        }
+    }
+}
+
+pub(super) async fn previous_read_write_is_stale(
+    node: &EmbeddedNode,
+    workspace_id: &str,
+    existing: &[WorkspaceBindingDoc],
+    request_id: &str,
+) -> Result<bool> {
+    let others: Vec<_> = existing
+        .iter()
+        .filter(|binding| binding.is_active_read_write() && binding.request_id != request_id)
+        .collect();
+    if others.len() > 1 {
+        anyhow::bail!(
+            "multiple Active ReadWrite bindings exist for workspace {workspace_id}; failing closed"
+        );
+    }
+    let Some(active) = others.into_iter().next() else {
+        return Ok(false);
+    };
+    Ok(!request_is_live(node, &active.request_id).await?)
+}
+
+fn request_lifecycle_is_live(lifecycle_state: Option<&str>, status: Option<&str>) -> bool {
+    let state = optional_id(lifecycle_state).or_else(|| optional_id(status));
+    let Some(state) = state else {
+        return false;
+    };
+    !matches!(
+        state,
+        "completed" | "failed" | "dead" | "interrupted" | "superseded" | "error"
+    )
+}
+
+async fn request_is_live(node: &EmbeddedNode, request_id: &str) -> Result<bool> {
+    let escaped = escape_graphql_string(request_id);
+    let query = format!(
+        r#"{{
+            AgentRequest(filter: {{ request_id: {{ _eq: "{escaped}" }} }}, limit: 1) {{
+                lifecycle_state
+                status
+            }}
+        }}"#
+    );
+    let response =
+        graphql_with_transaction_retry(node, &query, "load AgentRequest liveness").await?;
+    let Some(row) = first_row::<RequestLivenessRow>(&response, "AgentRequest")? else {
+        return Ok(false);
+    };
+    Ok(request_lifecycle_is_live(
+        row.lifecycle_state.as_deref(),
+        row.status.as_deref(),
+    ))
+}
+
+pub(super) async fn load_workspace_bindings_for(
+    node: &EmbeddedNode,
+    workspace_id: &str,
+) -> Result<Vec<WorkspaceBindingDoc>> {
+    let escaped = escape_graphql_string(workspace_id);
+    let query = format!(
+        r#"{{
+            WorkspaceBinding(
+                filter: {{ workspace_id: {{ _eq: "{escaped}" }} }}
+            ) {{
+                binding_id
+                workspace_id
+                request_id
+                request_doc_id
+                authority
+                deployment_id
+                seal_hash
+                lifecycle_state
+            }}
+        }}"#
+    );
+    let response = graphql_with_transaction_retry(node, &query, "load WorkspaceBinding").await?;
+    let mut bindings = Vec::new();
+    for row in rows::<WorkspaceBindingRow>(&response, "WorkspaceBinding")? {
+        let Some(binding_id) = optional_id(row.binding_id.as_deref()) else {
+            continue;
+        };
+        let Some(workspace_id) = optional_id(row.workspace_id.as_deref()) else {
+            continue;
+        };
+        let Some(request_id) = optional_id(row.request_id.as_deref()) else {
+            continue;
+        };
+        bindings.push(WorkspaceBindingDoc {
+            binding_id: binding_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            request_id: request_id.to_string(),
+            request_doc_id: optional_id(row.request_doc_id.as_deref())
+                .unwrap_or("")
+                .to_string(),
+            authority: optional_id(row.authority.as_deref())
+                .unwrap_or("")
+                .to_string(),
+            deployment_id: optional_id(row.deployment_id.as_deref())
+                .unwrap_or("")
+                .to_string(),
+            seal_hash: optional_id(row.seal_hash.as_deref()).map(str::to_string),
+            lifecycle_state: optional_id(row.lifecycle_state.as_deref())
+                .unwrap_or(BINDING_ACTIVE)
+                .to_string(),
+        });
+    }
+    Ok(bindings)
+}
+
+pub(super) async fn persist_workspace_binding_doc(
+    node: &EmbeddedNode,
+    doc: &WorkspaceBindingDoc,
+) -> Result<()> {
+    persist_workspace_binding_docs(node, std::slice::from_ref(doc)).await
+}
+
+pub(super) async fn persist_workspace_binding_docs(
+    node: &EmbeddedNode,
+    docs: &[WorkspaceBindingDoc],
+) -> Result<()> {
+    if docs.is_empty() {
+        return Ok(());
+    }
+    let mutation = if docs.len() == 1 {
+        workspace_binding_upsert_mutation(&docs[0])
+    } else {
+        workspace_bindings_upsert_mutation(docs)
+    };
+    graphql_mutation_with_transaction_retry(node, &mutation, "upsert_WorkspaceBinding")
+        .await
+        .with_context(|| {
+            format!(
+                "persist WorkspaceBinding {}",
+                docs.iter()
+                    .map(|doc| doc.binding_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        })?;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct RequestLivenessRow {
+    lifecycle_state: Option<String>,
+    status: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct WorkspaceBindingRow {
+    binding_id: Option<String>,
+    workspace_id: Option<String>,
+    request_id: Option<String>,
+    request_doc_id: Option<String>,
+    authority: Option<String>,
+    deployment_id: Option<String>,
+    seal_hash: Option<String>,
+    lifecycle_state: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct IsolatedWorkspaceRow {
     workspace_id: Option<String>,
     owner_deployment_id: Option<String>,
     lifecycle_state: Option<String>,
     seal_hash: Option<String>,
+    instruction_manifest: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -339,7 +581,7 @@ struct WorkspaceRootRow {
     enabled: Option<bool>,
 }
 
-async fn load_isolated_workspace(
+pub(crate) async fn load_isolated_workspace_record(
     node: &EmbeddedNode,
     workspace_id: &str,
 ) -> Result<Option<IsolatedWorkspaceRecord>> {
@@ -354,6 +596,7 @@ async fn load_isolated_workspace(
                 owner_deployment_id
                 lifecycle_state
                 seal_hash
+                instruction_manifest
             }}
         }}"#
     );
@@ -375,6 +618,9 @@ async fn load_isolated_workspace(
         owner_deployment_id,
         lifecycle_state,
         seal_hash: optional_id(row.seal_hash.as_deref()).map(str::to_string),
+        instruction_manifest: optional_id(row.instruction_manifest.as_deref())
+            .unwrap_or("{}")
+            .to_string(),
     }))
 }
 

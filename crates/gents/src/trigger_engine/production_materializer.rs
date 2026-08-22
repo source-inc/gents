@@ -159,8 +159,23 @@ impl MaterializerHandle for ProductionMaterializer {
 
         Box::pin(async move {
             let (behavior_name, behavior_did, _deadline_secs, _backend_id) = resolved?;
-            let workspace = WorkspaceLineage::from_trigger_context(trigger_context.as_deref())?;
+            let mut workspace = WorkspaceLineage::from_trigger_context(trigger_context.as_deref())?;
             workspace.require_authority_if_workspace_id()?;
+            if workspace.owner_deployment_id().is_some()
+                && !workspace_bound_request_claimable(
+                    local_deployment_id.as_deref(),
+                    workspace.workspace_id.as_deref(),
+                    workspace.workspace_owner_deployment_id.as_deref(),
+                )
+            {
+                return Err(MaterializeSkip {
+                    reason:
+                        "workspace-bound request is owned by another deployment; not claimable here"
+                            .to_string(),
+                }
+                .into());
+            }
+            crate::workspace::stamp_workspace_lineage(node.as_ref(), &mut workspace).await?;
             if workspace.is_bound()
                 && !workspace_bound_request_claimable(
                     local_deployment_id.as_deref(),
@@ -184,6 +199,15 @@ impl MaterializerHandle for ProductionMaterializer {
             };
             let conversation_title = task_run_conversation_title(&task_label);
             let workspace_ref = workspace.is_bound().then_some(&workspace);
+            let request_id = uuid::Uuid::new_v4().to_string();
+            crate::workspace::materialize_workspace_binding(
+                node.as_ref(),
+                &request_id,
+                "",
+                &workspace,
+                local_deployment_id.as_deref(),
+            )
+            .await?;
             let enqueued =
                 write_pending_agent_request_with_lineage_workspace_and_conversation_title(
                     node.as_ref(),
@@ -194,6 +218,7 @@ impl MaterializerHandle for ProductionMaterializer {
                     lineage,
                     Some(&conversation_title),
                     workspace_ref,
+                    Some(&request_id),
                 )
                 .await?;
             tracing::info!(

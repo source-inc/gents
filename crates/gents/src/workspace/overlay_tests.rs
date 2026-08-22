@@ -25,6 +25,7 @@ fn ready_workspace() -> IsolatedWorkspaceRecord {
         owner_deployment_id: "dep-1".into(),
         lifecycle_state: "ready".into(),
         seal_hash: None,
+        instruction_manifest: "{}".into(),
     }
 }
 
@@ -53,6 +54,7 @@ fn bind_input<'a>(
         operator_tool_root,
         enabled_workspace_roots,
         workspace_write_sandbox_enforced: enforced,
+        live_tree_hash: None,
     }
 }
 
@@ -183,6 +185,7 @@ fn read_only_binds_ready_and_sealed() {
         &placed,
         WorkspaceBindInput {
             seal_hash: Some("hash-1"),
+            live_tree_hash: Some("hash-1"),
             ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
         },
     )
@@ -210,6 +213,7 @@ fn integrate_only_binds_sealed_with_matching_hash() {
         &placed,
         WorkspaceBindInput {
             seal_hash: Some("hash-1"),
+            live_tree_hash: Some("hash-1"),
             ..bind_input(WorkspaceAuthority::Integrate, Some(&operator), &[], false)
         },
     )
@@ -257,6 +261,99 @@ fn sealed_mismatch_and_missing_hash_fail_closed() {
             .contains("observed_tree_hash drifted does not match"),
         "{error:#}"
     );
+}
+
+#[test]
+fn sealed_requires_live_tree_hash() {
+    let (_guard, operator, placement_path) = temp_tree();
+    let mut workspace = ready_workspace();
+    workspace.lifecycle_state = "sealed".into();
+    workspace.seal_hash = Some("hash-1".into());
+    let mut placed = placement(&placement_path);
+    placed.observed_tree_hash = Some("hash-1".into());
+    let error = bind_workspace_overlay(
+        &workspace,
+        &placed,
+        WorkspaceBindInput {
+            seal_hash: Some("hash-1"),
+            live_tree_hash: None,
+            ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("requires live tree hash"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn live_tree_hash_drift_fails_closed() {
+    let (_guard, operator, placement_path) = temp_tree();
+    let mut workspace = ready_workspace();
+    workspace.lifecycle_state = "sealed".into();
+    workspace.seal_hash = Some("hash-1".into());
+    let mut placed = placement(&placement_path);
+    placed.observed_tree_hash = Some("hash-1".into());
+    let overlay = bind_workspace_overlay(
+        &workspace,
+        &placed,
+        WorkspaceBindInput {
+            seal_hash: Some("hash-1"),
+            live_tree_hash: Some("hash-1"),
+            ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
+        },
+    )
+    .unwrap();
+    assert_eq!(overlay.seal_hash.as_deref(), Some("hash-1"));
+
+    let error = bind_workspace_overlay(
+        &workspace,
+        &placed,
+        WorkspaceBindInput {
+            seal_hash: Some("hash-1"),
+            live_tree_hash: Some("drifted"),
+            ..bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false)
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("live tree hash drifted does not match"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn request_lifecycle_treats_input_required_live_and_terminals_not_live() {
+    assert!(super::request_lifecycle_is_live(Some("processing"), None));
+    assert!(super::request_lifecycle_is_live(
+        Some("inputRequired"),
+        None
+    ));
+    assert!(super::request_lifecycle_is_live(None, Some("claimed")));
+    assert!(!super::request_lifecycle_is_live(Some("completed"), None));
+    assert!(!super::request_lifecycle_is_live(Some("failed"), None));
+    assert!(!super::request_lifecycle_is_live(Some("dead"), None));
+    assert!(!super::request_lifecycle_is_live(Some("interrupted"), None));
+    assert!(!super::request_lifecycle_is_live(Some("superseded"), None));
+    assert!(!super::request_lifecycle_is_live(None, Some("error")));
+    assert!(!super::request_lifecycle_is_live(None, None));
+}
+
+#[test]
+fn frozen_instruction_manifest_is_copied_onto_overlay() {
+    let (_guard, operator, placement_path) = temp_tree();
+    let mut workspace = ready_workspace();
+    workspace.instruction_manifest = r#"{"schema":1,"base_sha":"abc","files":[]}"#.into();
+    let overlay = bind_workspace_overlay(
+        &workspace,
+        &placement(&placement_path),
+        bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false),
+    )
+    .unwrap();
+    assert!(overlay.instruction_manifest.contains("base_sha"));
 }
 
 #[test]
