@@ -29,6 +29,9 @@ use crate::descendant_graph::{
 use crate::document_config::{load_agent_behavior, SubagentTarget};
 use crate::session;
 use crate::tool_call_lifecycle::query::load_tool_call_result;
+use crate::tool_call_lifecycle::subagent_workspace::{
+    merge_workspace_lineage, resolve_spawn_workspace, ParentWorkspaceStamp, SpawnWorkspaceError,
+};
 use crate::tool_call_lifecycle::{
     AwaitMode, CancelCause, CancelPolicy, CascadeDispatch, ChildTerminal, FailureClass,
     ToolCallLifecycle, MAX_SUBAGENT_DEPTH,

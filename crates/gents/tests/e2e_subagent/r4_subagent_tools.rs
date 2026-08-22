@@ -113,6 +113,27 @@ async fn setup_spawn_fixture_with_flags_and_deadline(
     background_enabled: bool,
     parent_deadline: chrono::DateTime<chrono::Utc>,
 ) -> SpawnFixture {
+    setup_spawn_fixture_with_parent_fields(
+        test_name,
+        targets,
+        parent_subagent_depth,
+        spawn_enabled,
+        background_enabled,
+        parent_deadline,
+        "",
+    )
+    .await
+}
+
+async fn setup_spawn_fixture_with_parent_fields(
+    test_name: &str,
+    targets: Vec<&str>,
+    parent_subagent_depth: u32,
+    spawn_enabled: bool,
+    background_enabled: bool,
+    parent_deadline: chrono::DateTime<chrono::Utc>,
+    extra_parent_fields: &str,
+) -> SpawnFixture {
     let db = test_db(test_name).await;
     let agent_did = format!("did:test:r4-{test_name}");
 
@@ -194,13 +215,14 @@ async fn setup_spawn_fixture_with_flags_and_deadline(
 
     let session_id = format!("{test_name}-session");
     let request_id = format!("{test_name}-parent");
-    create_parent_request(
+    create_parent_request_with_extra_fields(
         db.node.as_ref(),
         &agent_did,
         &request_id,
         &session_id,
         parent_subagent_depth,
         parent_deadline,
+        extra_parent_fields,
     )
     .await;
 
@@ -235,6 +257,27 @@ async fn create_parent_request(
     subagent_depth: u32,
     deadline: chrono::DateTime<chrono::Utc>,
 ) {
+    create_parent_request_with_extra_fields(
+        node,
+        agent_did,
+        request_id,
+        session_id,
+        subagent_depth,
+        deadline,
+        "",
+    )
+    .await;
+}
+
+async fn create_parent_request_with_extra_fields(
+    node: &EmbeddedNode,
+    agent_did: &str,
+    request_id: &str,
+    session_id: &str,
+    subagent_depth: u32,
+    deadline: chrono::DateTime<chrono::Utc>,
+    extra_fields: &str,
+) {
     let request_id = escape_graphql_string(request_id);
     let session_id = escape_graphql_string(session_id);
     let behavior_id = escape_graphql_string(PARENT_BEHAVIOR_ID);
@@ -263,6 +306,7 @@ async fn create_parent_request(
                 retry_count: 0,
                 max_retries: 3,
                 subagent_depth: {subagent_depth}
+                {extra_fields}
             }}) {{ _docID }}
         }}"#
     );
@@ -708,5 +752,7 @@ mod cancel_subagent;
 mod foreground_spawn;
 #[path = "r4_subagent_tools_cases/spawn_validation.rs"]
 mod spawn_validation;
+#[path = "r4_subagent_tools_cases/spawn_workspace.rs"]
+mod spawn_workspace;
 #[path = "r4_subagent_tools_cases/wait_subagent.rs"]
 mod wait_subagent;

@@ -47,7 +47,9 @@ pub(crate) use runtime::{
 };
 
 pub(crate) use overlay::{
-    request_workspace_cwd, resolve_request_workspace_overlay, workspace_authority_file_mode,
+    install_process_operator_tool_root, load_enabled_workspace_roots, process_operator_tool_root,
+    request_workspace_cwd, require_under_ceiling, resolve_request_workspace_overlay,
+    workspace_authority_file_mode,
 };
 
 #[cfg(test)]

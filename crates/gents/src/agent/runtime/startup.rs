@@ -308,6 +308,7 @@ pub(in crate::agent) async fn run_agent(
         .document_runtime_context()
         .and_then(|context| context.tool_ceiling.root())
         .map(std::path::Path::to_path_buf);
+    crate::workspace::install_process_operator_tool_root(callback_ceiling.clone());
     let callback_cancel = cancel.child_token();
     let callback_startup_barrier = startup_barrier.clone();
     let callback_engine_handle = tokio::spawn(async move {

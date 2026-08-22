@@ -30,6 +30,7 @@ pub struct IsolatedWorkspaceDoc {
     pub integrator_principal: String,
     #[serde(default, deserialize_with = "deserialize_null_string")]
     pub instruction_manifest: String,
+    #[serde(default)]
     pub seal_hash: Option<String>,
     pub lifecycle_state: String,
     pub caused_by_invocation_id: String,

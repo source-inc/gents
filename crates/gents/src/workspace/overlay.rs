@@ -2,6 +2,7 @@
 //! request-scoped tool root, and fail closed when the authority cannot run.
 
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use anyhow::{anyhow, bail, Context, Result};
 use defra_node::EmbeddedNode;
@@ -20,6 +21,22 @@ use super::documents::{
     workspace_binding_upsert_mutation, workspace_bindings_upsert_mutation, WorkspaceBindingDoc,
     BINDING_ACTIVE,
 };
+
+static PROCESS_OPERATOR_TOOL_ROOT: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+/// Process `--tool-root` used by spawn provision, callback, and overlay.
+pub(crate) fn install_process_operator_tool_root(root: Option<PathBuf>) {
+    *PROCESS_OPERATOR_TOOL_ROOT
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = root;
+}
+
+pub(crate) fn process_operator_tool_root() -> Option<PathBuf> {
+    PROCESS_OPERATOR_TOOL_ROOT
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IsolatedWorkspaceRecord {
@@ -292,7 +309,7 @@ fn canonicalize_placement_path(host_path: &str) -> Result<PathBuf> {
         .with_context(|| format!("canonicalizing workspace placement {}", path.display()))
 }
 
-fn require_under_ceiling(
+pub(crate) fn require_under_ceiling(
     path: &Path,
     operator_tool_root: Option<&Path>,
     enabled_workspace_roots: &[PathBuf],
@@ -691,7 +708,7 @@ pub(super) fn local_deployment_id_from_rows(rows: Vec<HostDeploymentRow>) -> Res
         .ok_or_else(|| anyhow!("HostDeployment is missing deployment_id"))
 }
 
-async fn load_enabled_workspace_roots(node: &EmbeddedNode) -> Result<Vec<PathBuf>> {
+pub(crate) async fn load_enabled_workspace_roots(node: &EmbeddedNode) -> Result<Vec<PathBuf>> {
     let query = r#"{
         WorkspaceRoot {
             root_path

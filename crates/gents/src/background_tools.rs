@@ -80,6 +80,113 @@ pub(crate) struct SpawnSubagentArgs {
     pub await_mode: Option<AwaitModeArg>,
     #[serde(default)]
     pub deadline: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub workspace: Option<SpawnWorkspaceArg>,
+}
+
+/// `spawn_subagent` workspace: inherit | `{ id }` | `provision { policy }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SpawnWorkspaceArg {
+    Inherit,
+    Bind {
+        id: String,
+        authority: Option<String>,
+    },
+    Provision {
+        policy: Option<String>,
+    },
+}
+
+impl<'de> Deserialize<'de> for SpawnWorkspaceArg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        parse_spawn_workspace_arg(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+pub(crate) fn parse_spawn_workspace_arg(
+    value: &serde_json::Value,
+) -> Result<SpawnWorkspaceArg, String> {
+    match value {
+        serde_json::Value::String(raw) => match raw.trim() {
+            "inherit" => Ok(SpawnWorkspaceArg::Inherit),
+            "provision" => Ok(SpawnWorkspaceArg::Provision { policy: None }),
+            other => Err(format!(
+                "unsupported workspace '{other}'; use inherit, {{ id }}, or {{ provision }}"
+            )),
+        },
+        serde_json::Value::Object(map) => {
+            let inherit = map.get("inherit");
+            let id = map
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let provision = map.get("provision");
+            let modes = [inherit.is_some(), id.is_some(), provision.is_some()]
+                .into_iter()
+                .filter(|set| *set)
+                .count();
+            if modes != 1 {
+                return Err(
+                    "workspace must be inherit, { id }, or { provision } (exactly one)".to_string(),
+                );
+            }
+            if let Some(inherit) = inherit {
+                let ok = match inherit {
+                    serde_json::Value::Bool(value) => *value,
+                    serde_json::Value::String(s) => s.trim().eq_ignore_ascii_case("inherit"),
+                    _ => false,
+                };
+                if ok {
+                    Ok(SpawnWorkspaceArg::Inherit)
+                } else {
+                    Err("workspace inherit must be true".to_string())
+                }
+            } else if let Some(id) = id {
+                let authority = map
+                    .get("authority")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                Ok(SpawnWorkspaceArg::Bind {
+                    id: id.to_string(),
+                    authority,
+                })
+            } else {
+                let policy = match provision {
+                    Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(true)) => None,
+                    Some(serde_json::Value::String(raw)) => {
+                        let raw = raw.trim();
+                        if raw.is_empty() {
+                            None
+                        } else {
+                            Some(raw.to_string())
+                        }
+                    }
+                    Some(serde_json::Value::Object(obj)) => obj
+                        .get("policy")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    Some(_) => {
+                        return Err(
+                            "workspace.provision must be { policy } or git_worktree_diff"
+                                .to_string(),
+                        )
+                    }
+                    None => None,
+                };
+                Ok(SpawnWorkspaceArg::Provision { policy })
+            }
+        }
+        _ => Err("workspace must be \"inherit\" or an object".to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -180,6 +287,10 @@ pub(crate) struct ParentSubagentContext {
     /// rejected at runtime. Cross-deployment is deferred pending ACP.
     pub subagent_allow_cross_deployment: bool,
     pub cross_deployment_spawn_timeout_seconds: Option<i64>,
+    pub workspace_id: Option<String>,
+    pub workspace_authority: Option<String>,
+    pub workspace_owner_deployment_id: Option<String>,
+    pub workspace_seal_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,6 +428,14 @@ struct ParentRequestRow {
     behavior_id: Option<String>,
     subagent_depth: Option<u32>,
     deadline: Option<String>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    workspace_authority: Option<String>,
+    #[serde(default)]
+    workspace_owner_deployment_id: Option<String>,
+    #[serde(default)]
+    workspace_seal_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1387,6 +1506,10 @@ pub(crate) async fn load_parent_subagent_context(
                 behavior_id
                 subagent_depth
                 deadline
+                workspace_id
+                workspace_authority
+                workspace_owner_deployment_id
+                workspace_seal_hash
             }}
         }}"#
     );
@@ -1429,6 +1552,12 @@ pub(crate) async fn load_parent_subagent_context(
         subagent_default_await_mode: selection.default_await_mode,
         subagent_allow_cross_deployment: selection.allow_cross_deployment,
         cross_deployment_spawn_timeout_seconds: selection.cross_deployment_spawn_timeout_seconds,
+        workspace_id: non_empty_string(row.workspace_id.as_deref()),
+        workspace_authority: non_empty_string(row.workspace_authority.as_deref()),
+        workspace_owner_deployment_id: non_empty_string(
+            row.workspace_owner_deployment_id.as_deref(),
+        ),
+        workspace_seal_hash: non_empty_string(row.workspace_seal_hash.as_deref()),
     })
 }
 

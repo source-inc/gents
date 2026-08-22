@@ -268,6 +268,7 @@ pub(crate) mod query;
 mod recovery;
 pub(crate) mod runtime;
 pub mod subagent_request;
+pub(crate) mod subagent_workspace;
 mod transition;
 
 pub use recovery::{

@@ -904,7 +904,7 @@ pub async fn flush_workspace_docs(
     Ok(())
 }
 
-async fn load_isolated_workspace(
+pub(crate) async fn load_isolated_workspace(
     node: &EmbeddedNode,
     workspace_id: &str,
 ) -> Result<Option<IsolatedWorkspaceDoc>> {
@@ -927,7 +927,7 @@ async fn load_isolated_workspace(
     first_row(&response, "IsolatedWorkspace")
 }
 
-async fn load_workspace_placement(
+pub(crate) async fn load_workspace_placement(
     node: &EmbeddedNode,
     workspace_id: &str,
 ) -> Result<Option<WorkspacePlacementDoc>> {
