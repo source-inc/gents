@@ -3639,7 +3639,7 @@ mod tests {
                 .expect("defend-patch-review trigger should load");
                 assert_eq!(
                     review_trigger["filter"],
-                    "{ status: { _neq: \"skipped\" } }"
+                    "{ _and: [ { workspace_id: { _neq: null } }, { workspace_id: { _ne: \"\" } } ] }"
                 );
                 let security_trigger = read_pack_json_defaults(
                     &pack
@@ -3650,7 +3650,7 @@ mod tests {
                 .expect("defend-patch-security-review trigger should load");
                 assert_eq!(
                     security_trigger["filter"],
-                    "{ verdict: { _neq: \"skipped\" } }"
+                    "{ _and: [ { workspace_id: { _neq: null } }, { workspace_id: { _ne: \"\" } } ] }"
                 );
                 let skip_prompt = std::fs::read_to_string(
                     pack.join("tasks/defend-patch-skip-task/prompt.md"),
