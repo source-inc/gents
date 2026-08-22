@@ -13,6 +13,7 @@ mod denial;
 pub mod edit_match;
 mod file_tools;
 mod goal;
+pub mod graph_dsl;
 pub(crate) mod lsp;
 #[cfg(feature = "agent-memory")]
 mod memory;
@@ -43,6 +44,7 @@ pub use context_budget::{
 pub use denial::CommandPolicyDenial;
 pub(crate) use denial::DenialReason;
 pub(crate) use goal::build_goal_tools;
+pub use graph_dsl::{build_graph_dsl_tool, COMPILE_GRAPH_TOOL_NAME};
 pub(crate) use goal::{GetGoalArgs, UpdateGoalArgs};
 pub use lsp::{
     lsp_action_authorized, lsp_advertised, lsp_apply_authorized, result_looks_failed,

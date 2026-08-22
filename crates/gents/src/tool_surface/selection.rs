@@ -120,6 +120,7 @@ pub struct ToolSelection {
     pub self_config_no_lockout: bool,
     pub self_config_dry_run: bool,
     pub enable_lsp: bool,
+    pub enable_graph_dsl: bool,
     pub lsp_config: Option<String>,
 }
 
@@ -147,6 +148,7 @@ impl Default for ToolSelection {
             self_config_no_lockout: false,
             self_config_dry_run: false,
             enable_lsp: false,
+            enable_graph_dsl: false,
             lsp_config: None,
         }
     }
@@ -208,6 +210,7 @@ impl ToolSelection {
             self_config_no_lockout: selection.self_config_no_lockout.unwrap_or(false),
             self_config_dry_run: selection.self_config_dry_run.unwrap_or(false),
             enable_lsp: selection.enable_lsp.unwrap_or(false),
+            enable_graph_dsl: selection.enable_graph_dsl.unwrap_or(false),
             lsp_config: selection
                 .lsp_config
                 .as_deref()

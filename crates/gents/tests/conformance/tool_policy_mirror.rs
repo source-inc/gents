@@ -187,6 +187,7 @@ fn surface_from_view(view: &View) -> ToolPolicySurface {
         cross_deployment: view.cross_deployment,
         skills: view.skills,
         lsp: view.lsp,
+        graph_dsl: false,
         cli_tools: cli_scope_from_keys(&view.cli_scope_kind, &view.cli_keys),
         mcp_services: unit_scope_from_strings(&view.mcp_scope_kind, &view.mcp_services),
         defra_collections: unit_scope_from_strings(

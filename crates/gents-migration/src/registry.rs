@@ -275,6 +275,11 @@ const TOOL_SELECTION_ADD_LSP_FIELDS_PATCH: &str = r#"[
   {"op":"add","path":"/ToolSelection/Fields/-","value":{"Name":"lsp_config","Kind":"String"}},
   {"op":"replace","path":"/IsActive","value":false}
 ]"#;
+
+const TOOL_SELECTION_ADD_GRAPH_DSL_PATCH: &str = r#"[
+  {"op":"add","path":"/ToolSelection/Fields/-","value":{"Name":"enable_graph_dsl","Kind":"Boolean"}},
+  {"op":"replace","path":"/IsActive","value":false}
+]"#;
 /// Frozen baseline SDL set, ordered like
 /// `gents_protocol::schemas::{RUNTIME_ALL, ALL}` and feature-invariant (includes
 /// AgentMemory). Collections with post-cutover changes use frozen local SDL
@@ -551,6 +556,15 @@ pub static DEFAULT_STEPS: &[MigrationStep<'static>] = &[
         expected_version: Some("bafyreibzvuogmrsg7z5mz2mlnmb2f5avdas54a35fpoghu2bbwyt4fiame"),
         expected_transform: None,
         expected_state: CollectionExpectation::fields(&["enable_lsp", "lsp_config"]),
+    },
+    MigrationStep::PatchVersioned {
+        id: "tool-selection-add-graph-dsl",
+        collection: gents_protocol::schemas::TOOL_SELECTION_NAME,
+        patch: TOOL_SELECTION_ADD_GRAPH_DSL_PATCH,
+        lens: None,
+        expected_version: Some("bafyreiggp2qijocixt7jkzyd4gdrinhgspsmqmldh4pu3bjdifjuo3pz7e"),
+        expected_transform: None,
+        expected_state: CollectionExpectation::fields(&["enable_graph_dsl"]),
     },
 ];
 

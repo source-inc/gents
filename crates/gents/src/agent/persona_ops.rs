@@ -501,6 +501,7 @@ fn tool_selection_from_preset(
         self_config_no_lockout: None,
         self_config_dry_run: None,
         enable_lsp: None,
+        enable_graph_dsl: None,
         lsp_config: None,
     }
 }
@@ -1235,6 +1236,7 @@ mod tests {
             self_config_no_lockout: None,
             self_config_dry_run: None,
             enable_lsp: None,
+            enable_graph_dsl: None,
             lsp_config: None,
         };
 

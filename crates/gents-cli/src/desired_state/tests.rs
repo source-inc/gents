@@ -495,6 +495,7 @@ fn sample_tool_selection(selection_id: &str) -> DesiredToolSelection {
         self_config_no_lockout: false,
         self_config_dry_run: false,
         enable_lsp: false,
+        enable_graph_dsl: false,
         lsp_config: None,
     }
 }

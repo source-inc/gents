@@ -33,6 +33,7 @@ pub struct BehaviorToolConfig {
     defra_query_collections: Vec<String>,
     write_tools: Vec<WriteToolDecl>,
     query_tools: Vec<QueryToolDecl>,
+    enable_graph_dsl: bool,
     self_config: super::SelfConfigToolConfig,
     behavior_policy: ToolPolicySurface,
     ceiling_policy: ToolPolicySurface,
@@ -66,6 +67,7 @@ impl BehaviorToolConfig {
             defra_query_collections: Vec::new(),
             write_tools: Vec::new(),
             query_tools: Vec::new(),
+            enable_graph_dsl: false,
             self_config: super::SelfConfigToolConfig::default(),
             behavior_policy: behavior_policy.clone(),
             ceiling_policy: ToolPolicySurface::legacy_non_host_wide(
@@ -152,6 +154,7 @@ impl BehaviorToolConfig {
             defra_query_collections: _,
             write_tools,
             query_tools,
+            enable_graph_dsl,
             enable_self_config: _,
             self_config_categories: _,
             self_config_no_lockout,
@@ -218,6 +221,7 @@ impl BehaviorToolConfig {
             enable_context_budget_tool: static_policy.context_budget && enable_context_budget,
             enable_session_history_tool: static_policy.session_history,
             enable_defra_query: static_policy.include_defra_query(),
+            enable_graph_dsl: static_policy.graph_dsl && enable_graph_dsl,
             defra_query_collections: static_policy.defra_query_collections_for_runtime(),
             write_tools: static_policy.write_decls_for_runtime(&write_tools),
             query_tools: static_policy.query_decls_for_runtime(&query_tools),
@@ -341,6 +345,7 @@ impl BehaviorToolConfig {
                 && self.enable_context_budget_tool,
             enable_session_history_tool: effective_policy.session_history,
             enable_defra_query: effective_policy.include_defra_query(),
+            enable_graph_dsl: effective_policy.graph_dsl && self.enable_graph_dsl,
             defra_query_scope: effective_policy.defra_query_collection_scope(),
             write_tools: effective_policy.write_decls_for_runtime(&self.write_tools),
             query_tools: effective_policy.query_decls_for_runtime(&self.query_tools),
@@ -509,6 +514,7 @@ impl std::fmt::Debug for BehaviorToolConfig {
                 &self.enable_session_history_tool,
             )
             .field("enable_defra_query", &self.enable_defra_query)
+            .field("enable_graph_dsl", &self.enable_graph_dsl)
             .field("defra_query_collections", &self.defra_query_collections)
             .field("write_tools", &self.write_tools)
             .field("query_tools", &self.query_tools)

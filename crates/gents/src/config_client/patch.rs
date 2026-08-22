@@ -177,6 +177,7 @@ impl SelfConfigTarget {
                 "self_config_no_lockout",
                 "self_config_dry_run",
                 "enable_lsp",
+                "enable_graph_dsl",
                 "lsp_config",
                 "updated_at",
             ],
@@ -351,6 +352,7 @@ impl SelfConfigTarget {
                 "self_config_no_lockout",
                 "self_config_dry_run",
                 "enable_lsp",
+                "enable_graph_dsl",
                 "lsp_config",
             ],
             Self::InferenceProfile => &[

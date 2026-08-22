@@ -1061,6 +1061,7 @@ async fn generation_supervisor_rotates_dispatcher_on_tool_surface_change() {
                 self_config_no_lockout: false,
                 self_config_dry_run: false,
                 enable_lsp: false,
+            enable_graph_dsl: false,
                 lsp_config: None,
             },
             &ToolCeiling::readonly(),

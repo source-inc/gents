@@ -58,6 +58,7 @@ pub struct ToolSurface {
     pub(super) query_tools: Vec<QueryToolDecl>,
     pub(super) enable_skills: bool,
     pub(super) self_config: SelfConfigToolConfig,
+    pub(super) enable_graph_dsl: bool,
     pub(super) lsp: Option<crate::toolset::lsp::LspToolConfig>,
 }
 
@@ -184,6 +185,9 @@ impl ToolSurface {
         names.extend(crate::self_config::self_config_tool_names(
             &self.self_config,
         ));
+        if self.enable_graph_dsl {
+            names.push(crate::toolset::COMPILE_GRAPH_TOOL_NAME.to_string());
+        }
         for decl in &self.write_tools {
             if decl.is_well_formed() {
                 names.push(decl.tool_name.clone());
@@ -264,6 +268,15 @@ impl ToolSurface {
             runtime.agent_did.clone(),
             &self.self_config,
         ));
+        if self.enable_graph_dsl {
+            if let Some(tool) = crate::toolset::build_graph_dsl_tool(
+                runtime.node.clone(),
+                runtime.agent_did.clone(),
+                self.self_config.behavior_id.clone(),
+            ) {
+                tools.push(tool);
+            }
+        }
         let mut registered_names: HashSet<String> = tools.iter().map(|tool| tool.name()).collect();
         for decl in &self.write_tools {
             let tool = BoundedWriteTool::new(runtime.node.clone(), decl.clone());
@@ -332,6 +345,7 @@ impl std::fmt::Debug for ToolSurface {
             .field("query_tools", &self.query_tools)
             .field("enable_skills", &self.enable_skills)
             .field("self_config", &self.self_config)
+            .field("enable_graph_dsl", &self.enable_graph_dsl)
             .finish()
     }
 }

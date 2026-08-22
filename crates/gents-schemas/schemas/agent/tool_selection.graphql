@@ -61,6 +61,9 @@ type ToolSelection @branchable {
     self_config_dry_run: Boolean
     # Optional language-server tool. Default false; never backfill true.
     enable_lsp: Boolean
+    # Graph DSL pipeline compiler tool (compile_graph). Default false; never
+    # backfilled true.
+    enable_graph_dsl: Boolean
     # Trusted-operator JSON for lsp flags and built-in-catalog overrides. It
     # cannot replace a catalog server's top-level command/args, but settings or
     # init options may influence child commands run by that server. Self-config

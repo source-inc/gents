@@ -633,6 +633,11 @@ pub struct ToolSelectionDocument {
     pub enable_lsp: Option<bool>,
     /// Operator JSON for lsp flags and per-catalog overrides.
     pub lsp_config: Option<String>,
+    /// Graph DSL pipeline compiler gate: opt-in, never backfilled true.
+    /// When enabled alongside self-config, exposes the `compile_graph` tool
+    /// that compiles a structured graph definition into Task + EventTrigger
+    /// documents.
+    pub enable_graph_dsl: Option<bool>,
 }
 
 /// Canonical per-principal id for the seeded `wide-open` preset. Prefixed with
@@ -693,6 +698,7 @@ impl ToolSelectionDocument {
             .get_or_insert(false);
         backfilled.enable_memory.get_or_insert(false);
         backfilled.enable_session_history_tool.get_or_insert(false);
+        backfilled.enable_graph_dsl.get_or_insert(false);
         backfilled.tool_policy_version = Some(TOOL_POLICY_V1.to_string());
         backfilled
     }
@@ -853,6 +859,7 @@ pub(crate) async fn load_tool_selection_record(
                 self_config_no_lockout
                 self_config_dry_run
                 enable_lsp
+                enable_graph_dsl
                 lsp_config
             }}
         }}"#
@@ -919,6 +926,7 @@ pub(crate) async fn load_tool_selection_by_doc_id(
                 self_config_no_lockout
                 self_config_dry_run
                 enable_lsp
+                enable_graph_dsl
                 lsp_config
             }}
         }}"#
@@ -985,6 +993,7 @@ pub(crate) async fn list_tool_selection_records(
                 self_config_no_lockout
                 self_config_dry_run
                 enable_lsp
+                enable_graph_dsl
                 lsp_config
             }}
         }}"#
@@ -1044,6 +1053,7 @@ pub(crate) async fn list_all_tool_selection_records(
                 self_config_categories
                 self_config_no_lockout
                 self_config_dry_run
+                enable_graph_dsl
             }
         }"#;
 
@@ -1193,6 +1203,7 @@ pub async fn upsert_tool_selection(
             selection.self_config_dry_run,
         ),
         graphql_fields::graphql_optional_bool_field("enable_lsp", selection.enable_lsp),
+        graphql_fields::graphql_optional_bool_field("enable_graph_dsl", selection.enable_graph_dsl),
         // Optional strings in desired state are authoritative: omission clears
         // an older operator value instead of silently preserving it.
         graphql_fields::graphql_string_field("lsp_config", selection.lsp_config.as_deref()),
@@ -1333,6 +1344,7 @@ pub async fn upsert_tool_selection(
             selection.self_config_dry_run,
         ),
         graphql_fields::graphql_optional_bool_field("enable_lsp", selection.enable_lsp),
+        graphql_fields::graphql_optional_bool_field("enable_graph_dsl", selection.enable_graph_dsl),
         graphql_fields::graphql_string_field("lsp_config", selection.lsp_config.as_deref()),
     ]
     .into_iter()

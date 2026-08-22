@@ -35,6 +35,7 @@ mod read;
 mod tests;
 
 pub use ops::{PatchOutcome, SelfConfigCore, EFFECT_TIMING_NOTE};
+pub(crate) use ops::ApplyRequest;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -50,7 +51,7 @@ use crate::graphql::escape_graphql_string;
 use crate::llm::tool::{Tool, ToolDefinition, ToolDyn};
 use crate::tool_surface::SelfConfigToolConfig;
 use defra_node::EmbeddedNode;
-use ops::{decode_merged, guard_selection_keeps_gate, validate_merged_selection, ApplyRequest};
+use ops::{decode_merged, guard_selection_keeps_gate, validate_merged_selection};
 
 pub const GET_MY_CONFIG_TOOL_NAME: &str = "get_my_config";
 pub const CONFIGURE_BEHAVIOR_TOOL_NAME: &str = "configure_behavior";
@@ -143,7 +144,7 @@ fn patch_parameter_schema(target: SelfConfigTarget) -> Value {
     })
 }
 
-fn outcome_text(outcome: &PatchOutcome) -> Result<String> {
+pub(crate) fn outcome_text(outcome: &PatchOutcome) -> Result<String> {
     serde_json::to_string_pretty(outcome).map_err(|error| anyhow!("serialize outcome: {error}"))
 }
 
@@ -348,7 +349,7 @@ fn mcp_service_request(service_id: String, patch: SelfConfigPatch) -> ApplyReque
     request
 }
 
-fn automation_request(
+pub(crate) fn automation_request(
     core: &SelfConfigCore,
     target: SelfConfigTarget,
     id: String,
@@ -524,7 +525,7 @@ async fn ensure_stored_automation_owned(
     Ok(())
 }
 
-fn automation_target(kind: &str) -> Result<SelfConfigTarget> {
+pub(crate) fn automation_target(kind: &str) -> Result<SelfConfigTarget> {
     match kind {
         "task" => Ok(SelfConfigTarget::Task),
         "schedule" => Ok(SelfConfigTarget::Schedule),

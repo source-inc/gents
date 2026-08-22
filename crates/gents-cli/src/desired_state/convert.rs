@@ -186,6 +186,7 @@ pub(crate) fn manifest_from_export_bundle(
                         "self_config_dry_run",
                         "enable_lsp",
                         "lsp_config",
+                        "enable_graph_dsl",
                     ],
                 )
             })

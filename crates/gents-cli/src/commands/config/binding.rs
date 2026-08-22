@@ -561,6 +561,7 @@ mod tests {
             self_config_dry_run: false,
             enable_lsp: false,
             lsp_config: None,
+            enable_graph_dsl: false,
         }
     }
 
