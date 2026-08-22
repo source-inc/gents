@@ -2,18 +2,25 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
+use serde::{Deserialize, Serialize};
 
-use super::action_plan::{ActionPlan, CreateWorkspaceAction, HostAction, SealWorkspaceAction};
+use super::action_plan::{
+    ActionPlan, CleanupWorkspaceAction, CreateWorkspaceAction, HostAction,
+    IntegrateWorkspaceAction, SealWorkspaceAction,
+};
 use super::adapter::{
-    artifacts_complete, capture_instruction_manifest, capture_seal_snapshot, clone_artifacts,
-    observe_dirty_base, observe_effect, observed_tree_hash, provision, resolve_base_sha,
-    write_identity, write_seal_marker, ObservedEffect,
+    absolute_git_dir, advance_trunk_to_integrate_commit, artifacts_complete,
+    capture_instruction_manifest, capture_seal_snapshot, cleanup_workspace_tree, clone_artifacts,
+    commit_exists, observe_dirty_base, observe_effect, observed_tree_hash,
+    prepare_integrate_commit, provision, resolve_base_sha, write_identity, write_seal_marker,
+    ObservedEffect,
 };
 use super::binding::release_binding;
 use super::documents::{
-    new_isolated_workspace, writer_receipt_id, IsolatedWorkspaceDoc, ProvisioningObservation,
-    WorkspaceDocuments, WorkspacePlacementDoc, WorkspaceReceiptDoc, ADAPTER_VERSION,
-    LIFECYCLE_PROVISION_FAILED, LIFECYCLE_READY, LIFECYCLE_SEALED, RECEIPT_KIND_WRITER,
+    integrator_receipt_id, new_isolated_workspace, writer_receipt_id, IsolatedWorkspaceDoc,
+    ProvisioningObservation, WorkspaceDocuments, WorkspacePlacementDoc, WorkspaceReceiptDoc,
+    ADAPTER_VERSION, LIFECYCLE_CLEANED, LIFECYCLE_CLEANING, LIFECYCLE_PROVISION_FAILED,
+    LIFECYCLE_READY, LIFECYCLE_SEALED, RECEIPT_KIND_INTEGRATOR, RECEIPT_KIND_WRITER,
 };
 use super::instructions::is_empty_manifest;
 use super::journal::{self, ActionJournalEntry, ActionJournalState};
@@ -180,10 +187,11 @@ pub fn execute_create_workspace_plan(
     }
     let action = match &plan.actions[0] {
         HostAction::CreateWorkspace(action) => action,
-        HostAction::SealWorkspace(_) => {
-            return Err(HostExecuteError::denied(
-                "create_workspace executor cannot run seal_workspace",
-            ))
+        other => {
+            return Err(HostExecuteError::denied(format!(
+                "create_workspace executor cannot run {}",
+                other.type_name()
+            )))
         }
     };
     if ctx.repository.repository_id != action.repository_id {
@@ -416,10 +424,14 @@ fn persist_docs(
                 identity.workspace_id
             );
         }
-        if existing_state == Some(LIFECYCLE_SEALED) {
+        if matches!(
+            existing_state,
+            Some(LIFECYCLE_SEALED) | Some(LIFECYCLE_CLEANING) | Some(LIFECYCLE_CLEANED)
+        ) {
             bail!(
-                "IsolatedWorkspace {} is sealed; refusing {lifecycle_state} without cleanup",
-                identity.workspace_id
+                "IsolatedWorkspace {} is {}; refusing {lifecycle_state} without cleanup",
+                identity.workspace_id,
+                existing.lifecycle_state
             );
         }
     }
@@ -493,10 +505,11 @@ pub fn execute_seal_workspace_plan(
     }
     let action = match &plan.actions[0] {
         HostAction::SealWorkspace(action) => action,
-        HostAction::CreateWorkspace(_) => {
-            return Err(HostExecuteError::denied(
-                "seal_workspace executor cannot run create_workspace",
-            ))
+        other => {
+            return Err(HostExecuteError::denied(format!(
+                "seal_workspace executor cannot run {}",
+                other.type_name()
+            )))
         }
     };
     if journal::current_state(journal, 0).is_none() {
@@ -708,18 +721,641 @@ fn changed_files_json(files: &[String]) -> Option<String> {
     serde_json::to_string(files).ok()
 }
 
-fn bound_diff_artifact(diff: &str) -> Option<String> {
-    if diff.trim().is_empty() {
+fn bound_diff_artifact(diff: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(diff).ok()?;
+    if text.trim().is_empty() {
         return None;
     }
-    if diff.len() <= DIFF_ARTIFACT_LIMIT {
-        return Some(diff.to_string());
+    if text.len() <= DIFF_ARTIFACT_LIMIT {
+        return Some(text.to_string());
     }
     let mut end = DIFF_ARTIFACT_LIMIT;
-    while end > 0 && !diff.is_char_boundary(end) {
+    while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
-    Some(diff[..end].to_string())
+    Some(text[..end].to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntegrateWorkspaceOutcome {
+    pub workspace: IsolatedWorkspaceDoc,
+    pub placement: WorkspacePlacementDoc,
+    pub receipt: WorkspaceReceiptDoc,
+    /// Trunk `HEAD` is not moved until the receipt is durable.
+    pub pending_head_sha: Option<String>,
+}
+
+pub fn execute_integrate_workspace_plan(
+    plan: &ActionPlan,
+    journal: &mut Vec<ActionJournalEntry>,
+    ctx: &mut HostExecutorContext<'_>,
+) -> Result<IntegrateWorkspaceOutcome, HostExecuteError> {
+    if !journal::action_journal_prefix_legal(journal) {
+        return Err(HostExecuteError::denied("illegal action journal prefix"));
+    }
+    plan.validate_against(&ctx.capabilities)
+        .map_err(|err| HostExecuteError::denied(err.to_string()))?;
+    if plan.actions.len() != 1 {
+        return Err(HostExecuteError::denied(
+            "integrate_workspace executor only runs a single integrate_workspace action",
+        ));
+    }
+    let action = match &plan.actions[0] {
+        HostAction::IntegrateWorkspace(action) => action,
+        other => {
+            return Err(HostExecuteError::denied(format!(
+                "integrate_workspace executor cannot run {}",
+                other.type_name()
+            )))
+        }
+    };
+    if journal::current_state(journal, 0).is_none() {
+        journal::advance(journal, 0, ActionJournalState::Validated);
+    }
+    integrate_workspace_action(action, journal, ctx)
+}
+
+fn integrate_workspace_action(
+    action: &IntegrateWorkspaceAction,
+    journal: &mut Vec<ActionJournalEntry>,
+    ctx: &mut HostExecutorContext<'_>,
+) -> Result<IntegrateWorkspaceOutcome, HostExecuteError> {
+    let trunk = ctx.repository.host_path.clone();
+    restore_integrate_journal(journal, &trunk, &action.workspace_id);
+
+    if matches!(
+        journal::current_state(journal, 0),
+        Some(ActionJournalState::ResultDocsWritten)
+    ) {
+        if let Ok(outcome) = load_written_integrate(&action.workspace_id, action, ctx.documents) {
+            return Ok(outcome);
+        }
+        // Local marker claimed ResultDocsWritten but the receipt is gone
+        // (flush never landed). Observe the pending commit instead of failing.
+        journal::advance(journal, 0, ActionJournalState::Executing);
+    }
+
+    if journal::current_state(journal, 0).is_none()
+        || matches!(
+            journal::current_state(journal, 0),
+            Some(ActionJournalState::Validated)
+        )
+    {
+        journal::advance(journal, 0, ActionJournalState::Executing);
+        persist_integrate_journal(
+            journal,
+            &trunk,
+            &action.workspace_id,
+            None,
+            "",
+            &action.produced_by_request_id,
+        );
+    }
+
+    let workspace = ctx
+        .documents
+        .load_isolated_workspace(&action.workspace_id)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?
+        .ok_or_else(|| {
+            HostExecuteError::failed(
+                format!("IsolatedWorkspace {} not found", action.workspace_id),
+                false,
+                None,
+            )
+        })?;
+    let placement = ctx
+        .documents
+        .load_placement(&action.workspace_id)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?
+        .ok_or_else(|| {
+            HostExecuteError::failed(
+                format!("WorkspacePlacement {} not found", action.workspace_id),
+                false,
+                None,
+            )
+        })?;
+    if workspace.owner_deployment_id != ctx.deployment_id {
+        return Err(HostExecuteError::denied(format!(
+            "workspace {} is owned by {}, not this host {}",
+            action.workspace_id, workspace.owner_deployment_id, ctx.deployment_id
+        )));
+    }
+    let lifecycle = normalize_workspace_lifecycle_state(&workspace.lifecycle_state);
+    if lifecycle != Some(LIFECYCLE_SEALED) {
+        return Err(HostExecuteError::denied(format!(
+            "workspace {} in state {} cannot be integrated; Integrate bindings require Sealed",
+            action.workspace_id, workspace.lifecycle_state
+        )));
+    }
+    let seal_hash = workspace
+        .seal_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            HostExecuteError::denied(format!(
+                "sealed workspace {} is missing seal_hash",
+                action.workspace_id
+            ))
+        })?
+        .to_string();
+    if placement.observed_tree_hash != seal_hash {
+        return Err(HostExecuteError::failed(
+            format!(
+                "placement observed_tree_hash {} does not match workspace seal_hash {seal_hash}",
+                placement.observed_tree_hash
+            ),
+            false,
+            None,
+        ));
+    }
+
+    let expected = workspace_host_path(
+        &trunk,
+        &workspace.workspace_id,
+        &workspace.branch,
+        ctx.ceiling,
+    )
+    .map_err(|err| HostExecuteError::denied(err.to_string()))?;
+    let dest = PathBuf::from(&placement.host_path);
+    let dest_canon = dest.canonicalize().unwrap_or_else(|_| dest.clone());
+    let expected_canon = expected.canonicalize().unwrap_or_else(|_| expected.clone());
+    if dest_canon != expected_canon {
+        return Err(HostExecuteError::denied(format!(
+            "placement host_path {} does not match host-chosen dest {}",
+            dest.display(),
+            expected.display()
+        )));
+    }
+    if dest_canon == trunk {
+        return Err(HostExecuteError::denied(
+            "integrate_workspace refuses to mutate the worker root; trunk is the source checkout",
+        ));
+    }
+
+    let receipt_id = integrator_receipt_id(&workspace.workspace_id, &action.produced_by_request_id);
+    if let Some(existing) = ctx
+        .documents
+        .load_receipts(&workspace.workspace_id)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?
+        .into_iter()
+        .find(|receipt| receipt.receipt_id == receipt_id)
+    {
+        if existing.seal_hash != seal_hash {
+            return Err(HostExecuteError::failed(
+                format!(
+                    "existing integrator receipt {} has seal_hash {}, not {seal_hash}",
+                    existing.receipt_id, existing.seal_hash
+                ),
+                false,
+                None,
+            ));
+        }
+        journal::advance(journal, 0, ActionJournalState::EffectObserved);
+        let pending = existing
+            .head_sha
+            .clone()
+            .filter(|sha| commit_exists(&trunk, sha));
+        persist_integrate_journal(
+            journal,
+            &trunk,
+            &action.workspace_id,
+            pending.as_deref(),
+            &seal_hash,
+            &action.produced_by_request_id,
+        );
+        let mut outcome = persist_integrate_docs(workspace, placement, existing, ctx.documents)
+            .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
+        outcome.pending_head_sha = pending;
+        journal::advance(journal, 0, ActionJournalState::ResultDocsWritten);
+        persist_integrate_journal(
+            journal,
+            &trunk,
+            &action.workspace_id,
+            outcome.pending_head_sha.as_deref(),
+            &seal_hash,
+            &action.produced_by_request_id,
+        );
+        return Ok(outcome);
+    }
+
+    let completing = load_integrate_marker(&trunk, &action.workspace_id)
+        .and_then(|marker| marker.pending_head_sha)
+        .filter(|sha| commit_exists(&trunk, sha));
+    if completing.is_none() {
+        require_active_integrate_binding(action, ctx.documents)
+            .map_err(HostExecuteError::denied)?;
+    }
+
+    let effect = if let Some(sha) = completing {
+        let snapshot = capture_seal_snapshot(&dest_canon)
+            .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
+        super::adapter::IntegrateEffect {
+            head_sha: sha,
+            changed_files: snapshot.changed_files,
+            diff: snapshot.diff,
+            pending_head: true,
+        }
+    } else {
+        prepare_integrate_commit(&trunk, &dest_canon, &seal_hash, &workspace.base_sha).map_err(
+            |err| {
+                HostExecuteError::failed(
+                    format!("typed integrate_workspace failed: {err}"),
+                    false,
+                    None,
+                )
+            },
+        )?
+    };
+
+    journal::advance(journal, 0, ActionJournalState::EffectObserved);
+    let pending = effect.pending_head.then(|| effect.head_sha.clone());
+    persist_integrate_journal(
+        journal,
+        &trunk,
+        &action.workspace_id,
+        pending.as_deref(),
+        &seal_hash,
+        &action.produced_by_request_id,
+    );
+    let receipt = WorkspaceReceiptDoc {
+        receipt_id,
+        workspace_id: workspace.workspace_id.clone(),
+        produced_by_request_id: action.produced_by_request_id.clone(),
+        produced_by_request_doc_id: action.produced_by_request_doc_id.clone(),
+        kind: RECEIPT_KIND_INTEGRATOR.to_string(),
+        base_sha: workspace.base_sha.clone(),
+        seal_hash: seal_hash.clone(),
+        head_sha: Some(effect.head_sha.clone()),
+        changed_files: changed_files_json(&effect.changed_files),
+        diff_artifact: bound_diff_artifact(&effect.diff),
+        checks_run: None,
+        unresolved_conflicts: None,
+        integration_instructions: None,
+    };
+    let mut outcome = persist_integrate_docs(workspace, placement, receipt, ctx.documents)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
+    outcome.pending_head_sha = pending;
+    journal::advance(journal, 0, ActionJournalState::ResultDocsWritten);
+    persist_integrate_journal(
+        journal,
+        &trunk,
+        &action.workspace_id,
+        outcome.pending_head_sha.as_deref(),
+        &seal_hash,
+        &action.produced_by_request_id,
+    );
+    Ok(outcome)
+}
+
+fn require_active_integrate_binding(
+    action: &IntegrateWorkspaceAction,
+    documents: &dyn WorkspaceDocuments,
+) -> Result<(), String> {
+    let bindings = documents
+        .load_bindings(&action.workspace_id)
+        .map_err(|err| err.to_string())?;
+    let matched = bindings.iter().find(|binding| {
+        binding.is_active_integrate() && binding.request_id == action.produced_by_request_id
+    });
+    match matched {
+        Some(binding) => {
+            let workspace = documents
+                .load_isolated_workspace(&action.workspace_id)
+                .map_err(|err| err.to_string())?
+                .ok_or_else(|| format!("IsolatedWorkspace {} not found", action.workspace_id))?;
+            let workspace_hash = workspace.seal_hash.as_deref().unwrap_or_default();
+            match binding
+                .seal_hash
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                Some(hash) if hash == workspace_hash => Ok(()),
+                Some(hash) => Err(format!(
+                    "Integrate binding seal_hash {hash} does not match workspace seal_hash {workspace_hash}"
+                )),
+                None => Err(format!(
+                    "Integrate binding {} is missing seal_hash",
+                    binding.binding_id
+                )),
+            }
+        }
+        None => Err(format!(
+            "integrate_workspace requires an Active Integrate binding for request {}",
+            action.produced_by_request_id
+        )),
+    }
+}
+
+fn persist_integrate_docs(
+    workspace: IsolatedWorkspaceDoc,
+    placement: WorkspacePlacementDoc,
+    receipt: WorkspaceReceiptDoc,
+    documents: &mut dyn WorkspaceDocuments,
+) -> Result<IntegrateWorkspaceOutcome> {
+    // Receipt first; binding stays Active until the DefraDB flush succeeds.
+    documents.write_receipt(receipt.clone())?;
+    Ok(IntegrateWorkspaceOutcome {
+        workspace,
+        placement,
+        receipt,
+        pending_head_sha: None,
+    })
+}
+
+fn load_written_integrate(
+    workspace_id: &str,
+    action: &IntegrateWorkspaceAction,
+    documents: &dyn WorkspaceDocuments,
+) -> Result<IntegrateWorkspaceOutcome> {
+    let workspace = documents
+        .load_isolated_workspace(workspace_id)?
+        .ok_or_else(|| {
+            anyhow!("journal ResultDocsWritten but IsolatedWorkspace {workspace_id} missing")
+        })?;
+    let placement = documents.load_placement(workspace_id)?.ok_or_else(|| {
+        anyhow!("journal ResultDocsWritten but WorkspacePlacement {workspace_id} missing")
+    })?;
+    let receipt_id = integrator_receipt_id(workspace_id, &action.produced_by_request_id);
+    let receipt = documents
+        .load_receipts(workspace_id)?
+        .into_iter()
+        .find(|receipt| receipt.receipt_id == receipt_id)
+        .ok_or_else(|| {
+            anyhow!("journal ResultDocsWritten but WorkspaceReceipt {receipt_id} missing")
+        })?;
+    Ok(IntegrateWorkspaceOutcome {
+        workspace,
+        placement,
+        receipt: receipt.clone(),
+        pending_head_sha: receipt.head_sha,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IntegrateJournalMarker {
+    journal: Vec<ActionJournalEntry>,
+    pending_head_sha: Option<String>,
+    seal_hash: String,
+    request_id: String,
+}
+
+fn integrate_marker_path(trunk: &Path, workspace_id: &str) -> Option<PathBuf> {
+    let git_dir = absolute_git_dir(trunk).ok()?;
+    Some(git_dir.join(format!(
+        "gents-integrate-{}.json",
+        sanitize_fs(workspace_id)
+    )))
+}
+
+fn load_integrate_marker(trunk: &Path, workspace_id: &str) -> Option<IntegrateJournalMarker> {
+    let path = integrate_marker_path(trunk, workspace_id)?;
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn restore_integrate_journal(
+    journal: &mut Vec<ActionJournalEntry>,
+    trunk: &Path,
+    workspace_id: &str,
+) {
+    if !journal.is_empty() {
+        return;
+    }
+    if let Some(marker) = load_integrate_marker(trunk, workspace_id) {
+        *journal = marker.journal;
+    }
+}
+
+fn persist_integrate_journal(
+    journal: &[ActionJournalEntry],
+    trunk: &Path,
+    workspace_id: &str,
+    pending_head_sha: Option<&str>,
+    seal_hash: &str,
+    request_id: &str,
+) {
+    let Some(path) = integrate_marker_path(trunk, workspace_id) else {
+        return;
+    };
+    let marker = IntegrateJournalMarker {
+        journal: journal.to_vec(),
+        pending_head_sha: pending_head_sha.map(str::to_string),
+        seal_hash: seal_hash.to_string(),
+        request_id: request_id.to_string(),
+    };
+    if let Ok(json) = serde_json::to_vec_pretty(&marker) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+pub(crate) fn clear_integrate_journal(trunk: &Path, workspace_id: &str) {
+    if let Some(path) = integrate_marker_path(trunk, workspace_id) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+pub fn finalize_integrate_trunk(trunk: &Path, pending_head_sha: Option<&str>) -> Result<()> {
+    let Some(sha) = pending_head_sha
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    advance_trunk_to_integrate_commit(trunk, sha)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupWorkspaceOutcome {
+    pub workspace: IsolatedWorkspaceDoc,
+    pub placement: WorkspacePlacementDoc,
+}
+
+pub fn execute_cleanup_workspace_plan(
+    plan: &ActionPlan,
+    journal: &mut Vec<ActionJournalEntry>,
+    ctx: &mut HostExecutorContext<'_>,
+) -> Result<CleanupWorkspaceOutcome, HostExecuteError> {
+    if !journal::action_journal_prefix_legal(journal) {
+        return Err(HostExecuteError::denied("illegal action journal prefix"));
+    }
+    plan.validate_against(&ctx.capabilities)
+        .map_err(|err| HostExecuteError::denied(err.to_string()))?;
+    if plan.actions.len() != 1 {
+        return Err(HostExecuteError::denied(
+            "cleanup_workspace executor only runs a single cleanup_workspace action",
+        ));
+    }
+    let action = match &plan.actions[0] {
+        HostAction::CleanupWorkspace(action) => action,
+        other => {
+            return Err(HostExecuteError::denied(format!(
+                "cleanup_workspace executor cannot run {}",
+                other.type_name()
+            )))
+        }
+    };
+    if journal::current_state(journal, 0).is_none() {
+        journal::advance(journal, 0, ActionJournalState::Validated);
+    }
+    cleanup_workspace_action(action, journal, ctx)
+}
+
+fn cleanup_workspace_action(
+    action: &CleanupWorkspaceAction,
+    journal: &mut Vec<ActionJournalEntry>,
+    ctx: &mut HostExecutorContext<'_>,
+) -> Result<CleanupWorkspaceOutcome, HostExecuteError> {
+    if matches!(
+        journal::current_state(journal, 0),
+        Some(ActionJournalState::ResultDocsWritten)
+    ) {
+        return load_written_cleanup(&action.workspace_id, ctx.documents)
+            .map_err(|err| HostExecuteError::failed(err.to_string(), false, None));
+    }
+
+    if matches!(
+        journal::current_state(journal, 0),
+        Some(ActionJournalState::Validated)
+    ) {
+        journal::advance(journal, 0, ActionJournalState::Executing);
+    }
+
+    let mut workspace = ctx
+        .documents
+        .load_isolated_workspace(&action.workspace_id)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?
+        .ok_or_else(|| {
+            HostExecuteError::failed(
+                format!("IsolatedWorkspace {} not found", action.workspace_id),
+                false,
+                None,
+            )
+        })?;
+    let placement = ctx
+        .documents
+        .load_placement(&action.workspace_id)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?
+        .ok_or_else(|| {
+            HostExecuteError::failed(
+                format!("WorkspacePlacement {} not found", action.workspace_id),
+                false,
+                None,
+            )
+        })?;
+    if workspace.owner_deployment_id != ctx.deployment_id {
+        return Err(HostExecuteError::denied(format!(
+            "workspace {} is owned by {}, not this host {}",
+            action.workspace_id, workspace.owner_deployment_id, ctx.deployment_id
+        )));
+    }
+
+    let lifecycle = normalize_workspace_lifecycle_state(&workspace.lifecycle_state);
+    if lifecycle == Some(LIFECYCLE_CLEANED) {
+        journal::advance(journal, 0, ActionJournalState::EffectObserved);
+        let outcome = persist_cleanup_docs(workspace, placement, ctx.documents)
+            .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
+        journal::advance(journal, 0, ActionJournalState::ResultDocsWritten);
+        return Ok(outcome);
+    }
+
+    let dest = PathBuf::from(&placement.host_path);
+    let source = ctx.repository.host_path.clone();
+    match lifecycle {
+        Some(LIFECYCLE_SEALED) | Some(LIFECYCLE_CLEANING) | Some(LIFECYCLE_PROVISION_FAILED) => {}
+        Some(LIFECYCLE_READY) => {
+            return Err(HostExecuteError::denied(format!(
+                "workspace {} is ready; cleanup would leave a bindable Ready workspace without a placement",
+                action.workspace_id
+            )))
+        }
+        other => {
+            return Err(HostExecuteError::denied(format!(
+                "workspace {} in state {} cannot be cleaned",
+                action.workspace_id,
+                other.unwrap_or(workspace.lifecycle_state.as_str())
+            )))
+        }
+    }
+
+    let active = ctx
+        .documents
+        .load_bindings(&action.workspace_id)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?
+        .into_iter()
+        .filter(|binding| binding.is_active())
+        .collect::<Vec<_>>();
+    if !active.is_empty() {
+        return Err(HostExecuteError::denied(format!(
+            "workspace {} has {} Active binding(s); cleanup requires them Released first",
+            action.workspace_id,
+            active.len()
+        )));
+    }
+
+    let expected = workspace_host_path(
+        &source,
+        &workspace.workspace_id,
+        &workspace.branch,
+        ctx.ceiling,
+    )
+    .map_err(|err| HostExecuteError::denied(err.to_string()))?;
+
+    if matches!(lifecycle, Some(LIFECYCLE_SEALED) | Some(LIFECYCLE_CLEANING)) {
+        workspace.lifecycle_state = LIFECYCLE_CLEANING.to_string();
+        ctx.documents
+            .write_isolated_workspace(workspace.clone())
+            .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
+    }
+
+    cleanup_workspace_tree(&source, &dest, &expected, ctx.ceiling)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
+
+    journal::advance(journal, 0, ActionJournalState::EffectObserved);
+    if matches!(lifecycle, Some(LIFECYCLE_SEALED) | Some(LIFECYCLE_CLEANING)) {
+        workspace.lifecycle_state = LIFECYCLE_CLEANED.to_string();
+    }
+    let outcome = persist_cleanup_docs(workspace, placement, ctx.documents)
+        .map_err(|err| HostExecuteError::failed(err.to_string(), false, None))?;
+    journal::advance(journal, 0, ActionJournalState::ResultDocsWritten);
+    Ok(outcome)
+}
+
+fn persist_cleanup_docs(
+    workspace: IsolatedWorkspaceDoc,
+    placement: WorkspacePlacementDoc,
+    documents: &mut dyn WorkspaceDocuments,
+) -> Result<CleanupWorkspaceOutcome> {
+    let bindings = documents.load_bindings(&workspace.workspace_id)?;
+    for binding in bindings {
+        if binding.is_active() {
+            documents.write_binding(release_binding(binding))?;
+        }
+    }
+    documents.write_isolated_workspace(workspace.clone())?;
+    Ok(CleanupWorkspaceOutcome {
+        workspace,
+        placement,
+    })
+}
+
+fn load_written_cleanup(
+    workspace_id: &str,
+    documents: &dyn WorkspaceDocuments,
+) -> Result<CleanupWorkspaceOutcome> {
+    let workspace = documents
+        .load_isolated_workspace(workspace_id)?
+        .ok_or_else(|| {
+            anyhow!("journal ResultDocsWritten but IsolatedWorkspace {workspace_id} missing")
+        })?;
+    let placement = documents.load_placement(workspace_id)?.ok_or_else(|| {
+        anyhow!("journal ResultDocsWritten but WorkspacePlacement {workspace_id} missing")
+    })?;
+    Ok(CleanupWorkspaceOutcome {
+        workspace,
+        placement,
+    })
 }
 
 fn load_written_docs(

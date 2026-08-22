@@ -388,6 +388,22 @@ async fn execute_running_invocation(
             )
             .await;
         }
+        HostAction::IntegrateWorkspace(_) => {
+            return deny(
+                node,
+                invocation,
+                "integrate_workspace is invoked on integrator success, not as a callback plan",
+            )
+            .await;
+        }
+        HostAction::CleanupWorkspace(_) => {
+            return deny(
+                node,
+                invocation,
+                "cleanup_workspace is an explicit host action, not a callback plan",
+            )
+            .await;
+        }
     };
     if !can_start_executing(&journal, 0) {
         return deny(node, invocation, "journal prefix blocks first action").await;
@@ -625,10 +641,11 @@ pub async fn finish_succeeded_if_docs_ready(
     let journal = decode_journal(invocation.action_journal.as_deref())?;
     let workspace_id = stored_action_plan(invocation)
         .map_err(anyhow::Error::msg)?
-        .and_then(|plan| match plan.actions.into_iter().next() {
-            Some(HostAction::CreateWorkspace(action)) => Some(action.workspace_id),
-            Some(HostAction::SealWorkspace(action)) => Some(action.workspace_id),
-            None => None,
+        .and_then(|plan| {
+            plan.actions
+                .into_iter()
+                .next()
+                .map(|action| action.workspace_id().to_string())
         });
     let Some(workspace_id) = workspace_id else {
         return Ok(false);

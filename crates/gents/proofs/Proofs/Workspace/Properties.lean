@@ -26,6 +26,19 @@ instance (workspaceId : String) (bindings : List WorkspaceBinding) :
     Decidable (UniqueActiveReadWrite workspaceId bindings) :=
   Nat.decLe (activeReadWriteCount workspaceId bindings) 1
 
+def activeIntegrateCount (workspaceId : String) (bindings : List WorkspaceBinding) : Nat :=
+  (bindings.filter fun b =>
+      decide (b.workspaceId = workspaceId) &&
+        decide (b.authority = .integrate) &&
+        decide (b.state = .active)).length
+
+def UniqueActiveIntegrate (workspaceId : String) (bindings : List WorkspaceBinding) : Prop :=
+  activeIntegrateCount workspaceId bindings ≤ 1
+
+instance (workspaceId : String) (bindings : List WorkspaceBinding) :
+    Decidable (UniqueActiveIntegrate workspaceId bindings) :=
+  Nat.decLe (activeIntegrateCount workspaceId bindings) 1
+
 def ReadOnlyAllowed (w : IsolatedWorkspace) : Prop :=
   w.state = .ready ∨ w.state = .sealed
 
