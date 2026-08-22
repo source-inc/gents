@@ -138,6 +138,8 @@ pub struct ToolPolicyBash {
     /// **intersection** meet (top = `All`). Mirrors Lean `BashPolicy.readOnly`
     /// (`bash_meet_readonly_*`).
     pub read_only_allowlist: EndpointScope<String, ()>,
+    /// Overlay `git_worktree_diff`: union meet (either side denies Git-metadata writes).
+    pub deny_git_metadata_writes: bool,
 }
 
 impl ToolPolicyBash {
@@ -150,6 +152,7 @@ impl ToolPolicyBash {
             allowed_argv_prefixes: EndpointScope::<Vec<String>, ()>::all(),
             forbidden_argv_prefixes: BTreeSet::new(),
             read_only_allowlist: EndpointScope::all(),
+            deny_git_metadata_writes: false,
         }
     }
 
@@ -162,6 +165,7 @@ impl ToolPolicyBash {
             allowed_argv_prefixes: EndpointScope::<Vec<String>, ()>::all(),
             forbidden_argv_prefixes: BTreeSet::new(),
             read_only_allowlist: EndpointScope::all(),
+            deny_git_metadata_writes: false,
         }
     }
 
@@ -182,6 +186,8 @@ impl ToolPolicyBash {
             read_only_allowlist: self
                 .read_only_allowlist
                 .meet_with(&other.read_only_allowlist, |(), ()| ()),
+            deny_git_metadata_writes: self.deny_git_metadata_writes
+                || other.deny_git_metadata_writes,
         }
     }
 }
@@ -254,6 +260,7 @@ impl ToolPolicySurface {
                 allowed_argv_prefixes: EndpointScope::<Vec<String>, ()>::all(),
                 forbidden_argv_prefixes: BTreeSet::new(),
                 read_only_allowlist: EndpointScope::all(),
+                deny_git_metadata_writes: false,
             },
             meta: true,
             defra_query: true,
@@ -396,6 +403,9 @@ impl ToolPolicySurface {
                             .map(|cmd| cmd.trim().to_string()),
                     )
                 },
+                deny_git_metadata_writes: command_policy
+                    .map(|policy| policy.deny_git_metadata_writes())
+                    .unwrap_or(false),
             },
             meta: selection.enable_meta_tools,
             defra_query: selection.enable_defra_query,

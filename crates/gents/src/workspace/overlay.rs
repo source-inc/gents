@@ -12,8 +12,6 @@ use crate::tool_surface::{resolve_configured_tool_root, FileToolMode};
 use crate::toolset::{workspace_write_sandbox_enforced, WorkspaceAuthority};
 use crate::watcher::AgentRequest;
 
-#[cfg(test)]
-mod tests;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IsolatedWorkspaceRecord {
@@ -476,3 +474,6 @@ async fn load_enabled_workspace_roots(node: &EmbeddedNode) -> Result<Vec<PathBuf
     }
     Ok(roots)
 }
+
+#[cfg(test)]
+mod overlay_tests;

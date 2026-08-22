@@ -237,6 +237,9 @@ fn apply_effective_bash(
     }
     policy.mode = meet_execution_mode(policy.mode, effective_bash.execution_mode);
     policy.network_mode = meet_network_mode(policy.network_mode, effective_bash.network_mode);
+    if effective_bash.deny_git_metadata_writes {
+        policy = policy.with_git_worktree_diff();
+    }
     policy
 }
 

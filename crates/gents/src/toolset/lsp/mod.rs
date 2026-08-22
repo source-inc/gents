@@ -122,6 +122,7 @@ pub fn constraints_from_effective_bash(
         execution_mode: bash.execution_mode,
         sandbox,
         deny_all_argv: deny_all,
+        deny_git_metadata_writes: bash.deny_git_metadata_writes,
     }
 }
 
@@ -410,6 +411,7 @@ pub fn config_digest(
     hasher.update(format!("{:?}", constraints.sandbox).as_bytes());
     hasher.update(format!("{:?}", constraints.network_mode).as_bytes());
     hasher.update(constraints.deny_all_argv.to_string().as_bytes());
+    hasher.update(constraints.deny_git_metadata_writes.to_string().as_bytes());
     for prefix in &constraints.allowed_argv_prefixes {
         hasher.update(prefix.join("\0").as_bytes());
     }

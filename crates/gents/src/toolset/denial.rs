@@ -16,6 +16,7 @@ pub(crate) enum DenialReason {
     DisabledNetworkCommand { command: String },
     WorkspaceWriteSandboxUnavailable,
     WorkspaceExecutable,
+    GitMetadataWriteDenied { command: String, subcommand: String },
 }
 
 impl DenialReason {
@@ -32,6 +33,7 @@ impl DenialReason {
             Self::DisabledNetworkCommand { .. } => "disabledNetworkCommand",
             Self::WorkspaceWriteSandboxUnavailable => "workspaceWriteSandboxUnavailable",
             Self::WorkspaceExecutable => "workspaceExecutable",
+            Self::GitMetadataWriteDenied { .. } => "gitMetadataWriteDenied",
         }
     }
 
@@ -56,7 +58,8 @@ impl DenialReason {
             | Self::ReadOnlySubcommandRequired { command }
             | Self::ReadOnlySubcommandNotAllowlisted { command, .. }
             | Self::ReadOnlyUrlRequired { command }
-            | Self::DisabledNetworkCommand { command } => Some(command),
+            | Self::DisabledNetworkCommand { command }
+            | Self::GitMetadataWriteDenied { command, .. } => Some(command),
             _ => None,
         }
     }
@@ -70,7 +73,8 @@ impl DenialReason {
 
     pub(crate) fn denied_subcommand(&self) -> Option<&str> {
         match self {
-            Self::ReadOnlySubcommandNotAllowlisted { subcommand, .. } => Some(subcommand),
+            Self::ReadOnlySubcommandNotAllowlisted { subcommand, .. }
+            | Self::GitMetadataWriteDenied { subcommand, .. } => Some(subcommand),
             _ => None,
         }
     }
@@ -176,6 +180,12 @@ impl DenialReason {
             Self::WorkspaceExecutable => {
                 "language-server executable is not admitted (workspace-local or missing)".into()
             }
+            Self::GitMetadataWriteDenied {
+                command,
+                subcommand,
+            } => format!(
+                "{command} {subcommand} is denied under WorkspaceWrite+git_worktree_diff (shared Git metadata is integrator-only)"
+            ),
         }
     }
 
@@ -215,6 +225,10 @@ impl DenialReason {
             }),
             "workspaceWriteSandboxUnavailable" => Some(Self::WorkspaceWriteSandboxUnavailable),
             "workspaceExecutable" => Some(Self::WorkspaceExecutable),
+            "gitMetadataWriteDenied" => Some(Self::GitMetadataWriteDenied {
+                command: denied_command?,
+                subcommand: denied_subcommand?,
+            }),
             _ => None,
         }
     }

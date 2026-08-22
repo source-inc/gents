@@ -83,6 +83,7 @@ fn sample_config(
         execution_mode: CommandExecutionMode::Unrestricted,
         sandbox: CommandExecutionMode::Unrestricted,
         deny_all_argv: false,
+        deny_git_metadata_writes: false,
     };
     LspToolConfig {
         lsp: true,
@@ -871,6 +872,7 @@ fn tighter_ceiling_changes_digest() {
         execution_mode: CommandExecutionMode::Unrestricted,
         sandbox: CommandExecutionMode::Unrestricted,
         deny_all_argv: false,
+        deny_git_metadata_writes: false,
     };
     let tight = CommandConstraints {
         forbidden_argv_prefixes: vec![vec!["rust-analyzer".into()]],
@@ -1918,6 +1920,7 @@ fn sandbox_change_flips_digest() {
         execution_mode: CommandExecutionMode::ReadOnly,
         sandbox: CommandExecutionMode::Unrestricted,
         deny_all_argv: false,
+        deny_git_metadata_writes: false,
     };
     let seated = CommandConstraints {
         sandbox: CommandExecutionMode::WorkspaceWrite,
@@ -2162,6 +2165,7 @@ fn explicit_disabled_under_unrestricted_sandbox_is_unenforceable() {
         execution_mode: CommandExecutionMode::Unrestricted,
         sandbox: CommandExecutionMode::Unrestricted,
         deny_all_argv: false,
+        deny_git_metadata_writes: false,
     };
     let command = if crate::toolset::admit_host_executable("true", root.path()).is_ok() {
         "true"
