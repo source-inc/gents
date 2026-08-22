@@ -150,11 +150,7 @@ fn generated_workspace_cases_match_lean_predicate() {
         "workspace",
     );
     for case in cases {
-        let actual = workspace_transition_legal(
-            &case.from,
-            &case.to,
-            case.seal_hash.as_deref(),
-        );
+        let actual = workspace_transition_legal(&case.from, &case.to, case.seal_hash.as_deref());
         assert_eq!(
             actual, case.legal,
             "workspace case {} disagreed with the Lean predicate",

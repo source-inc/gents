@@ -35,6 +35,10 @@ pub(crate) const AGENT_REQUEST_FIELDS: &str = r#"
                     caused_by_source_doc_id
                     caused_by_correlation
                     caused_by_trigger_context
+                    workspace_id
+                    workspace_authority
+                    workspace_owner_deployment_id
+                    workspace_seal_hash
 "#;
 
 impl DefraWatcher {

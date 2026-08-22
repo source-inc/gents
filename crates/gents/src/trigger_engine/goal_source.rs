@@ -89,6 +89,14 @@ struct RequestRow {
     caused_by_correlation: Option<String>,
     #[serde(default)]
     caused_by_trigger_context: Option<String>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    workspace_authority: Option<String>,
+    #[serde(default)]
+    workspace_owner_deployment_id: Option<String>,
+    #[serde(default)]
+    workspace_seal_hash: Option<String>,
 }
 
 impl RequestRow {
@@ -137,6 +145,10 @@ impl RequestRow {
             caused_by_source_doc_id: None,
             caused_by_correlation: self.caused_by_correlation,
             caused_by_trigger_context: self.caused_by_trigger_context,
+            workspace_id: self.workspace_id,
+            workspace_authority: self.workspace_authority,
+            workspace_owner_deployment_id: self.workspace_owner_deployment_id,
+            workspace_seal_hash: self.workspace_seal_hash,
         }
     }
 }
@@ -560,6 +572,8 @@ impl GoalSource {
                     caused_by_parent_request_id caused_by_parent_request_doc_id
                     caused_by_parent_tool_call_id caused_by_parent_tool_call_doc_id
                     caused_by_correlation caused_by_trigger_context
+                    workspace_id workspace_authority
+                    workspace_owner_deployment_id workspace_seal_hash
                 }}
             }}"#
         );

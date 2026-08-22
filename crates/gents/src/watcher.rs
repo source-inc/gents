@@ -49,6 +49,10 @@ pub struct AgentRequest {
     pub caused_by_source_doc_id: Option<String>,
     pub caused_by_correlation: Option<String>,
     pub caused_by_trigger_context: Option<String>,
+    pub workspace_id: Option<String>,
+    pub workspace_authority: Option<String>,
+    pub workspace_owner_deployment_id: Option<String>,
+    pub workspace_seal_hash: Option<String>,
 }
 
 impl AgentRequest {

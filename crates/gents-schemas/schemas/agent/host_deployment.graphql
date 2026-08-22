@@ -1,0 +1,8 @@
+# Opaque stable host identifier. Local-only (NOT @branchable). Distinct from
+# any agent principal DID — placements and bindings key on this id.
+type HostDeployment {
+    deployment_id: String @index(unique: true)
+    display_name: String
+    created_at: DateTime @index(direction: DESC)
+    updated_at: DateTime @index(direction: DESC)
+}

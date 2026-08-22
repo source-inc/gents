@@ -47,6 +47,14 @@ struct AgentRequestRow {
     caused_by_source_doc_id: Option<String>,
     caused_by_correlation: Option<String>,
     caused_by_trigger_context: Option<String>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    workspace_authority: Option<String>,
+    #[serde(default)]
+    workspace_owner_deployment_id: Option<String>,
+    #[serde(default)]
+    workspace_seal_hash: Option<String>,
 }
 
 pub(crate) async fn resolve_request_doc_id(
@@ -121,6 +129,10 @@ pub(crate) async fn load_agent_request(
                 caused_by_source_doc_id
                 caused_by_correlation
                 caused_by_trigger_context
+                workspace_id
+                workspace_authority
+                workspace_owner_deployment_id
+                workspace_seal_hash
             }}
         }}"#,
         escape_graphql_string(&request_doc_id)
@@ -163,6 +175,10 @@ pub(crate) async fn load_agent_request(
         caused_by_source_doc_id: nonempty(row.caused_by_source_doc_id),
         caused_by_correlation: nonempty(row.caused_by_correlation),
         caused_by_trigger_context: nonempty(row.caused_by_trigger_context),
+        workspace_id: nonempty(row.workspace_id),
+        workspace_authority: nonempty(row.workspace_authority),
+        workspace_owner_deployment_id: nonempty(row.workspace_owner_deployment_id),
+        workspace_seal_hash: nonempty(row.workspace_seal_hash),
     };
     validate_agent_request(&request)?;
     Ok(Some(request))

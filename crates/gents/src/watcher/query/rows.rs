@@ -40,6 +40,14 @@ pub(super) struct AgentRequestRow {
     pub(super) caused_by_source_doc_id: Option<String>,
     pub(super) caused_by_correlation: Option<String>,
     pub(super) caused_by_trigger_context: Option<String>,
+    #[serde(default)]
+    pub(super) workspace_id: Option<String>,
+    #[serde(default)]
+    pub(super) workspace_authority: Option<String>,
+    #[serde(default)]
+    pub(super) workspace_owner_deployment_id: Option<String>,
+    #[serde(default)]
+    pub(super) workspace_seal_hash: Option<String>,
     pub(super) status: String,
     pub(super) lifecycle_state: Option<String>,
     pub(super) interrupt_requested_at: Option<String>,
@@ -147,6 +155,12 @@ impl AgentRequestRow {
             caused_by_source_doc_id: normalize_optional_string(self.caused_by_source_doc_id),
             caused_by_correlation: normalize_optional_string(self.caused_by_correlation),
             caused_by_trigger_context: normalize_optional_string(self.caused_by_trigger_context),
+            workspace_id: normalize_optional_string(self.workspace_id),
+            workspace_authority: normalize_optional_string(self.workspace_authority),
+            workspace_owner_deployment_id: normalize_optional_string(
+                self.workspace_owner_deployment_id,
+            ),
+            workspace_seal_hash: normalize_optional_string(self.workspace_seal_hash),
         };
         validate_agent_request(&req)?;
         Ok(req)

@@ -112,6 +112,10 @@ fn session_snapshot_can_be_built_without_conversation_row_when_session_is_observ
             caused_by_parent_request_id: None,
             interrupt_requested_at: None,
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }],
         responses: vec![AgentResponseRow {
             response_key: "resp-1".to_string(),
@@ -200,6 +204,10 @@ fn session_snapshot_prefers_tracked_request_over_stale_conversation_latest_reque
                 caused_by_parent_request_id: None,
                 interrupt_requested_at: None,
                 valid_until: None,
+                workspace_id: None,
+                workspace_authority: None,
+                workspace_owner_deployment_id: None,
+                workspace_seal_hash: None,
             },
             AgentRequestRow {
                 request_id: "req-2".to_string(),
@@ -237,6 +245,10 @@ fn session_snapshot_prefers_tracked_request_over_stale_conversation_latest_reque
                 caused_by_parent_request_id: None,
                 interrupt_requested_at: None,
                 valid_until: None,
+                workspace_id: None,
+                workspace_authority: None,
+                workspace_owner_deployment_id: None,
+                workspace_seal_hash: None,
             },
         ],
         responses: vec![AgentResponseRow {
@@ -347,6 +359,10 @@ fn session_snapshot_does_not_report_unobserved_preferred_request() {
             caused_by_parent_request_id: None,
             interrupt_requested_at: None,
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }],
         messages: vec![AgentMessageRow {
             message_key: "msg-1".to_string(),
@@ -727,6 +743,10 @@ fn session_snapshot_stays_renderable_across_single_turn_observation_updates() {
             caused_by_parent_request_id: None,
             interrupt_requested_at: None,
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }],
         ..ClientStoreRows::default()
     });
@@ -800,6 +820,10 @@ fn session_snapshot_stays_renderable_across_single_turn_observation_updates() {
             caused_by_parent_request_id: None,
             interrupt_requested_at: None,
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }],
         responses: vec![AgentResponseRow {
             response_key: "resp-1".to_string(),
@@ -886,6 +910,10 @@ fn session_snapshot_stays_renderable_across_single_turn_observation_updates() {
             caused_by_parent_request_id: None,
             interrupt_requested_at: None,
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }],
         responses: vec![AgentResponseRow {
             response_key: "resp-1".to_string(),
@@ -997,6 +1025,10 @@ fn session_snapshot_derives_cancel_cause_for_interrupted_response_and_cancelled_
             caused_by_parent_request_id: None,
             interrupt_requested_at: Some("2026-05-20T10:32:14Z".to_string()),
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }],
         responses: vec![AgentResponseRow {
             response_key: "resp-1".to_string(),
@@ -1162,6 +1194,10 @@ fn session_snapshot_derives_interrupted_cause_for_child_request_with_cascade_pol
             caused_by_parent_request_id: Some("req-parent".to_string()),
             interrupt_requested_at: None,
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }],
         responses: vec![AgentResponseRow {
             response_key: "resp-child".to_string(),
@@ -1298,6 +1334,10 @@ fn transcript_contract_store(case: &LeanTranscriptCase) -> ClientStore {
             caused_by_parent_request_id: None,
             interrupt_requested_at: None,
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }],
         messages: transcript_contract_messages(case),
         tool_calls: transcript_contract_tool_calls(case),
@@ -1666,6 +1706,10 @@ fn client_shell_contract_store(case: &LeanClientShellCase) -> ClientStore {
             caused_by_parent_request_id: None,
             interrupt_requested_at: None,
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         });
 
         if let Some(response_status) = response_status_for_turn(turn_state) {
@@ -1773,6 +1817,10 @@ fn streaming_response_contract_store(case: &LeanResponseTransitionCase) -> Clien
             caused_by_parent_request_id: None,
             interrupt_requested_at: None,
             valid_until: None,
+            workspace_id: None,
+            workspace_authority: None,
+            workspace_owner_deployment_id: None,
+            workspace_seal_hash: None,
         }],
         responses: vec![AgentResponseRow {
             response_key: "resp-1".to_string(),

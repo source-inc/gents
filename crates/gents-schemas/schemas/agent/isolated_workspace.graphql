@@ -1,0 +1,19 @@
+# Logical workspace identity. Replicated. Host paths live on local placement
+# rows; remotes and git-common-dir are never stored.
+type IsolatedWorkspace @branchable {
+    workspace_id: String @index(unique: true) @immutable
+    work_unit_id: String @index @immutable
+    repository_id: String @index @immutable
+    base_sha: String @immutable
+    branch: String @immutable
+    creation_policy: String @immutable
+    adapter: String @immutable
+    owner_deployment_id: String @index @immutable
+    writer_principal: String @index @immutable
+    integrator_principal: String @index @immutable
+    instruction_manifest: String @immutable
+    seal_hash: String
+    lifecycle_state: String @index
+    caused_by_invocation_id: String @index @immutable
+    caused_by_correlation: String @index @immutable
+}

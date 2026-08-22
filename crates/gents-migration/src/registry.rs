@@ -339,6 +339,56 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
         "bafyreibw7kuk4xise6epukrca2inza3j44bgsxfbkse3tkbk6enqzsr6ui"
     ),
     baseline_entry!(
+        gents_protocol::schemas::ISOLATED_WORKSPACE_NAME,
+        gents_protocol::schemas::ISOLATED_WORKSPACE,
+        "bafyreiet4b2ljharppkzevalc4krhgzby3sron4fx5ttzng7h26dus3yka"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::WORKSPACE_PLACEMENT_NAME,
+        gents_protocol::schemas::WORKSPACE_PLACEMENT,
+        "bafyreifmkdq2x2qunuznfeufgezni45qpdx7kavkx6khecl7gp3hlh5ot4"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::REPOSITORY_PLACEMENT_NAME,
+        gents_protocol::schemas::REPOSITORY_PLACEMENT,
+        "bafyreiff6pdc63xqisj3nvzlzopttqdvtsyewl3c6btahe6tdjtotkdr6i"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::HOST_DEPLOYMENT_NAME,
+        gents_protocol::schemas::HOST_DEPLOYMENT,
+        "bafyreig6g7dw6jzqlo3lilx3nd6cxtru7tleda7qa324pabl2zynqhyvwu"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::WORKSPACE_BINDING_NAME,
+        gents_protocol::schemas::WORKSPACE_BINDING,
+        "bafyreiaigh5f54titovkve66jkyxp3g4skygvn3tvwmgszg25h74gbjfia"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::WORKSPACE_RECEIPT_NAME,
+        gents_protocol::schemas::WORKSPACE_RECEIPT,
+        "bafyreibhkbakhtousobptnsedlksgpm2x4fwicmdbmutx2ndpvrai5vame"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::CALLBACK_MODULE_NAME,
+        gents_protocol::schemas::CALLBACK_MODULE,
+        "bafyreigyzru4dkbhixf55rbtqmqaq2fytbhubos6gjilm6z3ndoi4qzjdm"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::CALLBACK_BINDING_NAME,
+        gents_protocol::schemas::CALLBACK_BINDING,
+        "bafyreiaj3lkp7ai4nx2x5qnoh23g3x3r4wuypqyxaikd6ehijq2m4d3j4y"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::CALLBACK_INVOCATION_NAME,
+        gents_protocol::schemas::CALLBACK_INVOCATION,
+        "bafyreid4yx7bnhrod4h2qejd5ledox34pviuqqkqzpnzucgqids4om6gt4"
+    ),
+    baseline_entry!(
+        gents_protocol::schemas::CALLBACK_RESULT_NAME,
+        gents_protocol::schemas::CALLBACK_RESULT,
+        "bafyreib7bwk6btbxbumfe6pabj4avfh6alhtgck4jxrifo5odi5qx5l2ru"
+    ),
+    baseline_entry!(
         gents_protocol::schemas::OAUTH_CREDENTIAL_NAME,
         gents_protocol::schemas::OAUTH_CREDENTIAL,
         "bafyreiab3wqm3em2cepvj22l733ziz4azytl3gc7zozcm5e2s7nuehkx6u"
@@ -367,7 +417,7 @@ pub static DEFAULT_BASELINE: &[BaselineCollection<'static>] = &[
     baseline_entry!(
         gents_protocol::schemas::AGENT_REQUEST_NAME,
         gents_protocol::schemas::AGENT_REQUEST,
-        "bafyreic7me42vx5n742f6aygvtybwzxrpu6rnlxcemchlsdrydtw2mibcu"
+        "bafyreiembxwedo23mylrybvoy5jvhw6nqvelc67qoywq2jc4lct64nbe54"
     ),
     baseline_entry!(
         gents_protocol::schemas::AGENT_RESPONSE_NAME,

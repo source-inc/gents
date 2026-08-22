@@ -1,0 +1,19 @@
+# Binds a CallbackModule or builtin emitter to a source-collection create.
+# Filter/source-field projection must not include secret-bearing field names.
+# JSON-ish blobs are String; empty lists are null in mutations, never `[]`.
+type CallbackBinding @branchable {
+    binding_id: String @index(unique: true)
+    source_collection: String @index
+    event_kind: String @index
+    filter: String
+    source_fields: String
+    module_id: String @index
+    builtin_emitter: String
+    principal_did: String @index
+    capability_set: String
+    retry_policy: String
+    owner_deployment_id: String @index
+    enabled: Boolean @index
+    created_at: DateTime @index(direction: DESC)
+    updated_at: DateTime @index(direction: DESC)
+}

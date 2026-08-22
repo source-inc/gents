@@ -270,6 +270,14 @@ pub struct AgentRequestRow {
     pub interrupt_requested_at: Option<String>,
     #[serde(default)]
     pub valid_until: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub workspace_authority: Option<String>,
+    #[serde(default)]
+    pub workspace_owner_deployment_id: Option<String>,
+    #[serde(default)]
+    pub workspace_seal_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

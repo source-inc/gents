@@ -132,6 +132,14 @@ pub struct TimelineRequestRow {
     #[serde(default, skip_serializing)]
     pub caused_by_parent_tool_call_doc_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_authority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_owner_deployment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_seal_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_origin: Option<String>,
     #[serde(default, skip_serializing_if = "RetrySummary::is_empty")]
     pub retry_summary: RetrySummary,

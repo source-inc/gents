@@ -1,0 +1,10 @@
+# EventTrigger edge for a succeeded invocation. Created only after every
+# required result document for the plan is durable.
+type CallbackResult @branchable {
+    result_id: String @index(unique: true) @immutable
+    invocation_id: String @index @immutable
+    owner_deployment_id: String @index @immutable
+    workspace_id: String @index
+    caused_by_correlation: String @index @immutable
+    created_at: String @index
+}

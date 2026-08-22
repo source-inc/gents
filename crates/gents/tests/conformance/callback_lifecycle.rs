@@ -5,9 +5,9 @@ fn later_than_validated(state: &str) -> bool {
 }
 
 fn journal_prefix_ok(journal: &[String]) -> bool {
-    journal.windows(2).all(|pair| {
-        !later_than_validated(&pair[1]) || pair[0] == "resultDocsWritten"
-    })
+    journal
+        .windows(2)
+        .all(|pair| !later_than_validated(&pair[1]) || pair[0] == "resultDocsWritten")
 }
 
 fn result_emitted_ok(state: &str, journal: &[String], result_emitted: bool) -> bool {

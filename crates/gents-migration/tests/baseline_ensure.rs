@@ -264,6 +264,8 @@ async fn agent_request_baseline_is_chain_free_and_migrations_are_idempotent() {
                 request_id content seed max_total_tokens
                 background_completion_input_through_sequence
                 background_completion_notification_keys_json
+                workspace_id workspace_authority
+                workspace_owner_deployment_id workspace_seal_hash
             } }"#,
         )
         .await;
@@ -285,6 +287,10 @@ async fn agent_request_baseline_is_chain_free_and_migrations_are_idempotent() {
     assert!(rows[0]["max_total_tokens"].is_null());
     assert!(rows[0]["background_completion_input_through_sequence"].is_null());
     assert!(rows[0]["background_completion_notification_keys_json"].is_null());
+    assert!(rows[0]["workspace_id"].is_null());
+    assert!(rows[0]["workspace_authority"].is_null());
+    assert!(rows[0]["workspace_owner_deployment_id"].is_null());
+    assert!(rows[0]["workspace_seal_hash"].is_null());
 
     // The idempotence half of the test name: this store's AgentRequest was
     // first registered by raw add_schema (the client-like genesis path), not

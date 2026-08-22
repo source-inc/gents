@@ -58,6 +58,10 @@ async fn complete_does_not_overwrite_conversation_for_newer_request() {
         caused_by_source_doc_id: None,
         caused_by_correlation: None,
         caused_by_trigger_context: None,
+        workspace_id: None,
+        workspace_authority: None,
+        workspace_owner_deployment_id: None,
+        workspace_seal_hash: None,
     };
     let mut lifecycle = RequestLifecycle::new_with_agent_did(
         db.node.clone(),
@@ -131,6 +135,10 @@ async fn advance_increments_progress_seq() {
         caused_by_source_doc_id: None,
         caused_by_correlation: None,
         caused_by_trigger_context: None,
+        workspace_id: None,
+        workspace_authority: None,
+        workspace_owner_deployment_id: None,
+        workspace_seal_hash: None,
     };
 
     let mut lifecycle =

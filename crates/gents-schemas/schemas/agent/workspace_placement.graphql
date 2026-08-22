@@ -1,0 +1,15 @@
+# Local-only placement for an IsolatedWorkspace on this host. NEVER @branchable:
+# host_path, adapter observation, and dirty-base must not replicate.
+type WorkspacePlacement {
+    workspace_id: String @index(unique: true)
+    deployment_id: String @index
+    host_path: String
+    repository_placement_id: String @index
+    adapter: String
+    adapter_version: String
+    dirty_base: Boolean
+    dirty_base_summary: String
+    provisioning_state: String @index
+    observed_tree_hash: String
+    updated_at: DateTime @index(direction: DESC)
+}

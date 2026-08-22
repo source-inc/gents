@@ -276,6 +276,10 @@ fn agent_request_clone() {
         caused_by_source_doc_id: None,
         caused_by_correlation: None,
         caused_by_trigger_context: None,
+        workspace_id: None,
+        workspace_authority: None,
+        workspace_owner_deployment_id: None,
+        workspace_seal_hash: None,
     };
     let cloned = req.clone();
     assert_eq!(cloned.doc_id, "abc");
@@ -349,6 +353,10 @@ fn request(request_id: &str, session_id: &str) -> AgentRequest {
         caused_by_source_doc_id: None,
         caused_by_correlation: None,
         caused_by_trigger_context: None,
+        workspace_id: None,
+        workspace_authority: None,
+        workspace_owner_deployment_id: None,
+        workspace_seal_hash: None,
     }
 }
 
