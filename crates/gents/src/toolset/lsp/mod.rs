@@ -21,7 +21,7 @@ pub use config::LspConfigDocument;
 pub use pool::{LspPool, PoolKey};
 pub use writethrough::{LspWritethrough, MutationKind};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -31,7 +31,7 @@ use crate::llm::tool::{Tool, ToolDefinition};
 use crate::tool_call_lifecycle::FailureClass;
 use crate::tool_surface::{FileToolMode, ToolPolicyBash, ToolPolicySurface};
 use crate::toolset::shared::{ToolContext, ToolError};
-use crate::toolset::{CommandConstraints, CommandNetworkMode};
+use crate::toolset::{lsp_sandbox_for_effective, CommandConstraints, CommandNetworkMode};
 
 use actions::ActionRequest;
 use config::apply_overrides;
@@ -141,6 +141,21 @@ impl LspTool {
             context,
         })
     }
+
+    fn effective_workspace(&self) -> PathBuf {
+        overlay_workspace_or(&self.config.workspace)
+    }
+
+    fn effective_file_mode(&self) -> FileToolMode {
+        crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
+            .and_then(|scope| scope.workspace_authority)
+            .map(|authority| {
+                self.config
+                    .file
+                    .meet(crate::workspace::workspace_authority_file_mode(authority))
+            })
+            .unwrap_or(self.config.file)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -246,7 +261,7 @@ impl Tool for LspTool {
         if matches!(action, LspAction::CodeActionsList) && args.apply == Some(true) {
             action = LspAction::CodeActionsApply;
         }
-        if !lsp_action_authorized(self.config.lsp, self.config.file, action) {
+        if !lsp_action_authorized(self.config.lsp, self.effective_file_mode(), action) {
             return Err(ToolError::reported_failure(
                 FailureClass::PolicyDenied,
                 "lsp action is not authorized for this file-tool mode".into(),
@@ -256,8 +271,8 @@ impl Tool for LspTool {
             let method = args.query.as_deref().unwrap_or("");
             actions::validate_raw_request(&self.context, method, args.payload.as_deref())?;
         }
-        let detected =
-            catalog::detect_admitted_servers(&self.config.workspace, &self.config.servers);
+        let workspace = self.effective_workspace();
+        let detected = catalog::detect_admitted_servers(&workspace, &self.config.servers);
         let lease = if action.may_cold_start() {
             let file = args.file.as_deref().unwrap_or("");
             let is_glob = file.contains(['*', '?', '{', '[']);
@@ -308,7 +323,7 @@ impl Tool for LspTool {
                 let key = PoolKey {
                     session_id,
                     behavior_id: self.config.behavior_id.clone(),
-                    workspace_root: self.config.workspace.clone(),
+                    workspace_root: workspace.clone(),
                     server_name: server.name.clone(),
                     config_digest: self.config.digest.clone(),
                 };
@@ -324,7 +339,7 @@ impl Tool for LspTool {
                 return Err(ToolError::reported_failure(
                     FailureClass::ServiceUnavailable,
                     catalog::unavailable_servers_message(
-                        &self.config.workspace,
+                        &workspace,
                         &self.config.servers,
                         path.as_deref(),
                     ),
@@ -339,6 +354,7 @@ impl Tool for LspTool {
             &self.pool,
             &self.config,
             &detected,
+            &workspace,
             ActionRequest {
                 action,
                 file: args.file,
@@ -357,6 +373,24 @@ impl Tool for LspTool {
     fn into_dyn_error(error: Self::Error) -> crate::llm::tool::ToolError {
         error.into_dispatch_error()
     }
+}
+
+pub(crate) fn overlay_workspace_or(fallback: &Path) -> PathBuf {
+    crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
+        .and_then(|scope| scope.workspace_root)
+        .unwrap_or_else(|| fallback.to_path_buf())
+}
+
+pub(crate) fn overlay_lsp_constraints(base: &CommandConstraints) -> CommandConstraints {
+    let Some(authority) = crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
+        .and_then(|scope| scope.workspace_authority)
+    else {
+        return base.clone();
+    };
+    let mut constraints = base.clone();
+    constraints.execution_mode = constraints.execution_mode.meet(authority.command_mode());
+    constraints.sandbox = lsp_sandbox_for_effective(constraints.execution_mode);
+    constraints
 }
 
 pub fn merge_catalog(raw_config: Option<&str>) -> Vec<CatalogServer> {

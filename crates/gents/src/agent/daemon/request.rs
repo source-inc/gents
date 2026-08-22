@@ -316,6 +316,22 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
 
             let inference_behavior_id = lifecycle.behavior_id().to_string();
             let inference_backend_id = lifecycle.backend_id().to_string();
+            let workspace = match crate::workspace::resolve_request_workspace_overlay(
+                self.node.as_ref(),
+                &request,
+                self.operator_tool_root.as_deref(),
+            )
+            .await?
+            {
+                Some(overlay) => crate::tool_call_lifecycle::runtime::ToolWorkspaceScope {
+                    workspace_cwd: Some(overlay.cwd),
+                    workspace_root: Some(overlay.root),
+                    workspace_authority: Some(overlay.authority),
+                },
+                None => crate::tool_call_lifecycle::runtime::ToolWorkspaceScope::cwd_only(
+                    crate::workspace::request_workspace_cwd(&request),
+                ),
+            };
             let result = self
                 .run_inference(
                     &request,
@@ -327,6 +343,7 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                     &request_token,
                     aggregate_token_budget,
                     effective_seed,
+                    workspace,
                 )
                 .instrument(tracing::info_span!(
                     "request.run_inference",

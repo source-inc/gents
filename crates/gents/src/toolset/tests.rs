@@ -13,7 +13,7 @@ use super::file_tools::{
 use super::shared::{
     build_shell_env_from_vars, select_sandbox_for_policy, validate_command_policy,
     validate_read_only_command, CommandExecutionMode, CommandExecutionPolicy, CommandNetworkMode,
-    ToolContext, ToolError,
+    ToolContext, ToolError, WorkspaceAuthority,
 };
 use super::*;
 use crate::lean_vocab_test::{
@@ -669,6 +669,122 @@ async fn write_and_edit_file_work_under_root() {
 
     let content = std::fs::read_to_string(root.join("nested/file.txt")).unwrap();
     assert_eq!(content, "hello amy");
+}
+
+#[tokio::test]
+async fn read_only_workspace_authority_denies_file_writes() {
+    let root = temp_root("gents-workspace-ro-write");
+    std::fs::write(root.join("file.txt"), "hello").unwrap();
+    let writer = WriteFileTool::new(ToolContext::new(root.clone(), true).unwrap());
+    let error =
+        crate::tool_call_lifecycle::runtime::scope_request_tool_execution_with_workspace_overlay(
+            None,
+            tokio_util::sync::CancellationToken::new(),
+            crate::tool_call_lifecycle::runtime::ToolWorkspaceScope {
+                workspace_cwd: Some(root.clone()),
+                workspace_root: Some(std::fs::canonicalize(&root).unwrap()),
+                workspace_authority: Some(WorkspaceAuthority::ReadOnly),
+            },
+            None,
+            None,
+            None,
+            Default::default(),
+            false,
+            async {
+                crate::llm::tool::Tool::call(
+                    &writer,
+                    WriteFileArgs {
+                        path: "file.txt".to_string(),
+                        content: "nope".to_string(),
+                        raw_json: false,
+                    },
+                )
+                .await
+            },
+        )
+        .await
+        .expect_err("ReadOnly workspace authority must deny write_file");
+    assert!(
+        error.to_string().contains("does not allow file writes"),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("file.txt")).unwrap(),
+        "hello"
+    );
+}
+
+#[tokio::test]
+async fn read_write_overlay_meets_unrestricted_bash_to_workspace_write() {
+    let root = temp_root("gents-workspace-rw-bash");
+    let policy =
+        CommandExecutionPolicy::write_capable().with_mode(CommandExecutionMode::Unrestricted);
+    let tool = UnrestrictedBashTool::with_policy(
+        ToolContext::new(root.clone(), true).unwrap(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        policy.clone(),
+    );
+    let result =
+        crate::tool_call_lifecycle::runtime::scope_request_tool_execution_with_workspace_overlay(
+            None,
+            tokio_util::sync::CancellationToken::new(),
+            crate::tool_call_lifecycle::runtime::ToolWorkspaceScope {
+                workspace_cwd: Some(root.clone()),
+                workspace_root: Some(std::fs::canonicalize(&root).unwrap()),
+                workspace_authority: Some(WorkspaceAuthority::ReadWrite),
+            },
+            None,
+            None,
+            None,
+            Default::default(),
+            false,
+            async {
+                let met = crate::toolset::effective_command_policy(&policy);
+                assert_eq!(met.mode, CommandExecutionMode::WorkspaceWrite);
+                crate::llm::tool::Tool::call(
+                    &tool,
+                    BashArgs {
+                        command: "true".to_string(),
+                        args: Vec::new(),
+                        cwd: None,
+                        timeout_secs: None,
+                        raw_json: true,
+                    },
+                )
+                .await
+            },
+        )
+        .await;
+    if crate::toolset::workspace_write_sandbox_enforced() {
+        let output = result.expect("WorkspaceWrite bash should run when Seatbelt is available");
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|_| {
+            serde_json::from_str(output.lines().next().unwrap_or(&output))
+                .unwrap_or(serde_json::json!({}))
+        });
+        let mode = value
+            .pointer("/execution_mode")
+            .or_else(|| value.get("execution_mode"))
+            .and_then(|mode| mode.as_str())
+            .unwrap_or_default();
+        assert!(
+            mode.contains("workspace_write") || output.contains("workspace_write"),
+            "expected workspace_write metadata, got {output}"
+        );
+    } else {
+        let error = result.expect_err(
+            "ReadWrite overlay must refuse Unrestricted bash without WorkspaceWrite sandbox",
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("workspaceWriteSandboxUnavailable")
+                || error.to_string().contains("workspace_write")
+                || error.to_string().contains("seatbelt")
+                || error.to_string().contains("sandbox"),
+            "{error}"
+        );
+    }
 }
 
 #[tokio::test]

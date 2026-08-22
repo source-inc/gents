@@ -1,5 +1,4 @@
 use std::future::IntoFuture;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -47,19 +46,6 @@ fn ensure_request_deadline_open(deadline: RequestDeadline, context: &str) -> Res
         return Err(request_deadline_error(deadline, context));
     }
     Ok(())
-}
-
-fn request_workspace_cwd(request: &crate::watcher::AgentRequest) -> Option<PathBuf> {
-    let metadata = request.metadata.as_deref()?.trim();
-    if metadata.is_empty() {
-        return None;
-    }
-    let value = serde_json::from_str::<serde_json::Value>(metadata).ok()?;
-    value
-        .pointer("/codex_shim/cwd")
-        .or_else(|| value.get("workspace_cwd"))
-        .and_then(serde_json::Value::as_str)
-        .map(PathBuf::from)
 }
 
 fn render_request_context_message(
@@ -138,9 +124,9 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
         request_token: &tokio_util::sync::CancellationToken,
         aggregate_token_budget: Option<crate::agent::loop_stream::AggregateTokenBudget>,
         effective_seed: Option<i64>,
+        workspace: crate::tool_call_lifecycle::runtime::ToolWorkspaceScope,
     ) -> Result<HandleRequestOutcome> {
         let request_deadline = lifecycle.claimed_deadline_at();
-        let workspace_cwd = request_workspace_cwd(request);
         let trigger_context = crate::lifecycle::TriggerExecutionContext::parse(
             request.caused_by_trigger_context.as_deref(),
         )?;
@@ -153,7 +139,7 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
             .unwrap_or("")
             .to_string();
         let has_deadline = !deadline_at.is_empty();
-        let workspace_cwd_set = workspace_cwd.is_some();
+        let workspace_cwd_set = workspace.workspace_cwd.is_some();
 
         let request_context_message =
             render_request_context_message(self.node.as_ref(), &self.behavior, request)?;
@@ -179,7 +165,7 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
         // ever called. Do not install one here: a second scope would restart
         // the per-kind label sequence and hand the inference loop a label the
         // summarizer's scope had already used.
-        let inference = async {
+        let inference = Box::pin(async {
                 let hook = DefraSessionHook::resume_or_create_with_identity_policy(
                     self.node.clone(),
                     &request.session_id,
@@ -508,7 +494,7 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                                     crate::tool_call_lifecycle::runtime::scope_request_tool_execution_with_trigger_context(
                                         request_deadline,
                                         request_token.clone(),
-                                        workspace_cwd.clone(),
+                                        None,
                                         None,
                                         Some(session_id.clone()),
                                         trigger_correlation.clone(),
@@ -685,13 +671,24 @@ impl<M: rig::completion::CompletionModel + 'static> BehaviorDaemon<M> {
                 workspace_cwd_set,
                 attempt = attempt_index,
                 retry_attempt = false,
-            ));
+            )));
 
         // The capture scope installed by `handle_request` spans both the
         // stream's construction and its drain loop: the SSE transports connect
         // lazily on first poll, so the HTTP send that the capturing transport
         // intercepts usually happens during polling.
-        let outcome = inference.await?;
+        let outcome = crate::tool_call_lifecycle::runtime::scope_request_tool_execution_with_workspace_overlay(
+            request_deadline,
+            request_token.clone(),
+            workspace,
+            None,
+            Some(session_id.clone()),
+            trigger_correlation.clone(),
+            trigger_context.source_fields.clone(),
+            false,
+            inference,
+        )
+        .await?;
 
         Ok(outcome)
     }

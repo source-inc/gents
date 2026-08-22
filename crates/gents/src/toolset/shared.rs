@@ -2,10 +2,13 @@ mod command;
 mod context;
 mod filesystem;
 
+#[cfg(test)]
+pub(crate) use command::apply_workspace_authority;
 pub(crate) use command::parse_argv_prefixes;
 pub(crate) use command::{
-    admit_host_executable, default_lsp_network_mode, lsp_sandbox_for_effective,
-    prepare_managed_command,
+    admit_host_executable, default_lsp_network_mode, effective_command_policy,
+    lsp_sandbox_for_effective, normalize_workspace_lifecycle_state, prepare_managed_command,
+    workspace_write_sandbox_enforced,
 };
 #[cfg(test)]
 pub(super) use command::{
@@ -14,6 +17,7 @@ pub(super) use command::{
 pub(super) use command::{run_command, validate_command_policy};
 pub use command::{
     CommandConstraints, CommandExecutionMode, CommandExecutionPolicy, CommandNetworkMode,
+    WorkspaceAuthority,
 };
 pub(super) use context::{ToolContext, ToolError};
 pub(super) use filesystem::{cap_output, render_file_contents};

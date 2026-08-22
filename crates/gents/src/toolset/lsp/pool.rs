@@ -385,28 +385,26 @@ impl LspPool {
 
     async fn start_client(
         &self,
-        _key: &PoolKey,
+        key: &PoolKey,
         server: &CatalogServer,
         config: &LspToolConfig,
     ) -> Result<LspClient, String> {
-        let (program, argv, env, _sandbox) = prepare_managed_command(
-            &config.workspace,
-            &server.command,
-            &server.args,
-            &config.constraints,
-        )
-        .map_err(|err| err.to_string())?;
+        let workspace = key.workspace_root.clone();
+        let constraints = super::overlay_lsp_constraints(&config.constraints);
+        let (program, argv, env, _sandbox) =
+            prepare_managed_command(&workspace, &server.command, &server.args, &constraints)
+                .map_err(|err| err.to_string())?;
         let mut full_argv = vec![program.to_string_lossy().into_owned()];
         full_argv.extend(argv);
         let process = spawn_managed_process(SpawnManagedProcessRequest {
             argv: full_argv,
-            cwd: config.workspace.clone(),
+            cwd: workspace.clone(),
             environment: Some(env),
             tool_name: Some("lsp".into()),
             kind: ManagedExecKind::PersistentService,
         })
         .await?;
-        let client = LspClient::start(process, server.name.clone(), config, server)?;
+        let client = LspClient::start(process, server.name.clone(), server, workspace)?;
         if let Err(error) = client.initialize().await {
             client.shutdown_exit().await;
             return Err(error);

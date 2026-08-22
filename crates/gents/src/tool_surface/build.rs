@@ -59,6 +59,8 @@ pub(super) fn build_host_tools(
     cli_tool_names: &[String],
     ceiling: &ToolCeiling,
 ) -> Result<ToolSet> {
+    // Per-request IsolatedWorkspace roots overlay into TOOL_RUNTIME_SCOPE
+    // at claim time. Do not bake workspace_id paths into this ToolSet.
     let mut builder = ToolSetBuilder::default();
     let needs_file_tool_root =
         !matches!(file_tools, FileToolMode::Off) || !matches!(bash, BashMode::Off);

@@ -69,8 +69,8 @@ pub(crate) struct NativeFsRunner {
 impl NativeFsRunner {
     pub(crate) fn new(context: &ToolContext) -> Self {
         Self {
-            root: context.root().to_path_buf(),
-            base: context.base().to_path_buf(),
+            root: context.root(),
+            base: context.base(),
         }
     }
 
@@ -116,8 +116,9 @@ impl NativeFsRunner {
         let live_output = runtime
             .as_ref()
             .and_then(|runtime| runtime.live_output.clone());
+        let root = self.effective_root();
         let base = self.effective_base();
-        let runner = resolve_runner_command(&self.root, &base)?;
+        let runner = resolve_runner_command(&root, &base)?;
         let stdin = serde_json::to_vec(&request)
             .with_context(|| format!("serializing native filesystem request for {tool_name}"))?;
 
@@ -165,11 +166,18 @@ impl NativeFsRunner {
         }
     }
 
+    fn effective_root(&self) -> PathBuf {
+        current_tool_runtime_context()
+            .and_then(|runtime| runtime.workspace_root)
+            .unwrap_or_else(|| self.root.clone())
+    }
+
     fn effective_base(&self) -> PathBuf {
+        let root = self.effective_root();
         let runtime_base = current_tool_runtime_context()
             .and_then(|runtime| runtime.workspace_cwd)
-            .and_then(|base| resolve_base_dir(&self.root, &base).ok());
-        runtime_base.unwrap_or_else(|| self.base.clone())
+            .and_then(|base| resolve_base_dir(&root, &base).ok());
+        runtime_base.unwrap_or_else(|| resolve_base_dir(&root, &self.base).unwrap_or(root))
     }
 }
 

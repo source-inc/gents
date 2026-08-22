@@ -142,7 +142,8 @@ impl Tool for ReadOnlyBashTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        validate_command_policy(&args.command, &args.args, &self.policy)?;
+        let policy = crate::toolset::effective_command_policy(&self.policy);
+        validate_command_policy(&args.command, &args.args, &policy)?;
         run_command(
             &self.context,
             Self::NAME,
@@ -154,7 +155,7 @@ impl Tool for ReadOnlyBashTool {
                 self.default_timeout,
                 self.max_timeout,
             ),
-            &self.policy,
+            &policy,
             args.raw_json,
         )
         .await
@@ -224,7 +225,8 @@ impl Tool for UnrestrictedBashTool {
             (args.command.as_str(), args.args.clone())
         };
 
-        validate_command_policy(command, &command_args, &self.policy)?;
+        let policy = crate::toolset::effective_command_policy(&self.policy);
+        validate_command_policy(command, &command_args, &policy)?;
         run_command(
             &self.context,
             Self::NAME,
@@ -236,7 +238,7 @@ impl Tool for UnrestrictedBashTool {
                 self.default_timeout,
                 self.max_timeout,
             ),
-            &self.policy,
+            &policy,
             args.raw_json,
         )
         .await

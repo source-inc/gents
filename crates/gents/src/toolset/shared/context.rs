@@ -112,12 +112,12 @@ impl ToolContext {
         })
     }
 
-    pub(crate) fn root(&self) -> &Path {
-        self.root.as_path()
+    pub(crate) fn root(&self) -> PathBuf {
+        self.effective_root()
     }
 
-    pub(crate) fn base(&self) -> &Path {
-        self.base.as_path()
+    pub(crate) fn base(&self) -> PathBuf {
+        self.effective_base()
     }
 
     pub(crate) fn resolve_path_allow_create(&self, path: &str) -> Result<PathBuf> {
@@ -165,26 +165,35 @@ impl ToolContext {
     }
 
     fn ensure_allowed(&self, path: PathBuf) -> Result<PathBuf> {
-        if path.starts_with(self.root.as_path()) {
+        let root = self.effective_root();
+        if path.starts_with(&root) {
             Ok(path)
         } else {
             bail!(
                 "path is outside the allowed tool root {}: {}",
-                self.root.display(),
+                root.display(),
                 path.display()
             );
         }
     }
 
+    fn effective_root(&self) -> PathBuf {
+        crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
+            .and_then(|runtime| runtime.workspace_root)
+            .unwrap_or_else(|| (*self.root).clone())
+    }
+
     fn effective_base(&self) -> PathBuf {
+        let root = self.effective_root();
         let runtime_base = crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
             .and_then(|runtime| runtime.workspace_cwd)
-            .and_then(|base| resolve_base_dir(self.root.as_path(), Some(base)).ok());
-        runtime_base.unwrap_or_else(|| (*self.base).clone())
+            .and_then(|base| resolve_base_dir(&root, Some(base)).ok());
+        runtime_base
+            .unwrap_or_else(|| resolve_base_dir(&root, Some((*self.base).clone())).unwrap_or(root))
     }
 
     pub(crate) fn display_path(&self, path: &Path) -> String {
-        for prefix in [self.effective_base(), (*self.root).clone()] {
+        for prefix in [self.effective_base(), self.effective_root()] {
             if let Ok(relative) = path.strip_prefix(&prefix) {
                 let display = relative.to_string_lossy().replace('\\', "/");
                 return if display.is_empty() {

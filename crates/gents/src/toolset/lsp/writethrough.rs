@@ -80,7 +80,8 @@ impl LspWritethrough {
                 return Some("format-on-write skipped: language server formatting failed".into())
             }
         };
-        let context = ToolContext::new(self.config.workspace.clone(), true).ok()?;
+        let workspace = super::overlay_workspace_or(&self.config.workspace);
+        let context = ToolContext::new(workspace, true).ok()?;
         let encoding = lease.client().position_encoding().await;
         let workspace_edit = json!({ "changes": { uri: edits } });
         let prepared = match prepare_workspace_edit(&context, &workspace_edit, encoding) {
@@ -134,10 +135,11 @@ impl LspWritethrough {
             .and_then(|scope| scope.session_id)
             .filter(|id| !id.is_empty())
             .unwrap_or_else(|| self.config.session_id.clone());
+        let workspace_root = super::overlay_workspace_or(&self.config.workspace);
         let key = PoolKey {
             session_id,
             behavior_id: self.config.behavior_id.clone(),
-            workspace_root: self.config.workspace.clone(),
+            workspace_root,
             server_name: server.name.clone(),
             config_digest: self.config.digest.clone(),
         };

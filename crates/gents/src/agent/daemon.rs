@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -56,6 +57,7 @@ pub(super) struct BehaviorDaemon<M: CompletionModel> {
     output_obligations: Arc<Vec<(String, crate::document_config::WriteToolOutputObligation)>>,
     startup_barrier: Arc<StartupBarrier>,
     startup_demotions: Arc<crate::startup_readiness::StartupDemotions>,
+    operator_tool_root: Option<PathBuf>,
 }
 
 enum HandleRequestOutcome {
@@ -118,7 +120,13 @@ impl<M: CompletionModel + 'static> BehaviorDaemon<M> {
             output_obligations: Arc::new(Vec::new()),
             startup_barrier,
             startup_demotions,
+            operator_tool_root: None,
         }
+    }
+
+    pub(super) fn with_operator_tool_root(mut self, root: Option<PathBuf>) -> Self {
+        self.operator_tool_root = root;
+        self
     }
 
     /// Request-scoped compaction options: the daemon-lifetime knobs plus the

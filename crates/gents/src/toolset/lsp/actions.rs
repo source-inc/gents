@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::Context as _;
 use serde_json::{json, Value};
 
@@ -51,6 +53,7 @@ pub async fn dispatch(
     pool: &super::pool::LspPool,
     config: &super::LspToolConfig,
     servers: &[CatalogServer],
+    workspace: &Path,
     req: ActionRequest,
 ) -> Result<String, ToolError> {
     match req.action {
@@ -60,14 +63,9 @@ pub async fn dispatch(
                 .filter(|id| !id.is_empty())
                 .unwrap_or_else(|| config.session_id.clone());
             let states = pool
-                .inspect_session(
-                    &session_id,
-                    &config.behavior_id,
-                    &config.workspace,
-                    &config.digest,
-                )
+                .inspect_session(&session_id, &config.behavior_id, workspace, &config.digest)
                 .await;
-            Ok(status_text(states, &config.servers, &config.workspace))
+            Ok(status_text(states, &config.servers, workspace))
         }
         LspAction::Reload => {
             let session_id = crate::tool_call_lifecycle::runtime::current_tool_runtime_context()
@@ -75,23 +73,18 @@ pub async fn dispatch(
                 .filter(|id| !id.is_empty())
                 .unwrap_or_else(|| config.session_id.clone());
             let retired = pool
-                .reload_snapshot(
-                    &session_id,
-                    &config.behavior_id,
-                    &config.workspace,
-                    &config.digest,
-                )
+                .reload_snapshot(&session_id, &config.behavior_id, workspace, &config.digest)
                 .await;
             Ok(format!(
                 "retired {retired} language-server client(s) for the current snapshot"
             ))
         }
         LspAction::Capabilities => {
-            let lease = lease.ok_or_else(|| unavailable_for_config(config))?;
+            let lease = lease.ok_or_else(|| unavailable_for_workspace(workspace, config))?;
             Ok(lease.client().capabilities().await.to_string())
         }
         action => {
-            let lease = lease.ok_or_else(|| unavailable_for_config(config))?;
+            let lease = lease.ok_or_else(|| unavailable_for_workspace(workspace, config))?;
             run_file_action(context, lease.client(), config, servers, action, &req).await
         }
     }
@@ -908,10 +901,12 @@ pub(crate) async fn run_linter_diagnostics(
     path: &std::path::Path,
     timeout: std::time::Duration,
 ) -> Option<String> {
+    let workspace = super::overlay_workspace_or(&config.workspace);
+    let constraints = super::overlay_lsp_constraints(&config.constraints);
     let linter = servers.iter().find(|server| {
         server.is_linter
-            && marker_matches(&config.workspace, &server.root_markers)
-            && family_eligible(server, &config.workspace)
+            && marker_matches(&workspace, &server.root_markers)
+            && family_eligible(server, &workspace)
             && super::catalog::file_type_matches(server, path)
     })?;
     let argv = match linter.name.as_str() {
@@ -929,13 +924,9 @@ pub(crate) async fn run_linter_diagnostics(
         ],
         _ => return None,
     };
-    let (program, rest, env, _sandbox) = crate::toolset::prepare_managed_command(
-        &config.workspace,
-        &argv[0],
-        &argv[1..],
-        &config.constraints,
-    )
-    .ok()?;
+    let (program, rest, env, _sandbox) =
+        crate::toolset::prepare_managed_command(&workspace, &argv[0], &argv[1..], &constraints)
+            .ok()?;
     let mut full = vec![program.to_string_lossy().into_owned()];
     full.extend(rest);
     let runtime = crate::tool_call_lifecycle::runtime::current_tool_runtime_context();
@@ -952,7 +943,7 @@ pub(crate) async fn run_linter_diagnostics(
         .unwrap_or_default();
     let outcome = crate::managed_exec::run_managed_exec(crate::managed_exec::ManagedExecRequest {
         argv: full,
-        cwd: config.workspace.clone(),
+        cwd: workspace,
         deadline_at,
         cancellation_token,
         max_output_bytes: 64 * 1024,
@@ -1026,9 +1017,9 @@ fn unavailable(text: impl Into<String>) -> ToolError {
     ToolError::reported_failure(FailureClass::ServiceUnavailable, text.into())
 }
 
-fn unavailable_for_config(config: &super::LspToolConfig) -> ToolError {
+fn unavailable_for_workspace(workspace: &Path, config: &super::LspToolConfig) -> ToolError {
     unavailable(super::catalog::unavailable_servers_message(
-        &config.workspace,
+        workspace,
         &config.servers,
         None,
     ))

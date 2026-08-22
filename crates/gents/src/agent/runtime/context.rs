@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::llm::tool::ToolDyn;
@@ -27,6 +28,7 @@ pub(super) struct RuntimeContext {
     pub(super) startup_barrier: Arc<StartupBarrier>,
     pub(super) startup_readiness: crate::startup_readiness::StartupReadinessOptions,
     pub(super) startup_demotions: Arc<crate::startup_readiness::StartupDemotions>,
+    pub(super) operator_tool_root: Option<PathBuf>,
 }
 
 pub(super) struct BehaviorResolution {
@@ -377,7 +379,8 @@ impl RuntimeContext {
             self.startup_demotions.clone(),
         )
         .with_approval_required_tools(approval_required_tools)
-        .with_output_obligations(output_obligations);
+        .with_output_obligations(output_obligations)
+        .with_operator_tool_root(self.operator_tool_root.clone());
         daemon.run(request_rx, shutdown).await
     }
 }

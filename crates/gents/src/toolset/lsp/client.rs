@@ -46,11 +46,16 @@ struct ServerStatus {
 }
 
 impl LspClient {
+    #[cfg(test)]
+    pub(crate) fn workspace(&self) -> &std::path::Path {
+        &self.workspace
+    }
+
     pub fn start(
         mut process: ManagedProcess,
         server_name: String,
-        config: &super::LspToolConfig,
         server: &super::catalog::CatalogServer,
+        workspace: std::path::PathBuf,
     ) -> Result<Self, String> {
         let stdin = process.stdin.take().ok_or("process stdin missing")?;
         let stdout = process.stdout.take().ok_or("process stdout missing")?;
@@ -68,7 +73,7 @@ impl LspClient {
         let progress_reader = progress.clone();
         let alive = Arc::new(AtomicBool::new(true));
         let alive_reader = alive.clone();
-        let workspace = config.workspace.clone();
+        let reader_workspace = workspace.clone();
         let settings = server.settings.clone();
         let reader = tokio::spawn(async move {
             let result = read_loop(
@@ -77,7 +82,7 @@ impl LspClient {
                     pending: pending_reader.clone(),
                     stdin: stdin_reader,
                     diagnostics: diagnostics_reader,
-                    workspace,
+                    workspace: reader_workspace,
                     settings,
                     server_status: server_status_reader,
                     progress: progress_reader,
@@ -111,7 +116,7 @@ impl LspClient {
             stderr_task,
             encoding: Mutex::new(super::encoding::PositionEncoding::Utf8),
             capabilities: Mutex::new(Value::Null),
-            workspace: config.workspace.clone(),
+            workspace,
             init_options: server.init_options.clone(),
             settings: server.settings.clone(),
             versions: Mutex::new(HashMap::new()),
