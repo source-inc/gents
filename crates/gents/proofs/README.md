@@ -20,6 +20,7 @@ The proofs are strongest where the runtime is a state machine:
 - runtime reconcile generation publication
 - desired-state apply ordering and field ownership
 - task, schedule, and event-trigger dispatch
+- isolated workspace lifecycle, append-only bindings, seal/owner routing, authority meet, and callback invocation journals (`Proofs/Workspace`, `Proofs/Callback`)
 - client turn projection and desktop shell workflow state
 - command/tool execution policy for bash argv, network, sandbox, and shell env
 - MCP/tool execution preflight and retry eligibility boundaries
@@ -189,6 +190,8 @@ and either tested at the Rust boundary or treated as an external assumption.
 | `Proofs/ApplyReconcile.lean` | Barrel for desired-state apply, prefix safety, runtime bridge, and convergence |
 | `Proofs/SelfConfig.lean` | Barrel for agent self-configuration patch semantics: field partitions, merge, write step, and guardrails (#654) |
 | `Proofs/Triggers.lean` | Barrel for trigger types, dispatch, reachability, serial, latest-only, and lineage proofs |
+| `Proofs/Workspace.lean` | Isolated workspace lifecycle, append-only bindings, seal/owner routing, and authority meet |
+| `Proofs/Callback.lean` | Callback invocation lifecycle, action-journal prefix, and claim uniqueness |
 | `Proofs/Client.lean` | Barrel for client turn-state derivation and client theorems |
 | `Proofs/ClientShell.lean` | Barrel for multi-session shell workflow modules |
 | `Proofs/CommandPolicy.lean` | Barrel for command/tool execution policy validation, sandbox, env, and safety proofs |

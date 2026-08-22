@@ -889,6 +889,27 @@ pub fn registered_conformance_consumers() -> &'static [ConformanceConsumer] {
             module_path: "gents_desktop_bridge::snapshot::tests::session_state",
             function: "session_snapshot_derives_cancel_cause_for_interrupted_response_and_cancelled_tool_call",
         },
+        ConformanceConsumer::RustTest {
+            id: "conformance::workspace_binding::generated_workspace_cases_match_lean_predicate",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/workspace_binding.rs",
+            module_path: "conformance::workspace_binding",
+            function: "generated_workspace_cases_match_lean_predicate",
+        },
+        ConformanceConsumer::RustTest {
+            id: "conformance::workspace_binding::generated_workspace_binding_cases_match_lean_predicate",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/workspace_binding.rs",
+            module_path: "conformance::workspace_binding",
+            function: "generated_workspace_binding_cases_match_lean_predicate",
+        },
+        ConformanceConsumer::RustTest {
+            id: "conformance::callback_lifecycle::generated_callback_cases_match_lean_predicate",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/callback_lifecycle.rs",
+            module_path: "conformance::callback_lifecycle",
+            function: "generated_callback_cases_match_lean_predicate",
+        },
     ]
 }
 
