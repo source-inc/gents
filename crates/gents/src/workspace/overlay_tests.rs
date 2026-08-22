@@ -357,6 +357,47 @@ fn frozen_instruction_manifest_is_copied_onto_overlay() {
 }
 
 #[test]
+fn empty_bound_overlay_does_not_live_walk_writer_tree() {
+    let root = tempfile::tempdir().unwrap();
+    let operator = std::fs::canonicalize(root.path()).unwrap();
+    let placement_path = operator.join("worktrees").join("ws-1");
+    let nested = placement_path.join("src");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(
+        placement_path.join("AGENTS.md"),
+        "live-writer-instructions\n",
+    )
+    .unwrap();
+    std::fs::write(nested.join("AGENTS.md"), "nested-live-instructions\n").unwrap();
+    let placement_path = std::fs::canonicalize(&placement_path).unwrap();
+    let nested = std::fs::canonicalize(&nested).unwrap();
+
+    let overlay = bind_workspace_overlay(
+        &ready_workspace(),
+        &placement(&placement_path),
+        bind_input(WorkspaceAuthority::ReadOnly, Some(&operator), &[], false),
+    )
+    .unwrap();
+    let frozen = super::frozen_instruction_manifest_from_overlay(Some(&overlay));
+    assert_eq!(frozen, Some("{}"));
+    assert!(crate::workspace::instruction_body_for_request(
+        frozen,
+        Some(&nested),
+        Some(&placement_path)
+    )
+    .is_none());
+
+    let live = crate::workspace::instruction_body_for_request(
+        super::frozen_instruction_manifest_from_overlay(None),
+        Some(&nested),
+        Some(&placement_path),
+    )
+    .unwrap();
+    assert!(live.contains("live-writer-instructions"));
+    assert!(live.contains("nested-live-instructions"));
+}
+
+#[test]
 fn sealed_missing_observed_tree_hash_fails_closed() {
     let (_guard, operator, placement_path) = temp_tree();
     let mut workspace = ready_workspace();
