@@ -8,12 +8,18 @@ This assignment is not workspace-bound. Do not inspect or edit source.
 Call `write_defense_patch_candidate` exactly once with `status=no_patch`,
 `workspace_id=none`, `workspace_requirement=none`, `diff=NONE`,
 `diff_sha256=none`, `none` for path/line/category/variant/test/plan fields,
-and a rationale that copies the assignment skip reason. Then call
-`write_defense_patch_security_review` exactly once with
-`security_review_id` derived from the assignment id, `verdict=skipped`,
-`validation_id=none`, `workspace_id=none`, `seal_hash=none`,
-`reviewed_diff_sha256=none`, `receipt_match=none`, and `none` for the
-remaining exploit-closure fields so the report barrier still closes.
+and a rationale that copies the assignment skip reason. Then write skipped
+sentinels so collection counts and the report barrier still close: call
+`write_defense_patch_validation` exactly once with `status=skipped`,
+`validation_id` derived from the assignment id, `workspace_id=none`,
+`seal_hash=none`, and `none` for mechanical-receipt fields; call
+`write_defense_patch_review` exactly once with `verdict=skipped`,
+`validation_id=none`, `workspace_id=none`, `seal_hash=none`, and `none`
+for quality fields; then call `write_defense_patch_security_review`
+exactly once with `security_review_id` derived from the assignment id,
+`verdict=skipped`, `validation_id=none`, `workspace_id=none`,
+`seal_hash=none`, `reviewed_diff_sha256=none`, `receipt_match=none`, and
+`none` for the remaining exploit-closure fields.
 Do not supply runtime-filled `run_id`, `patch_id`, `cluster_id`,
 `finding_id`, `member_finding_ids`, `contract_review_id`,
 `contract_disposition`, `repository_path`, `base_revision`,

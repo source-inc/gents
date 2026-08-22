@@ -3606,6 +3606,30 @@ mod tests {
                         ["match_value"],
                     "skipped"
                 );
+                let skip_writes = read_pack_json_defaults(
+                    &pack
+                        .join("datastore-tool-surfaces")
+                        .join("defend-patch-skip-writes")
+                        .join("object.json"),
+                )
+                .expect("defending skip writes should load");
+                let skip_collections: Vec<&str> = skip_writes["entries"]
+                    .as_array()
+                    .expect("skip write entries")
+                    .iter()
+                    .filter_map(|entry| entry["collection"].as_str())
+                    .collect();
+                for collection in [
+                    "DefensePatchCandidate",
+                    "DefensePatchValidation",
+                    "DefensePatchReview",
+                    "DefensePatchSecurityReview",
+                ] {
+                    assert!(
+                        skip_collections.contains(&collection),
+                        "all-skip must write {collection} sentinels for collection_counts"
+                    );
+                }
             }
 
             let patch_or_execute = if pack_name == "defending-code" {

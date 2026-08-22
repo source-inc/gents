@@ -24,7 +24,7 @@ DefendingCodeJob
   -> contract barrier -> M DefensePatchAssignment
   -> CallbackBinding CreateWorkspace -> CallbackResult
   -> ready assignments: M patch authors (ReadWrite bound workspace) -> M DefensePatchCandidate
-  -> skipped assignments: no_patch candidate + skipped security-review sentinel (no workspace)
+  -> skipped assignments: no_patch candidate + skipped validation/review/security-review sentinels (no workspace)
   -> WorkspaceReceipt + seal
   -> M mechanical validators (ReadOnly, seal_hash) -> M DefensePatchValidation
   -> M maintainer reviewers (ReadOnly) -> M DefensePatchReview
