@@ -849,3 +849,34 @@ fn chain_query_command_parses() {
         _ => panic!("expected chain query"),
     }
 }
+
+#[test]
+fn claude_login_parses_oauth_flags_and_rejects_seat_flags() {
+    let cli = Cli::try_parse_from([
+        "gents",
+        "claude-login",
+        "--agent-did",
+        "did:key:z6MkTest",
+        "--manual",
+        "--no-browser",
+    ])
+    .expect("parse");
+    let Command::ClaudeLogin(args) = cli.command else {
+        panic!("expected claude-login")
+    };
+    assert_eq!(args.agent_did.as_deref(), Some("did:key:z6MkTest"));
+    assert!(args.manual && args.no_browser);
+    assert_eq!(args.provider, "claude-subscription");
+    for removed in [
+        "--config-dir",
+        "--claude-bin",
+        "--dry-run",
+        "--claude-write-approved",
+        "--email",
+    ] {
+        assert!(
+            Cli::try_parse_from(["gents", "claude-login", removed, "x"]).is_err(),
+            "{removed} must be gone"
+        );
+    }
+}

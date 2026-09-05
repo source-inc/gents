@@ -104,6 +104,39 @@ pub(crate) struct LeanPromptAssemblyRetentionCase {
     pub(crate) rolling_summary_input_budget: usize,
 }
 
+/// A Claude `tool_use` map witness computed by
+/// `PromptAssembly.ClaudeMap.mapTurn`.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub(crate) struct LeanPromptAssemblyClaudeMapCase {
+    pub(crate) name: String,
+    pub(crate) surface: Vec<String>,
+    pub(crate) blocks: Vec<String>,
+    pub(crate) outcome: String,
+    pub(crate) ids: Vec<u64>,
+}
+
+/// A Claude Messages body witness computed by `ClaudeMap.systemBlocks` /
+/// `splitSystem` / `toolsField`.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub(crate) struct LeanPromptAssemblyClaudeBodyCase {
+    pub(crate) name: String,
+    pub(crate) preamble: Option<String>,
+    pub(crate) rows: Vec<String>,
+    pub(crate) tools: Vec<String>,
+    pub(crate) system: Vec<String>,
+    pub(crate) tools_present: bool,
+}
+
+/// A Claude Messages SSE witness computed by `ClaudeMap.runStream`.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub(crate) struct LeanPromptAssemblyClaudeStreamCase {
+    pub(crate) name: String,
+    pub(crate) surface: Vec<String>,
+    pub(crate) events: Vec<String>,
+    pub(crate) outcome: String,
+    pub(crate) calls: Vec<String>,
+}
+
 /// A request-wide token-ledger witness computed by
 /// `PromptAssembly.AggregateBudget`.
 #[derive(Debug, Deserialize, Clone)]

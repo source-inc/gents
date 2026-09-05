@@ -4,7 +4,7 @@ use std::fs;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -144,24 +144,34 @@ async fn config_backend_set_preset_and_discover_models_from_backend_id() -> Resu
         discover.get("provider_kind").and_then(Value::as_str),
         Some("OpenRouter")
     );
+    assert_eq!(
+        discover.get("models_written").and_then(Value::as_u64),
+        Some(0),
+        "without --write nothing is written: {discover}"
+    );
 
-    let backend_rows = graphql_query(
-        &graphql,
-        &format!(
+    let backend_query = |id: &str| {
+        format!(
             r#"{{
-                InferenceBackend(filter: {{ backend_id: {{ _eq: "{}" }} }}, limit: 1) {{
-                    backend_id
-                    provider_kind
-                    endpoint
-                    api_key
-                    api_key_env_var
-                }}
-            }}"#,
-            escape_graphql_string(&backend_id),
-        ),
-    )
-    .await?;
+            InferenceBackend(filter: {{ backend_id: {{ _eq: "{}" }} }}, limit: 1) {{
+                backend_id
+                name
+                provider_kind
+                endpoint
+                api_key
+                api_key_env_var
+                max_concurrent
+                enabled
+                probe_status
+                models
+            }}
+        }}"#,
+            escape_graphql_string(id),
+        )
+    };
+    let backend_rows = graphql_query(&graphql, &backend_query(&backend_id)).await?;
     let backend = first_graphql_row(&backend_rows, "InferenceBackend")?;
+    assert_eq!(backend.get("models"), Some(&json!(["default"])));
     assert_eq!(
         backend.get("provider_kind").and_then(Value::as_str),
         Some("OpenRouter")
@@ -176,6 +186,128 @@ async fn config_backend_set_preset_and_discover_models_from_backend_id() -> Resu
     );
     assert_eq!(backend.get("api_key_env_var").and_then(Value::as_str), None);
 
+    let written = run_cli_json(
+        &home_dir,
+        &[
+            "config",
+            "backend",
+            "discover-models",
+            "--graphql",
+            &graphql,
+            "--backend-id",
+            &backend_id,
+            "--write",
+        ],
+    )?;
+    assert_eq!(
+        written.get("models_written").and_then(Value::as_u64),
+        Some(1),
+        "--write reports the persisted count: {written}"
+    );
+
+    let backend_rows = graphql_query(&graphql, &backend_query(&backend_id)).await?;
+    let backend = first_graphql_row(&backend_rows, "InferenceBackend")?;
+    assert_eq!(
+        backend.get("models"),
+        Some(&json!([discover_model])),
+        "--write replaces models[] with the discovered catalog: {backend}"
+    );
+    assert_eq!(
+        backend.get("name").and_then(Value::as_str),
+        Some("OpenRouter")
+    );
+    assert_eq!(
+        backend.get("endpoint").and_then(Value::as_str),
+        Some(discover_endpoint.endpoint())
+    );
+    assert_eq!(
+        backend.get("api_key").and_then(Value::as_str),
+        Some(discover_api_key)
+    );
+    assert_eq!(
+        backend.get("max_concurrent").and_then(Value::as_i64),
+        Some(2)
+    );
+    assert_eq!(backend.get("enabled").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        backend.get("probe_status").and_then(Value::as_str),
+        Some("healthy")
+    );
+
+    // Zero usable ids: the mock renders {"data":[{"id":""}]} and blank ids are
+    // dropped, so --write must not touch models[] (an empty list would render
+    // `models: null` and wipe the column).
+    let empty_endpoint = MockModelEndpoint::start("")?;
+    let empty_backend_id = format!("{agent_name}-empty");
+    run_cli_json(
+        &home_dir,
+        &[
+            "config",
+            "backend",
+            "set",
+            "--graphql",
+            &graphql,
+            "--backend-id",
+            &empty_backend_id,
+            "--name",
+            "Empty catalog",
+            "--backend-preset",
+            "openrouter",
+            "--endpoint",
+            empty_endpoint.endpoint(),
+            "--api-key",
+            "unused",
+            "--max-concurrent",
+            "1",
+        ],
+    )?;
+    let skipped = run_cli_json(
+        &home_dir,
+        &[
+            "config",
+            "backend",
+            "discover-models",
+            "--graphql",
+            &graphql,
+            "--backend-id",
+            &empty_backend_id,
+            "--write",
+        ],
+    )?;
+    assert_eq!(
+        skipped.get("models_written").and_then(Value::as_u64),
+        Some(0),
+        "{skipped}"
+    );
+    assert!(
+        skipped
+            .get("write_skipped")
+            .and_then(Value::as_str)
+            .is_some(),
+        "zero ids must report write_skipped: {skipped}"
+    );
+    let backend_rows = graphql_query(&graphql, &backend_query(&empty_backend_id)).await?;
+    let backend = first_graphql_row(&backend_rows, "InferenceBackend")?;
+    assert_eq!(
+        backend.get("models"),
+        Some(&json!(["default"])),
+        "zero ids must leave models[] untouched: {backend}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn config_backend_discover_models_write_requires_backend_id() -> Result<()> {
+    let tempdir = tempfile::tempdir().context("creating tempdir")?;
+    let stderr = run_cli_failure_stderr(
+        tempdir.path(),
+        &["config", "backend", "discover-models", "--write"],
+    )?;
+    assert!(
+        stderr.contains("--write requires --backend-id"),
+        "guard must fire before any server is needed: {stderr}"
+    );
     Ok(())
 }
 

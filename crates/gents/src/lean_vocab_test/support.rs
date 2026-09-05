@@ -196,6 +196,12 @@ pub(crate) struct LeanContractSnapshot {
     #[serde(default)]
     pub(crate) prompt_assembly_retention_cases: Vec<LeanPromptAssemblyRetentionCase>,
     #[serde(default)]
+    pub(crate) prompt_assembly_claude_map_cases: Vec<LeanPromptAssemblyClaudeMapCase>,
+    #[serde(default)]
+    pub(crate) prompt_assembly_claude_body_cases: Vec<LeanPromptAssemblyClaudeBodyCase>,
+    #[serde(default)]
+    pub(crate) prompt_assembly_claude_stream_cases: Vec<LeanPromptAssemblyClaudeStreamCase>,
+    #[serde(default)]
     pub(crate) rendered_capture_cases: Vec<LeanRenderedCaptureCase>,
     #[serde(default)]
     pub(crate) durable_reduction_cases: Vec<LeanDurableReductionCase>,
@@ -1338,6 +1344,21 @@ pub(crate) fn lean_prompt_assembly_turn_budget_cases() -> &'static [LeanPromptAs
 
 pub(crate) fn lean_prompt_assembly_retention_cases() -> &'static [LeanPromptAssemblyRetentionCase] {
     &lean_contract_snapshot().prompt_assembly_retention_cases
+}
+
+pub(crate) fn lean_prompt_assembly_claude_map_cases() -> &'static [LeanPromptAssemblyClaudeMapCase]
+{
+    &lean_contract_snapshot().prompt_assembly_claude_map_cases
+}
+
+pub(crate) fn lean_prompt_assembly_claude_body_cases() -> &'static [LeanPromptAssemblyClaudeBodyCase]
+{
+    &lean_contract_snapshot().prompt_assembly_claude_body_cases
+}
+
+pub(crate) fn lean_prompt_assembly_claude_stream_cases(
+) -> &'static [LeanPromptAssemblyClaudeStreamCase] {
+    &lean_contract_snapshot().prompt_assembly_claude_stream_cases
 }
 
 pub(crate) fn lean_rendered_capture_cases() -> &'static [LeanRenderedCaptureCase] {

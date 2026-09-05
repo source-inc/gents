@@ -18,6 +18,12 @@ use tokio::sync::Mutex;
 
 const OAUTH_CREDENTIAL_FIELDS: &str = "_docID credential_id agent_did provider access_token refresh_token id_token account_id chatgpt_plan_type is_fedramp access_token_expires_at last_refresh enabled";
 const REFRESH_SKEW: Duration = Duration::minutes(5);
+/// After a failed refresh the bearer serves that failure again for this long
+/// instead of POSTing the provider's token endpoint on every request. While
+/// the cooldown holds every call returns the classified error: no provider
+/// round-trip and no fast-path token. A re-login is picked up once the
+/// cooldown lapses, because the forced slow path re-reads the document first.
+const REFRESH_FAILURE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Product copy used when classifying auth failures for operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +54,7 @@ pub const XAI_OAUTH_PRODUCT: OAuthProduct = OAuthProduct {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OAuthRefreshKind {
     ChatGpt,
+    Claude,
     Xai,
 }
 
@@ -554,7 +561,9 @@ pub struct DbCredentialBearer {
     credential_id: String,
     http: reqwest::Client,
     cache: Mutex<Option<OAuthCredential>>,
-    refresh_lock: Mutex<()>,
+    /// Single-flight refresh lock. It also holds the last refresh failure, so
+    /// the cooldown check and the refresh share one critical section.
+    refresh_lock: Mutex<Option<(std::time::Instant, OAuthAuthProblem)>>,
     is_owner: bool,
     force_refresh: AtomicBool,
     refresh_kind: OAuthRefreshKind,
@@ -601,7 +610,7 @@ impl DbCredentialBearer {
             credential_id: credential_id.into(),
             http: reqwest::Client::new(),
             cache: Mutex::new(cache_seed),
-            refresh_lock: Mutex::new(()),
+            refresh_lock: Mutex::new(None),
             is_owner,
             force_refresh: AtomicBool::new(false),
             refresh_kind,
@@ -679,6 +688,9 @@ impl DbCredentialBearer {
             OAuthRefreshKind::ChatGpt => {
                 crate::chatgpt_oauth_refresh::refresh_chatgpt_token(refresh_token, &self.http).await
             }
+            OAuthRefreshKind::Claude => {
+                crate::claude_oauth_refresh::refresh_claude_token(refresh_token, &self.http).await
+            }
             OAuthRefreshKind::Xai => {
                 crate::xai_oauth_refresh::refresh_xai_token(refresh_token, &self.http).await
             }
@@ -698,7 +710,7 @@ impl BearerSource for DbCredentialBearer {
             }
         }
 
-        let _guard = self.refresh_lock.lock().await;
+        let mut last_failure = self.refresh_lock.lock().await;
 
         let forced = self.force_refresh.load(Ordering::SeqCst);
 
@@ -736,10 +748,21 @@ impl BearerSource for DbCredentialBearer {
             }
         }
 
-        let refreshed = self
-            .refresh_tokens(&credential.refresh_token)
-            .await
-            .map_err(|problem| self.auth_error(&problem))?;
+        if let Some((failed_at, problem)) = last_failure.as_ref() {
+            if failed_at.elapsed() < REFRESH_FAILURE_COOLDOWN {
+                return Err(self.auth_error(problem));
+            }
+        }
+
+        let refreshed = match self.refresh_tokens(&credential.refresh_token).await {
+            Ok(refreshed) => refreshed,
+            Err(problem) => {
+                let error = self.auth_error(&problem);
+                *last_failure = Some((std::time::Instant::now(), problem));
+                return Err(error);
+            }
+        };
+        *last_failure = None;
         apply_refreshed_tokens(&mut credential, refreshed);
 
         self.cache_credential(&credential).await;
@@ -959,5 +982,193 @@ mod tests {
             "tier gate should not push re-login as the fix: {msg}"
         );
         assert!(msg.contains("api.x.ai"), "{msg}");
+    }
+}
+
+#[cfg(test)]
+mod cooldown_tests {
+    use super::test_support::{one_shot_token_server, seed_credential, test_node};
+    use super::*;
+
+    /// A failed refresh is served from the cooldown on the next call instead
+    /// of POSTing the token endpoint again. The one-shot server accepts one
+    /// request and is gone before the second call, so a second POST would
+    /// surface as a transport error rather than the cached "expired or
+    /// revoked" text.
+    #[tokio::test]
+    async fn failed_refresh_is_not_retried_during_the_cooldown() {
+        let node = Arc::new(test_node().await);
+        let did = "did:key:z6MkRevoked";
+        let provider = crate::xai_grok_oauth::XAI_OAUTH_PROVIDER;
+        seed_credential(&node, did, provider, Utc::now() - Duration::minutes(1)).await;
+        let (url, handle) = one_shot_token_server(401, r#"{"error":"invalid_grant"}"#).await;
+        // Process-global; no other lib test refreshes an xAI credential.
+        std::env::set_var(
+            crate::xai_oauth_refresh::XAI_OAUTH_TOKEN_URL_OVERRIDE_ENV,
+            &url,
+        );
+        let bearer = DbCredentialBearer::new(
+            node,
+            did,
+            provider,
+            oauth_credential_id(did, provider),
+            true,
+            OAuthRefreshKind::Xai,
+            XAI_OAUTH_PRODUCT,
+        );
+        let first = bearer.current_bearer().await.expect_err("revoked");
+        let request = handle.await.expect("server");
+        let second = bearer.current_bearer().await.expect_err("cooldown");
+        std::env::remove_var(crate::xai_oauth_refresh::XAI_OAUTH_TOKEN_URL_OVERRIDE_ENV);
+
+        assert!(request.contains("grant_type=refresh_token"), "{request}");
+        assert!(
+            first.to_string().contains("is expired or revoked"),
+            "{first}"
+        );
+        assert_eq!(first.to_string(), second.to_string());
+    }
+
+    /// After `invalidate()` (a provider 401) a failed refresh must keep the
+    /// bearer forced: while the cooldown holds every call returns the
+    /// classified error instead of taking the cache fast path and re-serving
+    /// the unexpired but rejected access token.
+    #[tokio::test]
+    async fn failed_refresh_keeps_the_bearer_forced_and_never_reserves_the_bad_token() {
+        let node = Arc::new(test_node().await);
+        let did = "did:key:z6MkRejected";
+        let provider = crate::chatgpt_codex::CHATGPT_CODEX_PROVIDER;
+        seed_credential(&node, did, provider, Utc::now() + Duration::hours(1)).await;
+        let (url, handle) = one_shot_token_server(401, r#"{"error":"invalid_grant"}"#).await;
+        // Process-global; no other lib test refreshes a ChatGPT credential.
+        std::env::set_var(
+            gents_protocol::chatgpt_oauth::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR,
+            &url,
+        );
+        let bearer = DbCredentialBearer::new(
+            node,
+            did,
+            provider,
+            oauth_credential_id(did, provider),
+            true,
+            OAuthRefreshKind::ChatGpt,
+            CHATGPT_OAUTH_PRODUCT,
+        );
+        bearer.invalidate().await;
+        let first = bearer.current_bearer().await;
+        handle.await.expect("server");
+        let second = bearer.current_bearer().await;
+        std::env::remove_var(gents_protocol::chatgpt_oauth::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR);
+
+        let first = first.expect_err("rejected refresh");
+        let second = second.expect_err("cooldown must not re-serve the rejected token");
+        assert!(
+            first.to_string().contains("is expired or revoked"),
+            "{first}"
+        );
+        assert_eq!(first.to_string(), second.to_string());
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use chrono::{DateTime, Utc};
+    use defra_node::EmbeddedNode;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// In-memory node with the gents schemas loaded.
+    pub(crate) async fn test_node() -> EmbeddedNode {
+        let node = EmbeddedNode::builder()
+            .build()
+            .await
+            .expect("embedded node");
+        crate::schema::ensure_runtime_schemas(&node)
+            .await
+            .expect("schemas");
+        node
+    }
+
+    pub(crate) async fn seed_credential(
+        node: &EmbeddedNode,
+        agent_did: &str,
+        provider: &str,
+        expires_at: DateTime<Utc>,
+    ) {
+        seed_credential_with_refresh_token(node, agent_did, provider, expires_at, "refresh-TEST")
+            .await;
+    }
+
+    pub(crate) async fn seed_credential_with_refresh_token(
+        node: &EmbeddedNode,
+        agent_did: &str,
+        provider: &str,
+        expires_at: DateTime<Utc>,
+        refresh_token: &str,
+    ) {
+        let credential = crate::oauth_credential::OAuthCredential {
+            doc_id: None,
+            credential_id: crate::oauth_credential::oauth_credential_id(agent_did, provider),
+            agent_did: agent_did.to_string(),
+            provider: provider.to_string(),
+            access_token: "access-TEST".into(),
+            refresh_token: refresh_token.into(),
+            id_token: None,
+            account_id: None,
+            chatgpt_plan_type: None,
+            is_fedramp: false,
+            access_token_expires_at: expires_at,
+            last_refresh: Some(Utc::now()),
+            enabled: true,
+        };
+        crate::oauth_credential::upsert_oauth_credential(node, &credential)
+            .await
+            .expect("seed credential");
+    }
+
+    /// Accepts exactly one HTTP request, returns its body, and answers with `status` + `body`.
+    pub(crate) async fn one_shot_token_server(
+        status: u16,
+        body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let url = format!("http://{}/v1/oauth/token", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut chunk).await.expect("read");
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf);
+                if let Some(idx) = text.find("\r\n\r\n") {
+                    let headers = &text[..idx];
+                    let content_length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("content-length: ")
+                                .or_else(|| line.strip_prefix("Content-Length: "))
+                        })
+                        .and_then(|value| value.trim().parse().ok())
+                        .unwrap_or(0);
+                    if buf.len() >= idx + 4 + content_length {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&buf).into_owned();
+            let response = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.expect("write");
+            socket.shutdown().await.ok();
+            request
+        });
+        (url, handle)
     }
 }

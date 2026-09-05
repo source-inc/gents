@@ -422,6 +422,7 @@ async fn async_main() -> Result<()> {
         Command::CodexAuthProbe(args) => commands::codex_auth_probe::codex_auth_probe(args).await,
         Command::GrokLogin(args) => commands::grok_login::grok_login(args).await,
         Command::GrokAuthProbe(args) => commands::grok_auth_probe::grok_auth_probe(args).await,
+        Command::ClaudeLogin(args) => commands::claude_login::claude_login(args).await,
         Command::P2p { command } => commands::p2p::dispatch(command).await,
         Command::Schema { command } => commands::schema::dispatch(command).await,
         Command::Trace { command } => commands::trace::dispatch(command).await,

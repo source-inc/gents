@@ -293,6 +293,51 @@ pub(crate) async fn diagnose(args: DiagnoseArgs) -> Result<()> {
         }),
     };
 
+    let claude_provider = gents::claude_oauth::CLAUDE_OAUTH_PROVIDER;
+    let claude_auth_check = match crate::commands::grok_auth_probe::load_oauth_credential(
+        &access,
+        &agent_did,
+        claude_provider,
+    )
+    .await
+    {
+        Ok(Some(credential))
+            if gents::oauth_credential::token_is_fresh(credential.access_token_expires_at) =>
+        {
+            json!({
+                "ok": true,
+                "credential_id": credential.credential_id,
+                "provider": credential.provider,
+                "expires_at": credential.access_token_expires_at,
+            })
+        }
+        Ok(Some(credential)) => json!({
+            "ok": false,
+            "credential_id": credential.credential_id,
+            "provider": credential.provider,
+            "expires_at": credential.access_token_expires_at,
+            "guidance": gents::claude_oauth::classify_claude_auth_error(
+                &agent_did,
+                claude_provider,
+                &gents::oauth_credential::OAuthAuthProblem::Expired,
+            ),
+        }),
+        Ok(None) => json!({
+            "ok": false,
+            "provider": claude_provider,
+            "guidance": gents::claude_oauth::classify_claude_auth_error(
+                &agent_did,
+                claude_provider,
+                &gents::oauth_credential::OAuthAuthProblem::Missing,
+            ),
+        }),
+        Err(error) => json!({
+            "ok": false,
+            "provider": claude_provider,
+            "error": error.to_string(),
+        }),
+    };
+
     // An auth failure only degrades overall health when an OAuth backend is actually
     // configured and enabled — deployments that don't use that backend have no credential
     // and must still report `ok`.
@@ -312,6 +357,13 @@ pub(crate) async fn diagnose(args: DiagnoseArgs) -> Result<()> {
     let xai_auth_ok =
         !xai_backend_configured || xai_auth_check.get("ok").and_then(Value::as_bool) == Some(true);
 
+    let claude_backend_configured = backend_reports.iter().any(|report| {
+        report.get("provider_kind").and_then(Value::as_str)
+            == Some(gents::backend_provider::BackendProviderKind::ClaudeCliSubscription.as_str())
+            && report.get("enabled").and_then(Value::as_bool) == Some(true)
+    });
+    let claude_auth_ok = claude_auth_gate(claude_backend_configured, &claude_auth_check);
+
     let status = if schemas_ok
         && principal_present
         && default_behavior_ok
@@ -319,6 +371,7 @@ pub(crate) async fn diagnose(args: DiagnoseArgs) -> Result<()> {
         && backends_ok
         && chatgpt_auth_ok
         && xai_auth_ok
+        && claude_auth_ok
         && p2p_ok
         && runtime_behavior_readiness_ok
         && config_load_error.is_none()
@@ -350,6 +403,7 @@ pub(crate) async fn diagnose(args: DiagnoseArgs) -> Result<()> {
             "tool_ceiling": tool_ceiling_check,
             "chatgpt_auth": chatgpt_auth_check,
             "xai_auth": xai_auth_check,
+            "claude_auth": claude_auth_check,
             "backends": backend_reports,
             "p2p": {
                 "ok": p2p_ok,
@@ -375,4 +429,43 @@ pub(crate) async fn diagnose(args: DiagnoseArgs) -> Result<()> {
     }
     print_json(&output)?;
     Ok(())
+}
+
+/// `checks.claude_auth.ok` reports token freshness, but a stale access token
+/// alone does not degrade the overall status: the prober counts such a
+/// credential healthy and the next request refreshes it. Only a credential
+/// that could not be read at all (missing, or a decode error) degrades — the
+/// agent snapshot gate refuses the behavior in that case.
+fn claude_auth_gate(backend_configured: bool, check: &Value) -> bool {
+    !backend_configured || check.get("credential_id").is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::claude_auth_gate;
+
+    #[test]
+    fn claude_auth_degrades_status_only_when_no_credential_can_be_read() {
+        let fresh = json!({"ok": true, "credential_id": "claude-subscription:did:key:z6MkT"});
+        let stale = json!({
+            "ok": false,
+            "credential_id": "claude-subscription:did:key:z6MkT",
+            "guidance": "expired or revoked",
+        });
+        let missing = json!({"ok": false, "guidance": "run gents claude-login"});
+        let read_error = json!({"ok": false, "error": "querying OAuthCredential returned errors"});
+        assert!(claude_auth_gate(true, &fresh));
+        assert!(
+            claude_auth_gate(true, &stale),
+            "staleness alone must not degrade: the next request refreshes"
+        );
+        assert!(!claude_auth_gate(true, &missing));
+        assert!(!claude_auth_gate(true, &read_error));
+        assert!(
+            claude_auth_gate(false, &missing),
+            "no enabled Claude backend: the check is not folded in"
+        );
+    }
 }

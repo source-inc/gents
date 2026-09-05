@@ -849,6 +849,24 @@ fn lean_contract_coverage_ledger_accounts_for_every_emitted_domain() {
             "PromptAssemblyRetentionCases".to_string(),
         ));
     }
+    if !snapshot.prompt_assembly_claude_map_cases.is_empty() {
+        emitted.insert((
+            "prompt_assembly_cases".to_string(),
+            "PromptAssemblyClaudeMapCases".to_string(),
+        ));
+    }
+    if !snapshot.prompt_assembly_claude_body_cases.is_empty() {
+        emitted.insert((
+            "prompt_assembly_cases".to_string(),
+            "PromptAssemblyClaudeBodyCases".to_string(),
+        ));
+    }
+    if !snapshot.prompt_assembly_claude_stream_cases.is_empty() {
+        emitted.insert((
+            "prompt_assembly_cases".to_string(),
+            "PromptAssemblyClaudeStreamCases".to_string(),
+        ));
+    }
     if !snapshot.rendered_capture_cases.is_empty() {
         emitted.insert((
             "rendered_capture_cases".to_string(),

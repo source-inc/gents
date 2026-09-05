@@ -402,3 +402,36 @@ async fn openrouter_projection_matches_the_actual_rig_wire_body() {
     assert_eq!(projected_body, actual);
     assert!(actual.to_string().contains("openrouter-visible-reasoning"));
 }
+
+/// The Messages wire sends `build_messages_body` verbatim (no rig DTO, no
+/// rewrite), so the projection is that body; `openai_wire_api` is ignored.
+#[test]
+fn claude_messages_projection_is_the_messages_body_regardless_of_wire() {
+    let request = core_request("claude-visible reasoning");
+    for wire in [OpenAiWireApi::ChatCompletions, OpenAiWireApi::Responses] {
+        let counter = ProviderInputCounter::new(
+            BackendProviderKind::ClaudeCliSubscription,
+            wire,
+            "claude-sonnet-5",
+        );
+        assert_eq!(counter.profile(), ProviderInputProfile::ClaudeMessages);
+        assert_eq!(
+            counter.project_body(&request).expect("provider body"),
+            crate::claude_messages::build_messages_body("claude-sonnet-5", &request)
+        );
+    }
+    let projection = ProviderInputCounter::new(
+        BackendProviderKind::ClaudeCliSubscription,
+        OpenAiWireApi::ChatCompletions,
+        "claude-sonnet-5",
+    )
+    .project_request(&request)
+    .expect("projection");
+    assert_eq!(
+        projection.estimator,
+        "claude_messages_wire_json_bytes_div_4_v1"
+    );
+    assert!(projection.components.messages > 0);
+    assert!(projection.components.tool_schemas > 0);
+    assert_eq!(projection.components.documents, 0);
+}

@@ -220,18 +220,96 @@ pub struct ProbeCycleOutcome {
     pub promotable: Vec<String>,
 }
 
+/// Node + principal used to read agent-scoped OAuth credentials during a probe cycle.
+pub struct OAuthProbeContext<'a> {
+    pub node: &'a EmbeddedNode,
+    pub principal_did: &'a str,
+}
+
+async fn probe_oauth_credential(
+    context: &OAuthProbeContext<'_>,
+    backend: &InferenceBackend,
+) -> (ProbeEvent, Option<String>) {
+    let Some(provider) = backend.provider_kind.oauth_provider() else {
+        return (
+            ProbeEvent::ProbeFail,
+            Some("backend kind has no OAuth provider".to_string()),
+        );
+    };
+    match crate::oauth_credential::lookup_oauth_credential(
+        context.node,
+        context.principal_did,
+        provider,
+    )
+    .await
+    {
+        Ok(Some(credential))
+            if crate::oauth_credential::token_is_fresh(credential.access_token_expires_at) =>
+        {
+            tracing::debug!(
+                backend_id = %backend.backend_id,
+                provider,
+                expires_at = %credential.access_token_expires_at.to_rfc3339(),
+                "oauth credential probe ok"
+            );
+            (ProbeEvent::ProbeSuccess, None)
+        }
+        // A stale access token is not a liveness failure: every decoded
+        // credential carries a refresh token (the decoder rejects blank ones),
+        // the request path refreshes on next use, and demoting here would veto
+        // routing, so nothing would ever make that request.
+        Ok(Some(credential)) => {
+            tracing::debug!(
+                backend_id = %backend.backend_id,
+                provider,
+                expires_at = %credential.access_token_expires_at.to_rfc3339(),
+                "oauth credential probe ok: access token stale, refreshes on next use"
+            );
+            (ProbeEvent::ProbeSuccess, None)
+        }
+        Ok(None) => (
+            ProbeEvent::ProbeFail,
+            Some(backend.provider_kind.oauth_auth_guidance(
+                context.principal_did,
+                provider,
+                &crate::oauth_credential::OAuthAuthProblem::Missing,
+            )),
+        ),
+        Err(error) => (
+            ProbeEvent::ProbeFail,
+            Some(format!("reading OAuthCredential: {error:#}")),
+        ),
+    }
+}
+
 pub async fn probe_backends_cycle(
     client: &reqwest::Client,
     backends: &[InferenceBackend],
     now: DateTime<Utc>,
     health_map: &BackendHealthMap,
     options: &BackendProberOptions,
+    oauth: Option<OAuthProbeContext<'_>>,
 ) -> ProbeCycleOutcome {
     let mut outcome = ProbeCycleOutcome::default();
     let mut probed_ids = HashSet::new();
 
     for backend in backends {
         if backend.provider_kind.is_agent_scoped_oauth() {
+            let Some(context) = oauth.as_ref() else {
+                continue;
+            };
+            probed_ids.insert(backend.backend_id.clone());
+            let (event, error_text) = probe_oauth_credential(context, backend).await;
+            record_probe_event(
+                backend,
+                event,
+                error_text,
+                now,
+                health_map,
+                options,
+                &mut outcome,
+            )
+            .await;
             continue;
         }
         probed_ids.insert(backend.backend_id.clone());
@@ -259,51 +337,72 @@ pub async fn probe_backends_cycle(
             }
         };
 
-        let previous = health_map.get_model(&backend.backend_id).await;
-        let next = step_backend(previous, event, options.failure_threshold_k);
-        let veto_flipped = previous.0.blocks_routing() != next.0.blocks_routing();
-
-        if veto_flipped {
-            tracing::warn!(
-                backend_id = %backend.backend_id,
-                endpoint = %backend.endpoint,
-                previous_state = %previous.0.as_str(),
-                next_state = %next.0.as_str(),
-                failure_count = next.1,
-                error = error_text.as_deref().unwrap_or(""),
-                "backend probe: measured health crossed the routing threshold"
-            );
-            outcome.flipped.push(backend.backend_id.clone());
-        } else if event == ProbeEvent::ProbeFail {
-            tracing::debug!(
-                backend_id = %backend.backend_id,
-                endpoint = %backend.endpoint,
-                state = %next.0.as_str(),
-                failure_count = next.1,
-                error = error_text.as_deref().unwrap_or(""),
-                "backend probe failed"
-            );
-        }
-
-        if event == ProbeEvent::ProbeSuccess && backend.probe_status == UNKNOWN_PROBE_STATUS {
-            outcome.promotable.push(backend.backend_id.clone());
-        }
-
-        health_map
-            .set_entry(
-                backend.backend_id.clone(),
-                BackendHealthEntry {
-                    state: next.0,
-                    failure_count: next.1,
-                    last_probe_at: now,
-                    last_error: error_text,
-                },
-            )
-            .await;
+        record_probe_event(
+            backend,
+            event,
+            error_text,
+            now,
+            health_map,
+            options,
+            &mut outcome,
+        )
+        .await;
     }
 
     health_map.retain_backends(&probed_ids).await;
     outcome
+}
+
+async fn record_probe_event(
+    backend: &InferenceBackend,
+    event: ProbeEvent,
+    error_text: Option<String>,
+    now: DateTime<Utc>,
+    health_map: &BackendHealthMap,
+    options: &BackendProberOptions,
+    outcome: &mut ProbeCycleOutcome,
+) {
+    let previous = health_map.get_model(&backend.backend_id).await;
+    let next = step_backend(previous, event, options.failure_threshold_k);
+    let veto_flipped = previous.0.blocks_routing() != next.0.blocks_routing();
+
+    if veto_flipped {
+        tracing::warn!(
+            backend_id = %backend.backend_id,
+            endpoint = %backend.endpoint,
+            previous_state = %previous.0.as_str(),
+            next_state = %next.0.as_str(),
+            failure_count = next.1,
+            error = error_text.as_deref().unwrap_or(""),
+            "backend probe: measured health crossed the routing threshold"
+        );
+        outcome.flipped.push(backend.backend_id.clone());
+    } else if event == ProbeEvent::ProbeFail {
+        tracing::debug!(
+            backend_id = %backend.backend_id,
+            endpoint = %backend.endpoint,
+            state = %next.0.as_str(),
+            failure_count = next.1,
+            error = error_text.as_deref().unwrap_or(""),
+            "backend probe failed"
+        );
+    }
+
+    if event == ProbeEvent::ProbeSuccess && backend.probe_status == UNKNOWN_PROBE_STATUS {
+        outcome.promotable.push(backend.backend_id.clone());
+    }
+
+    health_map
+        .set_entry(
+            backend.backend_id.clone(),
+            BackendHealthEntry {
+                state: next.0,
+                failure_count: next.1,
+                last_probe_at: now,
+                last_error: error_text,
+            },
+        )
+        .await;
 }
 
 pub async fn run_backend_probe_cycle(
@@ -311,6 +410,7 @@ pub async fn run_backend_probe_cycle(
     client: &reqwest::Client,
     health_map: &BackendHealthMap,
     options: &BackendProberOptions,
+    principal_did: &str,
 ) -> ProbeCycleOutcome {
     let backends = match list_enabled_backends(node).await {
         Ok(backends) => backends,
@@ -321,7 +421,18 @@ pub async fn run_backend_probe_cycle(
     };
 
     let now = Utc::now();
-    let outcome = probe_backends_cycle(client, &backends, now, health_map, options).await;
+    let outcome = probe_backends_cycle(
+        client,
+        &backends,
+        now,
+        health_map,
+        options,
+        Some(OAuthProbeContext {
+            node,
+            principal_did,
+        }),
+    )
+    .await;
 
     for backend_id in &outcome.promotable {
         match set_backend_probe_status_with_last_probe(node, backend_id, "healthy", now).await {
@@ -346,6 +457,7 @@ pub fn spawn_backend_prober(
     options: BackendProberOptions,
     health_events_tx: mpsc::Sender<()>,
     cancel: CancellationToken,
+    principal_did: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let client = match reqwest::Client::builder()
@@ -369,9 +481,14 @@ pub fn spawn_backend_prober(
                     return;
                 }
                 _ = ticker.tick() => {
-                    let outcome =
-                        run_backend_probe_cycle(node.as_ref(), &client, &health_map, &options)
-                            .await;
+                    let outcome = run_backend_probe_cycle(
+                        node.as_ref(),
+                        &client,
+                        &health_map,
+                        &options,
+                        &principal_did,
+                    )
+                    .await;
                     if !outcome.flipped.is_empty() {
                         let _ = health_events_tx.try_send(());
                     }
@@ -389,6 +506,9 @@ mod tests {
     use super::*;
     use crate::backend_registry::DEFAULT_MAX_QUEUE_DEPTH;
     use crate::lean_vocab_test::lean_backend_health_cases;
+    use crate::oauth_credential::test_support::{
+        seed_credential, seed_credential_with_refresh_token, test_node,
+    };
 
     fn state_from_lean(name: &str, state: &str) -> BackendHealthState {
         match state {
@@ -548,7 +668,8 @@ mod tests {
         let endpoint = listener.endpoint();
         let backends = vec![backend("spark", endpoint.clone(), "healthy")];
         let now = Utc::now();
-        let outcome = probe_backends_cycle(&client, &backends, now, &health_map, &options).await;
+        let outcome =
+            probe_backends_cycle(&client, &backends, now, &health_map, &options, None).await;
         assert!(outcome.flipped.is_empty());
         let snap = health_map.get("spark").await.expect("entry after probe");
         assert_eq!(snap.state, BackendHealthState::Healthy);
@@ -561,7 +682,8 @@ mod tests {
         for cycle in 1..=3u32 {
             let cycle_now = Utc::now();
             let outcome =
-                probe_backends_cycle(&client, &backends, cycle_now, &health_map, &options).await;
+                probe_backends_cycle(&client, &backends, cycle_now, &health_map, &options, None)
+                    .await;
             let snap = health_map.get("spark").await.expect("entry");
             assert_eq!(snap.failure_count, cycle, "consecutive failures accumulate");
             assert_eq!(
@@ -584,7 +706,7 @@ mod tests {
         let recovered = ModelsListener::start();
         let backends = vec![backend("spark", recovered.endpoint(), "healthy")];
         let outcome =
-            probe_backends_cycle(&client, &backends, Utc::now(), &health_map, &options).await;
+            probe_backends_cycle(&client, &backends, Utc::now(), &health_map, &options, None).await;
         assert_eq!(
             outcome.flipped,
             vec!["spark".to_string()],
@@ -606,13 +728,13 @@ mod tests {
 
         let backends = vec![backend("late-arrival", listener.endpoint(), "unknown")];
         let outcome =
-            probe_backends_cycle(&client, &backends, Utc::now(), &health_map, &options).await;
+            probe_backends_cycle(&client, &backends, Utc::now(), &health_map, &options, None).await;
         assert_eq!(outcome.promotable, vec!["late-arrival".to_string()]);
 
         // Already-promoted docs are not re-written.
         let backends = vec![backend("late-arrival", listener.endpoint(), "healthy")];
         let outcome =
-            probe_backends_cycle(&client, &backends, Utc::now(), &health_map, &options).await;
+            probe_backends_cycle(&client, &backends, Utc::now(), &health_map, &options, None).await;
         assert!(outcome.promotable.is_empty());
     }
 
@@ -627,10 +749,227 @@ mod tests {
         let mut codex = backend("codex", "http://127.0.0.1:1/v1".to_string(), "healthy");
         codex.provider_kind = crate::backend_provider::BackendProviderKind::ChatGptCodex;
         let outcome =
-            probe_backends_cycle(&client, &[codex], Utc::now(), &health_map, &options).await;
+            probe_backends_cycle(&client, &[codex], Utc::now(), &health_map, &options, None).await;
         assert!(outcome.flipped.is_empty());
         assert!(health_map.get("codex").await.is_none(), "no measured entry");
         assert!(!health_map.measured_blocks_routing("codex").await);
+    }
+
+    fn claude_backend() -> InferenceBackend {
+        let mut claude = backend(
+            "claude",
+            crate::claude_subscription::DEFAULT_BACKEND_ENDPOINT.to_string(),
+            "healthy",
+        );
+        claude.provider_kind = crate::backend_provider::BackendProviderKind::ClaudeCliSubscription;
+        claude
+    }
+
+    fn oauth_backend(
+        kind: crate::backend_provider::BackendProviderKind,
+        id: &str,
+        endpoint: &str,
+    ) -> InferenceBackend {
+        let mut backend = backend(id, endpoint.to_string(), "healthy");
+        backend.provider_kind = kind;
+        backend
+    }
+
+    #[tokio::test]
+    async fn oauth_kinds_probe_the_credential_document_fresh_is_healthy_and_promotes() {
+        let node = test_node().await;
+        let did = "did:key:z6MkProbe";
+        seed_credential(
+            &node,
+            did,
+            crate::claude_oauth::CLAUDE_OAUTH_PROVIDER,
+            Utc::now() + chrono::Duration::hours(8),
+        )
+        .await;
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
+        let mut claude = claude_backend();
+        claude.probe_status = "unknown".to_string();
+        let outcome = probe_backends_cycle(
+            &client,
+            &[claude],
+            Utc::now(),
+            &health_map,
+            &options,
+            Some(OAuthProbeContext {
+                node: &node,
+                principal_did: did,
+            }),
+        )
+        .await;
+        assert_eq!(outcome.promotable, vec!["claude".to_string()]);
+        let snap = health_map.get("claude").await.expect("entry");
+        assert_eq!(snap.state, BackendHealthState::Healthy);
+        assert!(snap.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn oauth_kinds_stale_credential_with_refresh_token_stays_healthy_and_promotes() {
+        let node = test_node().await;
+        let did = "did:key:z6MkProbe";
+        seed_credential(
+            &node,
+            did,
+            crate::xai_grok_oauth::XAI_OAUTH_PROVIDER,
+            Utc::now() - chrono::Duration::minutes(1),
+        )
+        .await;
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
+        let mut grok = oauth_backend(
+            crate::backend_provider::BackendProviderKind::XaiGrokOAuth,
+            "grok",
+            "https://cli-chat-proxy.grok.com/v1",
+        );
+        grok.probe_status = "unknown".to_string();
+        for _ in 0..3 {
+            let outcome = probe_backends_cycle(
+                &client,
+                std::slice::from_ref(&grok),
+                Utc::now(),
+                &health_map,
+                &options,
+                Some(OAuthProbeContext {
+                    node: &node,
+                    principal_did: did,
+                }),
+            )
+            .await;
+            assert!(outcome.flipped.is_empty());
+            assert_eq!(outcome.promotable, vec!["grok".to_string()]);
+            let snap = health_map.get("grok").await.expect("entry");
+            assert_eq!(snap.state, BackendHealthState::Healthy);
+            assert_eq!(snap.failure_count, 0);
+            assert!(snap.last_error.is_none(), "{:?}", snap.last_error);
+        }
+        assert!(health_map.vetoed_backend_ids().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oauth_kinds_stale_credential_without_refresh_token_still_demotes_after_k() {
+        let node = test_node().await;
+        let did = "did:key:z6MkProbe";
+        seed_credential_with_refresh_token(
+            &node,
+            did,
+            crate::xai_grok_oauth::XAI_OAUTH_PROVIDER,
+            Utc::now() - chrono::Duration::minutes(1),
+            "",
+        )
+        .await;
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
+        let grok = oauth_backend(
+            crate::backend_provider::BackendProviderKind::XaiGrokOAuth,
+            "grok",
+            "https://cli-chat-proxy.grok.com/v1",
+        );
+        for cycle in 1..=3u32 {
+            let outcome = probe_backends_cycle(
+                &client,
+                std::slice::from_ref(&grok),
+                Utc::now(),
+                &health_map,
+                &options,
+                Some(OAuthProbeContext {
+                    node: &node,
+                    principal_did: did,
+                }),
+            )
+            .await;
+            assert!(outcome.promotable.is_empty());
+            let snap = health_map.get("grok").await.expect("entry");
+            assert_eq!(snap.failure_count, cycle);
+            let err = snap.last_error.clone().unwrap_or_default();
+            assert!(err.contains("missing refresh_token"), "{err}");
+            if cycle == 3 {
+                assert_eq!(snap.state, BackendHealthState::Unhealthy);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_kinds_missing_credential_fails_with_login_hint() {
+        let node = test_node().await;
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
+        let codex = oauth_backend(
+            crate::backend_provider::BackendProviderKind::ChatGptCodex,
+            "codex",
+            "https://chatgpt.com/backend-api/codex",
+        );
+        probe_backends_cycle(
+            &client,
+            &[codex],
+            Utc::now(),
+            &health_map,
+            &options,
+            Some(OAuthProbeContext {
+                node: &node,
+                principal_did: "did:key:z6MkNobody",
+            }),
+        )
+        .await;
+        let snap = health_map.get("codex").await.expect("entry");
+        assert_eq!(snap.state, BackendHealthState::Degraded);
+        assert!(snap
+            .last_error
+            .clone()
+            .unwrap_or_default()
+            .contains("gents codex-login --agent-did did:key:z6MkNobody"));
+    }
+
+    #[tokio::test]
+    async fn oauth_kinds_are_skipped_without_a_probe_context() {
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
+        let outcome = probe_backends_cycle(
+            &client,
+            &[claude_backend()],
+            Utc::now(),
+            &health_map,
+            &options,
+            None,
+        )
+        .await;
+        assert!(outcome.promotable.is_empty());
+        assert!(
+            health_map.get("claude").await.is_none(),
+            "no measurement without a node"
+        );
+    }
+
+    #[test]
+    fn provider_kind_oauth_provider_names() {
+        use crate::backend_provider::BackendProviderKind as K;
+        assert_eq!(
+            K::ClaudeCliSubscription.oauth_provider(),
+            Some("claude-subscription")
+        );
+        assert_eq!(K::XaiGrokOAuth.oauth_provider(), Some("xai-oauth"));
+        assert_eq!(K::ChatGptCodex.oauth_provider(), Some("chatgpt-codex"));
+        assert_eq!(K::OpenAiCompatible.oauth_provider(), None);
+        assert!(K::ClaudeCliSubscription.is_agent_scoped_oauth());
     }
 
     #[tokio::test]
@@ -644,7 +983,7 @@ mod tests {
 
         let listener = ModelsListener::start();
         let backends = vec![backend("current", listener.endpoint(), "healthy")];
-        probe_backends_cycle(&client, &backends, Utc::now(), &health_map, &options).await;
+        probe_backends_cycle(&client, &backends, Utc::now(), &health_map, &options, None).await;
 
         assert!(health_map.get("retired").await.is_none());
         assert!(health_map.get("current").await.is_some());

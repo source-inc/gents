@@ -29,6 +29,11 @@ pub enum BackendProviderKind {
     ChatGptCodex,
     #[serde(rename = "XaiGrokOAuth")]
     XaiGrokOAuth,
+    /// Claude subscription over Messages HTTP, authenticated with an
+    /// agent-scoped `OAuthCredential` (`claude-subscription`) written by
+    /// `gents claude-login`.
+    #[serde(rename = "ClaudeCliSubscription")]
+    ClaudeCliSubscription,
 }
 
 impl BackendProviderKind {
@@ -39,6 +44,7 @@ impl BackendProviderKind {
             Some("OpenRouter") => Ok(Self::OpenRouter),
             Some("ChatGptCodex") => Ok(Self::ChatGptCodex),
             Some("XaiGrokOAuth") => Ok(Self::XaiGrokOAuth),
+            Some("ClaudeCliSubscription") => Ok(Self::ClaudeCliSubscription),
             Some(other) => anyhow::bail!("unknown backend provider kind {other}"),
         }
     }
@@ -49,13 +55,47 @@ impl BackendProviderKind {
             Self::OpenRouter => "OpenRouter",
             Self::ChatGptCodex => "ChatGptCodex",
             Self::XaiGrokOAuth => "XaiGrokOAuth",
+            Self::ClaudeCliSubscription => "ClaudeCliSubscription",
         }
     }
 
     /// Backends that authenticate with agent-scoped `OAuthCredential` documents
     /// rather than a fleet-global API key. These must not be fleet-probed.
     pub fn is_agent_scoped_oauth(self) -> bool {
-        matches!(self, Self::ChatGptCodex | Self::XaiGrokOAuth)
+        matches!(
+            self,
+            Self::ChatGptCodex | Self::XaiGrokOAuth | Self::ClaudeCliSubscription
+        )
+    }
+
+    /// The `OAuthCredential.provider` value an agent-scoped kind authenticates with.
+    pub fn oauth_provider(self) -> Option<&'static str> {
+        match self {
+            Self::ChatGptCodex => Some(crate::chatgpt_codex::CHATGPT_CODEX_PROVIDER),
+            Self::XaiGrokOAuth => Some(crate::xai_grok_oauth::XAI_OAUTH_PROVIDER),
+            Self::ClaudeCliSubscription => Some(crate::claude_oauth::CLAUDE_OAUTH_PROVIDER),
+            _ => None,
+        }
+    }
+
+    pub fn oauth_auth_guidance(
+        self,
+        agent_did: &str,
+        provider: &str,
+        problem: &crate::oauth_credential::OAuthAuthProblem,
+    ) -> String {
+        match self {
+            Self::ChatGptCodex => {
+                crate::oauth_credential::classify_chatgpt_auth_error(agent_did, provider, problem)
+            }
+            Self::XaiGrokOAuth => {
+                crate::xai_grok_oauth::classify_xai_auth_error(agent_did, provider, problem)
+            }
+            Self::ClaudeCliSubscription => {
+                crate::claude_oauth::classify_claude_auth_error(agent_did, provider, problem)
+            }
+            _ => format!("{self} does not use OAuth credentials"),
+        }
     }
 }
 
@@ -71,12 +111,25 @@ fn provider_display_name(kind: BackendProviderKind) -> &'static str {
         BackendProviderKind::OpenRouter => "OpenRouter",
         BackendProviderKind::ChatGptCodex => "ChatGPT Codex",
         BackendProviderKind::XaiGrokOAuth => "Grok / xAI OAuth",
+        BackendProviderKind::ClaudeCliSubscription => "Claude CLI subscription",
     }
 }
 
 const MODEL_DISCOVERY_PATH: &str = "/models";
 /// The Grok CLI proxy publishes its catalog at `/models-v2` (official client path).
 const XAI_GROK_MODEL_DISCOVERY_PATH: &str = "/models-v2";
+/// Claude subscription catalog base. The backend document's endpoint is the
+/// `claude-cli://subscription` placeholder; an `http(s)://` endpoint (tests)
+/// overrides this.
+const CLAUDE_MODELS_BASE: &str = "https://api.anthropic.com/v1";
+
+fn claude_models_base(endpoint: &str) -> String {
+    if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+        endpoint.trim_end_matches('/').to_string()
+    } else {
+        CLAUDE_MODELS_BASE.to_string()
+    }
+}
 
 #[derive(Deserialize)]
 struct OpenAiModelsResponse {
@@ -107,6 +160,7 @@ impl OpenAiModelRecord {
             .into_iter()
             .flatten()
             .find(|value| !value.trim().is_empty())
+            .map(|value| value.trim().to_string())
     }
 }
 
@@ -124,6 +178,7 @@ impl ChatGptCodexModelRecord {
             .into_iter()
             .flatten()
             .find(|value| !value.trim().is_empty())
+            .map(|value| value.trim().to_string())
     }
 }
 
@@ -137,6 +192,7 @@ pub async fn discover_models(
     let endpoint = match kind {
         BackendProviderKind::ChatGptCodex => crate::chatgpt_codex::normalize_endpoint(endpoint),
         BackendProviderKind::XaiGrokOAuth => crate::xai_grok_oauth::normalize_endpoint(endpoint),
+        BackendProviderKind::ClaudeCliSubscription => claude_models_base(endpoint),
         _ => endpoint.trim_end_matches('/').to_string(),
     };
     let discovery_path = if kind == BackendProviderKind::XaiGrokOAuth {
@@ -195,6 +251,21 @@ pub async fn discover_models(
                     request = request.header(name, value);
                 }
             }
+        } else if kind == BackendProviderKind::ClaudeCliSubscription {
+            let Some(credential) = oauth_credential else {
+                tracing::Span::current().record("failure_class", "auth");
+                anyhow::bail!(
+                    "Claude subscription model discovery requires an OAuthCredential document; run `gents claude-login --agent-did <did>` for the agent DID first"
+                );
+            };
+            request = request
+                .bearer_auth(&credential.access_token)
+                .header(
+                    "anthropic-version",
+                    crate::claude_messages::ANTHROPIC_VERSION,
+                )
+                .header("anthropic-beta", crate::claude_messages::OAUTH_BETA)
+                .query(&[("limit", "100")]);
         } else if let Some(api_key) = api_key {
             request = request.bearer_auth(api_key);
         }
@@ -296,7 +367,7 @@ mod tests {
     #[tokio::test]
     async fn discover_models_reads_openai_models_and_sends_api_key() {
         let (endpoint, requests) =
-            spawn_model_discovery_server(r#"{"data":[{"id":"gpt-4.1-mini"},{"id":"o3"}]}"#).await;
+            spawn_model_discovery_server(r#"{"data":[{"id":"gpt-4.1-mini"},{"id":" o3 "}]}"#).await;
 
         let models = discover_models(
             &Client::new(),
@@ -326,7 +397,7 @@ mod tests {
     #[tokio::test]
     async fn discover_models_decodes_chatgpt_codex_models_shape() {
         let (endpoint, _requests) =
-            spawn_model_discovery_server(r#"{"models":[{"slug":"codex-mini-latest"}]}"#).await;
+            spawn_model_discovery_server(r#"{"models":[{"slug":" codex-mini-latest "}]}"#).await;
 
         let models = discover_models(
             &Client::new(),
@@ -483,7 +554,132 @@ mod tests {
         );
     }
 
+    fn claude_credential() -> crate::oauth_credential::OAuthCredential {
+        crate::oauth_credential::OAuthCredential {
+            doc_id: None,
+            credential_id: "claude-subscription:did:key:zAgent".to_string(),
+            agent_did: "did:key:zAgent".to_string(),
+            provider: crate::claude_oauth::CLAUDE_OAUTH_PROVIDER.to_string(),
+            access_token: "access-token".to_string(),
+            refresh_token: "refresh-token".to_string(),
+            id_token: None,
+            account_id: None,
+            chatgpt_plan_type: None,
+            is_fedramp: false,
+            access_token_expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            last_refresh: None,
+            enabled: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn discover_models_reads_claude_models_with_oauth_headers() {
+        // Live probe: `GET https://api.anthropic.com/v1/models` with the
+        // subscription bearer returns the OpenAI-style `{"data":[{"id":...}]}`.
+        let (endpoint, requests) = spawn_model_discovery_server(
+            r#"{"data":[{"id":"claude-fable-5-1","type":"model"},{"id":"claude-opus-5","type":"model"},{"id":"claude-sonnet-5","type":"model"}],"has_more":false}"#,
+        )
+        .await;
+        let credential = claude_credential();
+
+        let models = discover_models(
+            &Client::new(),
+            BackendProviderKind::ClaudeCliSubscription,
+            &format!("{endpoint}/v1"),
+            None,
+            Some(&credential),
+        )
+        .await
+        .expect("Claude subscription model discovery should read /v1/models");
+
+        assert_eq!(
+            models,
+            vec!["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5"]
+        );
+        let requests = requests.lock().expect("requests lock");
+        let request = requests
+            .first()
+            .expect("captured request")
+            .to_ascii_lowercase();
+        assert!(
+            request.starts_with("get /v1/models?limit=100 "),
+            "Claude discovery must query /v1/models?limit=100: {request}"
+        );
+        for header in [
+            "authorization: bearer access-token",
+            "anthropic-version: 2023-06-01",
+            "anthropic-beta: oauth-2025-04-20",
+        ] {
+            assert!(request.contains(header), "{header} missing from {request}");
+        }
+    }
+
+    #[tokio::test]
+    async fn discover_models_claude_401_is_an_auth_error() {
+        let (endpoint, _requests) = spawn_model_discovery_server_with_status(
+            "401 Unauthorized",
+            r#"{"type":"error","error":{"type":"authentication_error","message":"invalid bearer"}}"#,
+        )
+        .await;
+        let credential = claude_credential();
+
+        let error = discover_models(
+            &Client::new(),
+            BackendProviderKind::ClaudeCliSubscription,
+            &format!("{endpoint}/v1"),
+            None,
+            Some(&credential),
+        )
+        .await
+        .expect_err("401 from /v1/models must fail discovery");
+
+        let http = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<ModelDiscoveryHttpError>())
+            .expect("401 must surface as ModelDiscoveryHttpError so the CLI appends claude-login guidance");
+        assert!(http.is_auth(), "{http}");
+    }
+
+    #[tokio::test]
+    async fn discover_models_claude_without_credential_names_claude_login() {
+        let error = discover_models(
+            &Client::new(),
+            BackendProviderKind::ClaudeCliSubscription,
+            "claude-cli://subscription",
+            None,
+            None,
+        )
+        .await
+        .expect_err("Claude discovery without a credential must fail");
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("requires an OAuthCredential document")
+                && message.contains("--agent-did"),
+            "missing-credential error must name the login command: {message}"
+        );
+    }
+
+    #[test]
+    fn claude_models_base_ignores_the_placeholder_endpoint() {
+        assert_eq!(
+            claude_models_base("claude-cli://subscription"),
+            "https://api.anthropic.com/v1"
+        );
+        assert_eq!(
+            claude_models_base("http://127.0.0.1:8080/v1"),
+            "http://127.0.0.1:8080/v1"
+        );
+    }
+
     async fn spawn_model_discovery_server(body: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
+        spawn_model_discovery_server_with_status("200 OK", body).await
+    }
+
+    async fn spawn_model_discovery_server_with_status(
+        status: &'static str,
+        body: &'static str,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind mock model-discovery server");
@@ -505,7 +701,8 @@ mod tests {
                 .expect("requests lock")
                 .push(request.to_string());
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status,
                 body.len(),
                 body
             );

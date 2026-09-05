@@ -81,6 +81,12 @@ pub(crate) enum Command {
         about = "Probe a DefraDB-backed Grok / xAI OAuth credential (read-only)"
     )]
     GrokAuthProbe(GrokAuthProbeArgs),
+    #[command(
+        name = "claude-login",
+        about = "Sign in with the Claude subscription (OAuth) and store credentials in DefraDB",
+        after_help = "Default: opens the browser and listens on a localhost callback. Use --manual on hosts without a browser: open the printed URL anywhere, then paste the code shown on Anthropic's page."
+    )]
+    ClaudeLogin(ClaudeLoginArgs),
     #[command(name = "__native-fs-runner", hide = true)]
     NativeFsRunner(NativeFsRunnerArgs),
     #[command(about = "Inspect and control live P2P runtime connectivity", after_help = P2P_AFTER_HELP)]
@@ -502,6 +508,34 @@ pub(crate) struct GrokLoginArgs {
     pub(crate) agent_did: Option<String>,
     #[arg(long, default_value = "xai-oauth")]
     pub(crate) provider: String,
+}
+
+#[derive(clap::Args)]
+pub(crate) struct ClaudeLoginArgs {
+    #[arg(long, help = "Agent home directory. Defaults to ~/.gents")]
+    pub(crate) home: Option<PathBuf>,
+    #[arg(long, help = "GraphQL endpoint for the target gents node")]
+    pub(crate) graphql: Option<String>,
+    #[arg(long, help = "Agent DID that owns the OAuthCredential document")]
+    pub(crate) agent_did: Option<String>,
+    #[arg(long, default_value = "claude-subscription")]
+    pub(crate) provider: String,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Manual-paste login (no localhost callback, no browser)"
+    )]
+    pub(crate) manual: bool,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Print the login URL instead of opening a browser"
+    )]
+    pub(crate) no_browser: bool,
+    #[arg(long, help = "OAuth client ID override for testing")]
+    pub(crate) client_id: Option<String>,
+    #[arg(long, help = "OAuth token endpoint override for testing")]
+    pub(crate) token_url: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -1143,6 +1177,12 @@ pub(crate) enum BackendPresetArg {
     ChatGptCodex,
     #[value(name = "xai-oauth")]
     XaiGrokOAuth,
+    #[value(
+        name = "claude-cli-subscription",
+        alias = "claude-subscription",
+        alias = "claude-cli"
+    )]
+    ClaudeCliSubscription,
     #[value(name = "ollama")]
     Ollama,
     #[value(name = "vllm")]
@@ -1159,6 +1199,7 @@ impl BackendPresetArg {
             Self::OpenRouter => "openrouter",
             Self::ChatGptCodex => "chatgpt-codex",
             Self::XaiGrokOAuth => "xai-oauth",
+            Self::ClaudeCliSubscription => "claude-cli-subscription",
             Self::Ollama => "ollama",
             Self::Vllm => "vllm",
             Self::LlamaCpp => "llama-cpp",
@@ -1170,6 +1211,7 @@ impl BackendPresetArg {
             Self::OpenRouter => BackendProviderKind::OpenRouter,
             Self::ChatGptCodex => BackendProviderKind::ChatGptCodex,
             Self::XaiGrokOAuth => BackendProviderKind::XaiGrokOAuth,
+            Self::ClaudeCliSubscription => BackendProviderKind::ClaudeCliSubscription,
             Self::GenericOpenAiCompatible
             | Self::OpenAi
             | Self::Ollama
@@ -1185,6 +1227,9 @@ impl BackendPresetArg {
             Self::OpenRouter => Some("https://openrouter.ai/api/v1"),
             Self::ChatGptCodex => Some(gents::chatgpt_codex::default_backend_endpoint()),
             Self::XaiGrokOAuth => Some(gents::xai_grok_oauth::default_backend_endpoint()),
+            Self::ClaudeCliSubscription => {
+                Some(gents::claude_subscription::default_backend_endpoint())
+            }
             Self::Ollama => Some(crate::DEFAULT_OLLAMA_ENDPOINT),
             Self::Vllm => Some("http://127.0.0.1:8000/v1"),
             Self::LlamaCpp => Some("http://127.0.0.1:8080/v1"),
@@ -1201,6 +1246,7 @@ impl BackendPresetArg {
             Self::LlamaCpp => Some(crate::DEFAULT_INIT_MODEL_NAME),
             Self::ChatGptCodex => Some(crate::DEFAULT_CHATGPT_CODEX_MODEL_NAME),
             Self::XaiGrokOAuth => Some(crate::DEFAULT_XAI_GROK_OAUTH_MODEL_NAME),
+            Self::ClaudeCliSubscription => Some(gents::claude_subscription::default_model_name()),
             Self::GenericOpenAiCompatible | Self::OpenAi | Self::OpenRouter | Self::Vllm => None,
         }
     }
@@ -1212,6 +1258,7 @@ impl BackendPresetArg {
             Self::GenericOpenAiCompatible
             | Self::ChatGptCodex
             | Self::XaiGrokOAuth
+            | Self::ClaudeCliSubscription
             | Self::Ollama
             | Self::Vllm
             | Self::LlamaCpp => None,
@@ -1225,6 +1272,7 @@ impl BackendPresetArg {
             | Self::OpenRouter
             | Self::ChatGptCodex
             | Self::XaiGrokOAuth
+            | Self::ClaudeCliSubscription
             | Self::Ollama
             | Self::Vllm
             | Self::LlamaCpp => None,
@@ -2366,14 +2414,19 @@ pub(crate) struct BackendDiscoverModelsArgs {
     pub(crate) api_key_env_var: Option<String>,
     #[arg(
         long,
-        help = "Agent DID owning the ChatGptCodex OAuth credential (defaults to the local agent). Only used for ChatGptCodex backends, whose bearer is a DefraDB document rather than an api_key"
+        help = "Agent DID owning the OAuth credential (defaults to the local agent). Only used for OAuth-credential backends (ChatGptCodex, XaiGrokOAuth, ClaudeCliSubscription), whose bearer is a DefraDB document rather than an api_key"
     )]
     pub(crate) agent_did: Option<String>,
     #[arg(
         long,
-        help = "Agent home directory used to resolve the local agent DID for ChatGptCodex discovery (defaults to ~/.gents). Pass --agent-did instead to target a specific agent"
+        help = "Agent home directory used to resolve the local agent DID for OAuth-credential backend discovery (defaults to ~/.gents). Pass --agent-did instead to target a specific agent"
     )]
     pub(crate) home: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "Replace the backend document's models[] with the discovered models (requires --backend-id; nothing is written without this flag)"
+    )]
+    pub(crate) write: bool,
 }
 
 #[derive(clap::Args)]

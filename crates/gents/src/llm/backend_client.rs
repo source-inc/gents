@@ -62,6 +62,11 @@ pub(crate) enum BackendClient {
     XaiGrokResponses(
         rig::providers::openai::Client<crate::xai_grok_oauth::CapturingXaiGrokOAuthHttpClient>,
     ),
+    ClaudeSubscription(
+        crate::claude_subscription::ClaudeSubscriptionClient<
+            crate::oauth_credential::DbCredentialBearer,
+        >,
+    ),
 }
 
 /// Build the provider completion client for `behavior`'s
@@ -188,6 +193,29 @@ pub(crate) async fn build_backend_client(
                 Ok(BackendClient::XaiGrokResponses(client))
             }
         }
+        BackendProviderKind::ClaudeCliSubscription => {
+            let client = tokio::time::timeout(
+                build_timeout,
+                crate::claude_subscription::ClaudeSubscriptionClient::build(
+                    node,
+                    behavior.agent_did(),
+                ),
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "timed out after {build_timeout:?} building the Claude subscription completion client"
+                )
+            })
+            .and_then(|result| result)
+            .with_context(|| {
+                format!(
+                    "building Claude subscription completion client for behavior {}",
+                    behavior.behavior_id
+                )
+            })?;
+            Ok(BackendClient::ClaudeSubscription(client))
+        }
     }
 }
 
@@ -208,6 +236,7 @@ macro_rules! with_backend_client {
             $crate::llm::backend_client::BackendClient::ChatGptCodex($c) => $body,
             $crate::llm::backend_client::BackendClient::XaiGrokChatCompletions($c) => $body,
             $crate::llm::backend_client::BackendClient::XaiGrokResponses($c) => $body,
+            $crate::llm::backend_client::BackendClient::ClaudeSubscription($c) => $body,
         }
     };
 }
@@ -351,5 +380,20 @@ mod tests {
                 .await
                 .expect("Grok Responses client builds without network I/O");
         assert!(matches!(client, BackendClient::XaiGrokResponses(_)));
+
+        let claude = test_behavior(
+            BackendProviderKind::ClaudeCliSubscription,
+            crate::OpenAiWireApi::ChatCompletions,
+        );
+        seed_oauth_credential(
+            node.as_ref(),
+            &claude,
+            crate::claude_oauth::CLAUDE_OAUTH_PROVIDER,
+        )
+        .await;
+        let client = build_backend_client(node.clone(), &claude, "key", Duration::from_secs(5))
+            .await
+            .expect("Claude subscription client builds without network I/O");
+        assert!(matches!(client, BackendClient::ClaudeSubscription(_)));
     }
 }

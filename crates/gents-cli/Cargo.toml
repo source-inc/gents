@@ -37,6 +37,7 @@ chrono.workspace = true
 ciborium = "0.2"
 clap.workspace = true
 gents-chatgpt-login.workspace = true
+gents-claude-login.workspace = true
 gents-codex-protocol.workspace = true
 gents = { path = "../gents" }
 gents-fs-runner = { path = "../gents-fs-runner" }

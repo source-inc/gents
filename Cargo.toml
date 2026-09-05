@@ -6,6 +6,7 @@ members = [
     "crates/fixture-domain-plugin",
     "crates/gents",
     "crates/gents-chatgpt-login",
+    "crates/gents-claude-login",
     "crates/gents-cli",
     "crates/gents-codex-protocol",
     "crates/gents-desktop",
@@ -31,6 +32,7 @@ default-members = [
     "crates/fixture-domain-plugin",
     "crates/gents",
     "crates/gents-chatgpt-login",
+    "crates/gents-claude-login",
     "crates/gents-cli",
     "crates/gents-codex-protocol",
     "crates/gents-desktop",
@@ -63,6 +65,7 @@ crypto = { git = "https://github.com/sourcenetwork/defradb.rs.git", rev = "03e10
 defra-core = { git = "https://github.com/sourcenetwork/defradb.rs.git", rev = "03e1035f364dc0914016e9cf8bde4e4f1a000f06" }
 gents-protocol = { path = "crates/gents-protocol" }
 gents-chatgpt-login = { path = "crates/gents-chatgpt-login" }
+gents-claude-login = { path = "crates/gents-claude-login" }
 gents-codex-protocol = { path = "crates/gents-codex-protocol" }
 gents-schemas = { path = "crates/gents-schemas" }
 gents-desktop-core = { path = "crates/gents-desktop-core" }

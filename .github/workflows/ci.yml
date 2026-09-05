@@ -290,6 +290,7 @@ jobs:
             -p gents-schemas \
             -p gents-codex-protocol \
             -p gents-chatgpt-login \
+            -p gents-claude-login \
             -p gents-fs-runner \
             -p gents-lean-contract
 
