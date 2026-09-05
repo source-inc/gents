@@ -1,0 +1,33 @@
+type PortLiveEnvironmentProof {
+  run_id: String @index(unique: true) @immutable
+  final_review_head: String @immutable
+  preflight_nonce: String @immutable
+  preflight_port_vacant: Boolean @immutable
+  preflight_socket_absent: Boolean @immutable
+  expected_endpoint: String @immutable
+  applied_endpoint: String @immutable
+  backend_id: String @immutable
+  live_home: String @immutable
+  live_graphql: String @immutable
+  live_socket: String @immutable
+  endpoint_env_name: String @immutable
+  endpoint_verified: Boolean @immutable
+  listener_pid: Int @immutable
+  listener_command: String @immutable
+  listener_verified: Boolean @immutable
+  pty_challenge: String @immutable
+  pty_expected: String @immutable
+  pty_prompt_sha256: String @immutable
+  pty_pre_submit_bytes: Int @immutable
+  pty_session_id: String @immutable
+  pty_terminal_request_id: String @immutable
+  pty_idle_challenge: String @immutable
+  pty_idle_expected: String @immutable
+  pty_idle_probe_request_id: String @immutable
+  pty_idle_transition: Boolean @immutable
+  pty_verified: Boolean @immutable
+  cleanup_listener_absent: Boolean @immutable
+  cleanup_socket_absent: Boolean @immutable
+  proof_json: String @immutable
+  proof_json_continuation: String @immutable
+}

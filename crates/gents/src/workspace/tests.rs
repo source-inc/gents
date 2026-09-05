@@ -836,6 +836,36 @@ fn writer_seal_persists_receipt_and_forbids_read_write() {
 }
 
 #[test]
+fn seal_snapshot_preserves_tracked_files_hidden_by_ignore_rules() {
+    let mut fx = Fixture::new();
+    let ignored = fx.repo.join("demo-runs");
+    fs::create_dir_all(&ignored).unwrap();
+    fs::write(fx.repo.join(".gitignore"), "demo-runs/\n").unwrap();
+    fs::write(ignored.join(".gitignore"), "*\n!.gitignore\n").unwrap();
+    git(&fx.repo, &["add", ".gitignore"]);
+    git(&fx.repo, &["add", "-f", "demo-runs/.gitignore"]);
+    git(&fx.repo, &["commit", "-m", "track ignored sentinel"]);
+    fx.base_sha = git(&fx.repo, &["rev-parse", "HEAD"]);
+
+    let mut docs = MemoryWorkspaceDocuments::default();
+    let plan = emit_create_workspace_plan(fx.action("ws-ignore", "unit-ignore", "topic-ignore"));
+    let mut journal = Vec::new();
+    let created = execute_create_workspace_plan(
+        &plan,
+        &mut journal,
+        &mut fx.ctx(&mut docs, git_worktree_caps()),
+    )
+    .expect("provision");
+    let dest = PathBuf::from(&created.placement.host_path);
+    fs::write(dest.join("patch.rs"), "fn patch() {}\n").unwrap();
+
+    let snapshot = super::adapter::capture_seal_snapshot(&dest).expect("snapshot");
+    assert_eq!(snapshot.changed_files, vec!["patch.rs"]);
+    let diff = String::from_utf8(snapshot.diff).unwrap();
+    assert!(!diff.contains("demo-runs/.gitignore"), "{diff}");
+}
+
+#[test]
 fn concurrent_read_only_after_seal_with_matching_hash() {
     let fx = Fixture::new();
     let mut docs = MemoryWorkspaceDocuments::default();

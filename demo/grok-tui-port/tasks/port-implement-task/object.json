@@ -1,0 +1,11 @@
+{
+  "task_id": "port-implement-task",
+  "name": "port-implement-task",
+  "description": null,
+  "behavior_id": "port-implement",
+  "prompt_template": "./prompt.md",
+  "goal_objective_template": "Complete the assigned Grok TUI port implementation unit {{ event.correlation }} and persist its implementation receipt.",
+  "goal_token_budget": 2000000,
+  "enabled": true,
+  "output_schema_ref": null
+}

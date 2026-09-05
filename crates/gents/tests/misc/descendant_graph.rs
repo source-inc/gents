@@ -6,8 +6,9 @@ use gents::tool_call_lifecycle::{
     ToolCallLifecycle,
 };
 use gents::{
-    resolve_descendant_edge, resolve_descendant_graph, DescendantControlAuthority,
-    DescendantGraphAccess, DescendantMaterializationState, DescendantQuery,
+    resolve_descendant_edge, resolve_descendant_graph, resolve_session_descendant_edge,
+    resolve_session_descendant_graph, DescendantControlAuthority, DescendantGraphAccess,
+    DescendantMaterializationState, DescendantQuery,
 };
 
 async fn create_request(
@@ -17,6 +18,20 @@ async fn create_request(
     agent_did: &str,
     behavior_id: &str,
 ) -> String {
+    create_request_with_requester(node, request_id, session_id, agent_did, behavior_id, None).await
+}
+
+async fn create_request_with_requester(
+    node: &gents::defra_node::EmbeddedNode,
+    request_id: &str,
+    session_id: &str,
+    agent_did: &str,
+    behavior_id: &str,
+    requester: Option<&str>,
+) -> String {
+    let requester = requester
+        .map(|did| format!("requester_did: \"{}\",", escape_graphql_string(did)))
+        .unwrap_or_default();
     let request_id = escape_graphql_string(request_id);
     let session_id = escape_graphql_string(session_id);
     let agent_did = escape_graphql_string(agent_did);
@@ -28,6 +43,7 @@ async fn create_request(
                 create_AgentRequest(input: {{
                     request_id: "{request_id}",
                     agent_did: "{agent_did}",
+                    {requester}
                     behavior_id: "{behavior_id}",
                     session_id: "{session_id}",
                     retry_parent_request: "",
@@ -199,6 +215,80 @@ async fn canonical_graph_preserves_pending_remote_terminal_nested_and_paging_edg
         DescendantMaterializationState::MaterializedRemote
     );
 
+    // A new user request has no caused_by_parent lineage, but owns the same
+    // conversation. Model-facing tools must retain access without rewriting
+    // the original parent or fabricating a continuation edge.
+    create_request(
+        db.node.as_ref(),
+        "later-user-turn",
+        root_session,
+        root_did,
+        "other-behavior",
+    )
+    .await;
+    let access = DescendantGraphAccess::Local(db.node.as_ref());
+    let later =
+        resolve_session_descendant_graph(access, &DescendantQuery::direct("later-user-turn"))
+            .await
+            .unwrap();
+    assert_eq!(later.edges.len(), 1);
+    assert_eq!(later.edges[0].immediate_parent_request_id, root_id);
+    assert!(later.edges[0].controllable());
+    let listed = gents::__test_internals::handle_list_subagents(
+        db.node.as_ref(),
+        "later-user-turn",
+        serde_json::from_value(serde_json::json!({"status":"all"})).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(listed.entries.len(), 1);
+    assert!(gents::__test_internals::handle_read_subagent(
+        db.node.as_ref(),
+        "later-user-turn",
+        serde_json::from_value(serde_json::json!({"child_request_id":"request-worker"})).unwrap()
+    )
+    .await
+    .unwrap()
+    .is_some());
+    assert!(matches!(
+        gents::__test_internals::load_steer_subagent_target(
+            db.node.as_ref(),
+            "later-user-turn",
+            "request-worker"
+        )
+        .await
+        .unwrap(),
+        gents::__test_internals::SteerSubagentTarget::Found(_)
+    ));
+
+    for (id, session, agent, requester) in [
+        ("other-session", "foreign", root_did, None),
+        ("other-agent", root_session, "did:test:foreign", None),
+        (
+            "other-requester",
+            root_session,
+            root_did,
+            Some("did:test:foreign"),
+        ),
+        ("blank-requester", root_session, root_did, Some("")),
+    ] {
+        create_request_with_requester(db.node.as_ref(), id, session, agent, "default", requester)
+            .await;
+        assert!(
+            resolve_session_descendant_graph(access, &DescendantQuery::all(id))
+                .await
+                .unwrap()
+                .edges
+                .is_empty()
+        );
+        assert!(
+            resolve_session_descendant_edge(access, id, "request-worker")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     let worker_session = materialized.edges[0]
         .child_session_id
         .clone()
@@ -311,6 +401,75 @@ async fn canonical_graph_preserves_pending_remote_terminal_nested_and_paging_edg
     .await
     .unwrap();
     assert_eq!(second.edges[0].child_request_id, "request-reviewer");
+    let later_nested =
+        resolve_session_descendant_edge(access, "later-user-turn", "request-reviewer")
+            .await
+            .unwrap()
+            .unwrap();
+    assert!(later_nested.readable());
+    assert!(
+        !later_nested.controllable(),
+        "session access does not grant ancestor control"
+    );
+    let later_all =
+        resolve_session_descendant_graph(access, &DescendantQuery::all("later-user-turn"))
+            .await
+            .unwrap();
+    assert_eq!(later_all.edges.len(), 2);
+
+    // A later turn can spawn another child: enumeration is the union of the
+    // owning requests, with a stable cursor that survives a new user turn.
+    let later_doc = crate::support::exact_request_doc_id(db.node.as_ref(), "later-user-turn").await;
+    let mut later_bridge = ToolCallLifecycle::new_subagent(
+        db.node.clone(),
+        "later-user-turn".into(),
+        root_session.into(),
+        root_did.into(),
+        "later-worker-call".into(),
+        1,
+        "spawn_subagent".into(),
+        r#"{"name":"later-worker"}"#.into(),
+        deadline,
+        AwaitMode::Background,
+        CancelPolicy::Cascade,
+        "later-child".into(),
+        root_did.into(),
+    )
+    .with_request_doc_id(Some(later_doc));
+    later_bridge.start_running().await.unwrap();
+    create_request(
+        db.node.as_ref(),
+        "third-user-turn",
+        root_session,
+        root_did,
+        "default",
+    )
+    .await;
+    let page1 = resolve_session_descendant_graph(
+        access,
+        &DescendantQuery {
+            limit: 1,
+            ..DescendantQuery::all("later-user-turn")
+        },
+    )
+    .await
+    .unwrap();
+    let page2 = resolve_session_descendant_graph(
+        access,
+        &DescendantQuery {
+            after: page1.next_cursor.clone(),
+            limit: 100,
+            ..DescendantQuery::all("third-user-turn")
+        },
+    )
+    .await
+    .unwrap();
+    assert!(page1.has_more);
+    assert_eq!(page1.edges.len() + page2.edges.len(), 3);
+    assert!(page2
+        .edges
+        .iter()
+        .all(|edge| edge.cursor != page1.edges[0].cursor));
 }
 
 #[tokio::test]

@@ -1,0 +1,10 @@
+type PortReconAudit {
+  run_id: String @index(unique: true) @immutable
+  status: String @immutable
+  surface_count: String @immutable
+  required_areas: String @immutable
+  missing_areas: String @immutable
+  repository_id: String @immutable
+  base_sha: String @immutable
+  summary: String @immutable
+}

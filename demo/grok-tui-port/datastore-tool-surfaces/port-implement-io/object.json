@@ -1,0 +1,43 @@
+{
+  "surface_id": "port-implement-io",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Implement: read surfaces, write implementation receipt",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_port_work_unit",
+      "collection": "PortWorkUnit",
+      "description": "Load the work unit bound to this workspace.",
+      "fields": ["work_unit_id", "logical_unit_id", "surface_ids", "area", "verdict", "status", "attempt", "title", "instructions", "owned_paths", "grok_call_sites", "grok_wire", "gents_docs", "live_prompt", "live_expect", "evidence", "repository_id", "base_sha", "branch", "prior_work_unit_id", "repair_context", "prior_diff", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_surface",
+      "collection": "PortSurface",
+      "description": "Load mapped surfaces so the implementer can target Grok call sites, not Codex files.",
+      "fields": ["surface_id", "area", "verdict", "grok_call_sites", "grok_wire", "grok_wire_continuation", "gents_docs", "live_prompt", "live_expect", "evidence"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_port_implementation",
+      "collection": "PortImplementation",
+      "description": "Close one implementation attempt with the paths and tests that landed in the bound workspace.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "implementation_id", "required": true},
+        {"name": "work_unit_id", "required": true},
+        {"name": "logical_unit_id", "required": true},
+        {"name": "surface_ids", "required": true},
+        {"name": "attempt", "required": true},
+        {"name": "workspace_id", "required": false, "fill": {"source_field": "workspace_id"}},
+        {"name": "changed_paths", "required": true},
+        {"name": "tests_run", "required": true},
+        {"name": "summary", "required": true},
+        {"name": "expected_total", "required": true}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+type PortSurface {
+  run_id: String @index @immutable
+  surface_id: String @index(unique: true) @immutable
+  area: String @immutable
+  verdict: String @immutable
+  grok_call_sites: String @immutable
+  grok_wire: String @immutable
+  grok_wire_continuation: String @immutable
+  gents_docs: String @immutable
+  live_prompt: String @immutable
+  live_expect: String @immutable
+  evidence: String @immutable
+  repository_id: String @immutable
+  base_sha: String @immutable
+  expected_total: String @immutable
+}

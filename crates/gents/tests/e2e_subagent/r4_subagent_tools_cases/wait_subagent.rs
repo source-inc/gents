@@ -492,6 +492,15 @@ async fn corrupt_materialized_child_is_nonretryable_and_remains_listed() {
 
 #[tokio::test]
 async fn wait_subagent_from_resumed_hook_cascades_parent_interrupt() {
+    assert_resumed_wait_cascades_callers_interrupt(false).await;
+}
+
+#[tokio::test]
+async fn wait_subagent_from_later_turn_observes_current_callers_interrupt() {
+    assert_resumed_wait_cascades_callers_interrupt(true).await;
+}
+
+async fn assert_resumed_wait_cascades_callers_interrupt(later_turn: bool) {
     let fixture = setup_spawn_fixture(
         "wait_subagent_resumed_interrupt",
         vec![CHILD_BEHAVIOR_ID],
@@ -527,6 +536,23 @@ async fn wait_subagent_from_resumed_hook_cascades_parent_interrupt() {
         .to_string();
     wait_for_child_session_id(db.node.as_ref(), &child_request_id).await;
 
+    let waiting_request_id = if later_turn {
+        update_request_state(db.node.as_ref(), &request_id, "completed").await;
+        let caller = "later-waiting-request".to_owned();
+        create_parent_request(
+            db.node.as_ref(),
+            &agent_did,
+            &caller,
+            &session_id,
+            0,
+            parent_deadline,
+        )
+        .await;
+        caller
+    } else {
+        request_id.clone()
+    };
+
     let resumed_hook = DefraSessionHook::resume_with_identity_policy(
         db.node.clone(),
         &session_id,
@@ -537,7 +563,7 @@ async fn wait_subagent_from_resumed_hook_cascades_parent_interrupt() {
     .await
     .unwrap();
     resumed_hook
-        .set_active_request_lineage(Some(request_id.clone()), None)
+        .set_active_request_lineage(Some(waiting_request_id.clone()), None)
         .await
         .expect("bind persisted request lineage");
     resumed_hook
@@ -569,7 +595,7 @@ async fn wait_subagent_from_resumed_hook_cascades_parent_interrupt() {
         Some("foreground")
     );
 
-    interrupt_request(db.node.as_ref(), &request_id)
+    interrupt_request(db.node.as_ref(), &waiting_request_id)
         .await
         .unwrap();
 
@@ -595,6 +621,15 @@ async fn wait_subagent_from_resumed_hook_cascades_parent_interrupt() {
         child_interrupt.is_some(),
         "wait_subagent cancellation should cascade to the child request"
     );
+    if later_turn {
+        assert!(
+            fetch_interrupt_requested_at(db.node.as_ref(), &request_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "the original spawning request was never interrupted"
+        );
+    }
     assert_eq!(
         count_tool_calls_by_name(db.node.as_ref(), &session_id, "wait_subagent").await,
         0

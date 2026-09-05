@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
+mod context_details;
+pub use context_details::{load_session_context_details, SessionContextDetails};
+
 use crate::llm::tool::ToolDefinition;
 use crate::llm::tool::{Tool, ToolDyn};
 use anyhow::{anyhow, bail, Context, Result};
@@ -100,7 +103,160 @@ pub struct SessionTokenUsage {
     pub fresh_input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub charged_tokens: Option<u64>,
+    /// Sum of observed provider execution durations, excluding queue time.
+    /// None if any call lacks a valid closed interval.
+    #[serde(default)]
+    pub api_duration_ms: Option<u64>,
     pub incomplete: bool,
+}
+
+/// Read-only accounting for one exact session/principal/requester scope.
+/// Context occupancy and cumulative inference usage are distinct quantities.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionInferenceObservation {
+    pub token_usage: SessionTokenUsage,
+    /// Distinct main-loop rounds, excluding summarizer calls and retry
+    /// attempts. None when an inference lacks its dispatch coordinate.
+    pub inference_turns: Option<u64>,
+    pub latest_context: Option<super::context_budget::LastRequestContextSnapshot>,
+    pub latest_completion_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RequestContextObservation {
+    pub context: super::context_budget::LastRequestContextSnapshot,
+    pub completion_tokens: Option<u64>,
+}
+
+/// Bounded live observation. Unlike the session rollup, this reads only the
+/// newest inference call of one physically resolved, exactly scoped request.
+pub async fn load_request_context_observation(
+    node: &EmbeddedNode,
+    agent_did: &str,
+    requester_did: Option<&str>,
+    session_id: &str,
+    request_id: &str,
+) -> Result<Option<RequestContextObservation>> {
+    anyhow::ensure!(
+        !agent_did.trim().is_empty()
+            && !session_id.trim().is_empty()
+            && !request_id.trim().is_empty(),
+        "request accounting requires a principal, session, and request"
+    );
+    let requester = requester_did
+        .map(|did| format!(r#""{}""#, escape_graphql_string(did)))
+        .unwrap_or_else(|| "null".into());
+    let response = node.execute(&format!(r#"{{ AgentRequest(filter: {{
+        request_id: {{_eq: "{}"}}, session_id: {{_eq: "{}"}}, agent_did: {{_eq: "{}"}}, requester_did: {{_eq: {requester}}}
+    }}, limit: 2) {{_docID request_id}} }}"#, escape_graphql_string(request_id), escape_graphql_string(session_id), escape_graphql_string(agent_did))).await;
+    crate::graphql::ensure_no_errors(&response, "context request ownership")?;
+    let requests: Vec<AgentRequestRow> = serde_json::from_value(
+        response
+            .data
+            .as_ref()
+            .and_then(|v| v.get("AgentRequest"))
+            .cloned()
+            .context("missing context owner rows")?,
+    )?;
+    let owner = match requests.as_slice() {
+        [] => return Ok(None),
+        [owner] => owner,
+        _ => bail!("ambiguous context request identity"),
+    };
+    let doc = clean(owner.doc_id.as_ref()).context("context request lacks physical identity")?;
+    let response = node
+        .execute(&format!(
+            r#"{{ InferenceCall(filter: {{
+        agent_did: {{_eq: "{}"}}, request_doc_id: {{_eq: "{}"}}, call_kind: {{_eq: "inference"}}
+    }}, order: [{{queued_at: DESC}}, {{call_seq: DESC}}, {{call_id: DESC}}], limit: 1) {{
+        {INFERENCE_DETAIL_FIELDS}
+    }} }}"#,
+            escape_graphql_string(agent_did),
+            escape_graphql_string(&doc)
+        ))
+        .await;
+    crate::graphql::ensure_no_errors(&response, "live context observation")?;
+    let calls: InvestigationCallsEnvelope =
+        decode(response.data.as_ref(), "live context observation")?;
+    Ok(
+        latest_context_from_detail_rows(&calls.inference_calls)?.map(|context| {
+            RequestContextObservation {
+                context,
+                completion_tokens: calls
+                    .inference_calls
+                    .first()
+                    .and_then(|row| row.completion_tokens)
+                    .and_then(|tokens| u64::try_from(tokens).ok()),
+            }
+        }),
+    )
+}
+
+/// The caller supplies an already-authorized session scope. Physical request
+/// document IDs, not logical request aliases, fence every inference read.
+/// Missing requester is an exact null identity, never a wildcard.
+pub async fn load_session_inference_observation(
+    node: &EmbeddedNode,
+    agent_did: &str,
+    requester_did: Option<&str>,
+    session_id: &str,
+) -> Result<SessionInferenceObservation> {
+    anyhow::ensure!(
+        !agent_did.trim().is_empty() && !session_id.trim().is_empty(),
+        "session accounting requires a principal and session"
+    );
+    let requester = requester_did
+        .map(|did| format!(r#""{}""#, escape_graphql_string(did)))
+        .unwrap_or_else(|| "null".into());
+    let response = node
+        .execute(&format!(
+            r#"{{ AgentRequest(filter: {{
+        agent_did: {{_eq: "{}"}}, session_id: {{_eq: "{}"}}, requester_did: {{_eq: {requester}}}
+    }}) {{_docID request_id}} }}"#,
+            escape_graphql_string(agent_did),
+            escape_graphql_string(session_id)
+        ))
+        .await;
+    crate::graphql::ensure_no_errors(&response, "session accounting ownership")?;
+    let requests: Vec<AgentRequestRow> = serde_json::from_value(
+        response
+            .data
+            .as_ref()
+            .and_then(|v| v.get("AgentRequest"))
+            .cloned()
+            .context("missing accounting request rows")?,
+    )?;
+    let ids = requests
+        .iter()
+        .map(|request| {
+            clean(request.doc_id.as_ref()).context("accounting request lacks physical identity")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut rows = Vec::new();
+    // Bounded predicates, without truncating session history or ever
+    // interpolating an empty list literal into a database operation.
+    for batch in ids.chunks(128) {
+        let response = node
+            .execute(&session_investigation_calls_query(agent_did, batch))
+            .await;
+        crate::graphql::ensure_no_errors(&response, "session inference observations")?;
+        let calls: InvestigationCallsEnvelope =
+            decode(response.data.as_ref(), "session inference observations")?;
+        rows.extend(calls.inference_calls);
+    }
+    let latest_context = latest_context_from_detail_rows(&rows)?;
+    let latest_completion_tokens = latest_context.as_ref().and_then(|context| {
+        rows.iter()
+            .find(|row| row.call_id == context.call_id)
+            .and_then(|row| row.completion_tokens)
+            .and_then(|tokens| u64::try_from(tokens).ok())
+    });
+    Ok(SessionInferenceObservation {
+        token_usage: aggregate_inference_usage(&rows)?,
+        inference_turns: inference_turns(&rows)?,
+        latest_context,
+        latest_completion_tokens,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -212,6 +368,14 @@ struct ToolCallDetailRow {
 
 #[derive(Debug, Clone, Deserialize)]
 struct InferenceDetailRow {
+    #[serde(default)]
+    started_at: Option<String>,
+    #[serde(default)]
+    ended_at: Option<String>,
+    #[serde(default)]
+    request_doc_id: Option<String>,
+    #[serde(default)]
+    call_kind: Option<String>,
     #[serde(default)]
     request_id: String,
     #[serde(default)]
@@ -531,6 +695,8 @@ fn session_investigation_query(agent_did: &str, session_id: &str) -> String {
     )
 }
 
+const INFERENCE_DETAIL_FIELDS: &str = "request_doc_id request_id call_id call_seq queued_at started_at ended_at prompt_tokens call_kind completion_tokens cached_input_tokens context_accounting_json";
+
 fn session_investigation_calls_query(agent_did: &str, request_doc_ids: &[String]) -> String {
     let agent_did = escape_graphql_string(agent_did);
     let request_doc_ids = quoted_graphql_list(request_doc_ids);
@@ -543,14 +709,7 @@ fn session_investigation_calls_query(agent_did: &str, request_doc_ids: &[String]
                 ] }},
                 order: {{ queued_at: ASC }}
             ) {{
-                request_id
-                call_id
-                call_seq
-                queued_at
-                prompt_tokens
-                completion_tokens
-                cached_input_tokens
-                context_accounting_json
+                {INFERENCE_DETAIL_FIELDS}
             }}
             AgentRequest(
                 filter: {{ caused_by_parent_request_doc_id: {{ _in: [{request_doc_ids}] }} }},
@@ -627,50 +786,7 @@ fn build_session_investigation(
             .saturating_add(call.latency_ms.unwrap_or_default().max(0));
     }
 
-    let model_calls = calls.inference_calls.len() as i64;
-    let valid_usage_rows = calls
-        .inference_calls
-        .iter()
-        .filter(|call| match (call.prompt_tokens, call.completion_tokens) {
-            (Some(prompt), Some(completion)) if prompt >= 0 && completion >= 0 => call
-                .cached_input_tokens
-                .is_some_and(|cached| cached >= 0 && cached <= prompt),
-            _ => false,
-        })
-        .collect::<Vec<_>>();
-    let calls_with_usage = valid_usage_rows.len() as i64;
-    let calls_missing_usage = model_calls.saturating_sub(calls_with_usage);
-    let (input_tokens, output_tokens, cached_input_tokens) =
-        crate::provider_usage::sum_persisted_usage_columns(valid_usage_rows.iter().map(|call| {
-            (
-                call.prompt_tokens,
-                call.completion_tokens,
-                call.cached_input_tokens,
-            )
-        }));
-    let fresh_input_tokens =
-        input_tokens.map(|input| input.saturating_sub(cached_input_tokens.unwrap_or_default()));
-    let charged_tokens = if calls_missing_usage == 0 {
-        Some(crate::provider_usage::sum_charged_from_persisted_parts(
-            valid_usage_rows
-                .iter()
-                .map(|call| (call.prompt_tokens, call.completion_tokens)),
-        )?)
-    } else {
-        None
-    };
-    let token_usage = SessionTokenUsage {
-        model_calls,
-        calls_with_usage,
-        calls_missing_usage,
-        input_tokens,
-        cached_input_tokens,
-        fresh_input_tokens,
-        output_tokens,
-        charged_tokens,
-        incomplete: calls_missing_usage > 0,
-    };
-
+    let token_usage = aggregate_inference_usage(&calls.inference_calls)?;
     let latest_context = latest_context_from_detail_rows(&calls.inference_calls)?;
     let mut compactions = envelope
         .compactions
@@ -720,6 +836,89 @@ fn build_session_investigation(
     })
 }
 
+fn inference_turns(rows: &[InferenceDetailRow]) -> Result<Option<u64>> {
+    let mut turns = BTreeSet::new();
+    for row in rows {
+        match row.call_kind.as_deref() {
+            Some("inference") => {}
+            Some("compaction" | "oneoff") => continue,
+            // Legacy or unknown kinds cannot establish a known turn count.
+            _ => return Ok(None),
+        }
+        let Some(request_doc_id) = row.request_doc_id.as_deref().filter(|id| !id.is_empty()) else {
+            return Ok(None);
+        };
+        let Some(encoded) = row
+            .context_accounting_json
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            return Ok(None);
+        };
+        let accounting: gents_protocol::rendered_request::ContextAccounting =
+            serde_json::from_str(encoded)
+                .with_context(|| format!("decoding turn coordinate for call {}", row.call_id))?;
+        turns.insert((request_doc_id, accounting.turn_index));
+    }
+    Ok(Some(turns.len() as u64))
+}
+
+fn aggregate_inference_usage(rows: &[InferenceDetailRow]) -> Result<SessionTokenUsage> {
+    let api_duration_ms = rows.iter().try_fold(0_u64, |total, row| {
+        let started = chrono::DateTime::parse_from_rfc3339(row.started_at.as_deref()?).ok()?;
+        let ended = chrono::DateTime::parse_from_rfc3339(row.ended_at.as_deref()?).ok()?;
+        if ended < started {
+            return None;
+        }
+        let duration =
+            u64::try_from(ended.signed_duration_since(started).num_milliseconds()).ok()?;
+        total.checked_add(duration)
+    });
+    let model_calls = rows.len() as i64;
+    let valid_usage_rows = rows
+        .iter()
+        .filter(|call| match (call.prompt_tokens, call.completion_tokens) {
+            (Some(prompt), Some(completion)) if prompt >= 0 && completion >= 0 => call
+                .cached_input_tokens
+                .is_some_and(|cached| cached >= 0 && cached <= prompt),
+            _ => false,
+        })
+        .collect::<Vec<_>>();
+    let calls_with_usage = valid_usage_rows.len() as i64;
+    let calls_missing_usage = model_calls.saturating_sub(calls_with_usage);
+    let (input_tokens, output_tokens, cached_input_tokens) =
+        crate::provider_usage::sum_persisted_usage_columns(valid_usage_rows.iter().map(|call| {
+            (
+                call.prompt_tokens,
+                call.completion_tokens,
+                call.cached_input_tokens,
+            )
+        }));
+    let fresh_input_tokens =
+        input_tokens.map(|input| input.saturating_sub(cached_input_tokens.unwrap_or_default()));
+    let charged_tokens = if calls_missing_usage == 0 {
+        Some(crate::provider_usage::sum_charged_from_persisted_parts(
+            valid_usage_rows
+                .iter()
+                .map(|call| (call.prompt_tokens, call.completion_tokens)),
+        )?)
+    } else {
+        None
+    };
+    Ok(SessionTokenUsage {
+        model_calls,
+        calls_with_usage,
+        calls_missing_usage,
+        input_tokens,
+        cached_input_tokens,
+        fresh_input_tokens,
+        output_tokens,
+        charged_tokens,
+        api_duration_ms,
+        incomplete: calls_missing_usage > 0,
+    })
+}
+
 fn compaction_event(scope: &str, row: CompactionRow) -> SessionCompactionEvent {
     SessionCompactionEvent {
         scope: scope.to_string(),
@@ -737,6 +936,7 @@ fn latest_context_from_detail_rows(
 ) -> Result<Option<super::context_budget::LastRequestContextSnapshot>> {
     let Some(row) = rows
         .iter()
+        .filter(|row| row.call_kind.as_deref() == Some("inference"))
         .filter(|row| {
             row.context_accounting_json
                 .as_deref()
@@ -1038,6 +1238,84 @@ mod tests {
     use super::*;
 
     #[test]
+    fn usage_duration_requires_valid_provider_intervals_and_excludes_queue_time() {
+        let row: InferenceDetailRow = serde_json::from_value(json!({
+            "queued_at":"2026-09-01T12:00:00Z",
+            "started_at":"2026-09-01T12:00:10Z",
+            "ended_at":"2026-09-01T12:00:11.250Z"
+        }))
+        .unwrap();
+        assert_eq!(
+            aggregate_inference_usage(&[row.clone(), row.clone()])
+                .unwrap()
+                .api_duration_ms,
+            Some(2500)
+        );
+        let mut invalid = row.clone();
+        invalid.ended_at = Some("2026-09-01T12:00:09Z".into());
+        assert_eq!(
+            aggregate_inference_usage(&[invalid])
+                .unwrap()
+                .api_duration_ms,
+            None
+        );
+        let mut missing = row;
+        missing.ended_at = None;
+        assert_eq!(
+            aggregate_inference_usage(&[missing])
+                .unwrap()
+                .api_duration_ms,
+            None
+        );
+        assert_eq!(
+            aggregate_inference_usage(&[]).unwrap().api_duration_ms,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn inference_rounds_deduplicate_retries_by_physical_owner_not_logical_alias() {
+        let accounting = json!({
+            "accounting_version":1, "turn_index":2, "attempt":0,
+            "estimator":"test", "components":{
+                "messages":100, "tool_schemas":0, "documents":0,
+                "additional_parameters":0, "output_schema":0},
+            "estimated_input_tokens":100, "context_window":2000,
+            "compaction_threshold_basis_points":7500, "compaction_threshold_tokens":1500,
+            "compaction_reason":"below_threshold"
+        });
+        let first: InferenceDetailRow = serde_json::from_value(json!({
+            "request_doc_id":"physical-a", "request_id":"shared-alias",
+            "call_id":"first", "call_kind":"inference",
+            "context_accounting_json":accounting.to_string()
+        }))
+        .unwrap();
+        let mut retry = first.clone();
+        retry.call_id = "retry".into();
+        let mut retry_accounting = accounting.clone();
+        retry_accounting["attempt"] = json!(1);
+        retry.context_accounting_json = Some(retry_accounting.to_string());
+        let mut other = first.clone();
+        other.request_doc_id = Some("physical-b".into());
+        let mut compact = first.clone();
+        compact.call_kind = Some("compaction".into());
+        compact.context_accounting_json = None;
+        let mut oneoff = compact.clone();
+        oneoff.call_kind = Some("oneoff".into());
+        assert_eq!(
+            inference_turns(&[first.clone(), retry, other, compact, oneoff]).unwrap(),
+            Some(2)
+        );
+        let mut missing = first.clone();
+        missing.request_doc_id = None;
+        assert_eq!(inference_turns(&[missing]).unwrap(), None);
+        let mut unknown = first;
+        unknown.call_kind = None;
+        assert_eq!(inference_turns(&[unknown]).unwrap(), None);
+        assert_eq!(inference_turns(&[]).unwrap(), Some(0));
+    }
+
+    #[test]
     fn clamp_limit_honors_large_requests_up_to_the_backstop() {
         // Unset → default.
         assert_eq!(clamp_limit(None), DEFAULT_LIMIT);
@@ -1271,6 +1549,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn captured_context_details_require_exact_owner_and_admission_identity() {
+        let node = seeded_node().await;
+        let mut context =
+            load_session_inference_observation(&node, "did:key:z-sessions", None, "session-a")
+                .await
+                .unwrap()
+                .latest_context
+                .unwrap();
+        context.accounting.estimator = "openai_chat_wire_json_bytes_div_4_v1".into();
+        context.accounting.components.documents = 0;
+        let body = json!({"messages":[{"role":"system","content":"private system"},{"role":"user","content":"hello"}],"tools":[{"type":"function"}]});
+        context.accounting.components.messages =
+            crate::provider_input::estimate_json(&body["messages"]).unwrap();
+        let owner = node
+            .execute(r#"{AgentRequest(filter:{request_id:{_eq:"request-a-new"}}){_docID}}"#)
+            .await;
+        let doc = owner.data.as_ref().unwrap()["AgentRequest"][0]["_docID"]
+            .as_str()
+            .unwrap();
+        let mutation = format!(
+            r#"mutation {{create_RenderedRequest(input: {{
+            capture_key:"context-details", request_doc_id:"{}", request_id:"misleading-alias",
+            agent_did:"did:key:z-sessions", session_id:"session-a", capture_scope:"inference.1",
+            turn_index:{}, attempt:{}, capture_version:1, source:"openai_chat_completions",
+            request_json:"{}", provenance_json:"{}"
+        }}) {{_docID}}}}"#,
+            escape_graphql_string(doc),
+            context.accounting.turn_index,
+            context.accounting.attempt,
+            escape_graphql_string(&body.to_string()),
+            escape_graphql_string(&json!({"admission":{"call_id":context.call_id}}).to_string())
+        );
+        let inserted = node.execute(&mutation).await;
+        assert!(!inserted.has_errors(), "{:?}", inserted.errors);
+        let details =
+            load_session_context_details(&node, "did:key:z-sessions", None, "session-a", &context)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(details.tool_definitions_count, 1);
+        assert_eq!(details.message_count, 1);
+        assert!(details.system_prompt_tokens > 0);
+        for (agent, requester, session) in [
+            ("did:key:foreign", None, "session-a"),
+            ("did:key:z-sessions", Some("did:key:foreign"), "session-a"),
+            ("did:key:z-sessions", None, "session-b"),
+        ] {
+            assert!(
+                load_session_context_details(&node, agent, requester, session, &context)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        context.call_id = "foreign-call".into();
+        assert!(load_session_context_details(
+            &node,
+            "did:key:z-sessions",
+            None,
+            "session-a",
+            &context
+        )
+        .await
+        .unwrap()
+        .is_none());
+    }
+
+    #[tokio::test]
     async fn session_history_snapshot_reports_recent_agent_sessions() {
         let node = seeded_node().await;
 
@@ -1348,6 +1694,164 @@ mod tests {
         assert_eq!(row["session_status"], "open");
         assert_eq!(row["latest_request_lifecycle_state"], "completed");
         assert!(row.get("status").is_none());
+    }
+
+    #[tokio::test]
+    async fn ui_accounting_separates_compaction_usage_from_current_context() {
+        let node = seeded_node().await;
+        let before =
+            load_session_inference_observation(&node, "did:key:z-sessions", None, "session-a")
+                .await
+                .unwrap();
+        let response = node
+            .execute(r#"{ AgentRequest(filter: {request_id: {_eq: "request-a-new"}}) {_docID} }"#)
+            .await;
+        let doc = response.data.as_ref().unwrap()["AgentRequest"][0]["_docID"]
+            .as_str()
+            .unwrap();
+        for (id, kind, input, sequence) in [
+            ("summarizer", "compaction", 9000, 2),
+            ("reduced", "inference", 250, 3),
+        ] {
+            let mut accounting = before.latest_context.as_ref().unwrap().accounting.clone();
+            accounting.estimated_input_tokens = input;
+            let encoded = escape_graphql_string(&serde_json::to_string(&accounting).unwrap());
+            let response = node.execute(&format!(r#"mutation {{ create_InferenceCall(input: {{
+                call_id: "{id}", call_kind: "{kind}", call_seq: {sequence}, request_id: "request-a-new",
+                request_doc_id: "{}", agent_did: "did:key:z-sessions", queued_at: "2026-06-04T12:00:00Z",
+                prompt_tokens: 10, completion_tokens: 5, cached_input_tokens: 0, context_accounting_json: "{encoded}"
+            }}) {{_docID}} }}"#, escape_graphql_string(doc))).await;
+            crate::graphql::ensure_no_errors(&response, "context generation fixture").unwrap();
+            let observed =
+                load_session_inference_observation(&node, "did:key:z-sessions", None, "session-a")
+                    .await
+                    .unwrap();
+            assert_eq!(
+                observed
+                    .latest_context
+                    .as_ref()
+                    .unwrap()
+                    .accounting
+                    .estimated_input_tokens,
+                if kind == "compaction" { 650 } else { 250 }
+            );
+            assert!(observed.token_usage.charged_tokens > before.token_usage.charged_tokens);
+        }
+    }
+
+    #[tokio::test]
+    async fn ui_accounting_uses_exact_requester_and_physical_request_ownership() {
+        let node = seeded_node().await;
+        for (agent, session, request) in [
+            (" ", "session-a", "request-a-new"),
+            ("did:key:z-sessions", "", "request-a-new"),
+            ("did:key:z-sessions", "session-a", "\t"),
+        ] {
+            assert!(
+                load_request_context_observation(&node, agent, None, session, request)
+                    .await
+                    .is_err()
+            );
+        }
+        let baseline =
+            load_session_inference_observation(&node, "did:key:z-sessions", None, "session-a")
+                .await
+                .unwrap();
+        assert_eq!(baseline.token_usage.input_tokens, Some(100));
+        assert_eq!(
+            baseline
+                .latest_context
+                .as_ref()
+                .unwrap()
+                .accounting
+                .estimated_input_tokens,
+            650
+        );
+        assert_eq!(baseline.latest_completion_tokens, Some(20));
+        assert_eq!(baseline.inference_turns, Some(1));
+        let live = load_request_context_observation(
+            &node,
+            "did:key:z-sessions",
+            None,
+            "session-a",
+            "request-a-new",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(live.context, baseline.latest_context.clone().unwrap());
+        assert_eq!(live.completion_tokens, Some(20));
+        assert!(load_request_context_observation(
+            &node,
+            "did:key:z-sessions",
+            Some("not-an-owner"),
+            "session-a",
+            "request-a-new"
+        )
+        .await
+        .unwrap()
+        .is_none());
+
+        let response = node.execute(r#"mutation { create_AgentRequest(input: {
+            request_id: "foreign-requester", agent_did: "did:key:z-sessions", session_id: "session-a",
+            requester_did: "did:foreign", lifecycle_state: "completed"
+        }) {_docID} }"#).await;
+        crate::graphql::ensure_no_errors(&response, "foreign requester fixture").unwrap();
+        let response = node
+            .execute(
+                r#"{ AgentRequest(filter: {request_id: {_eq: "foreign-requester"}}) {_docID} }"#,
+            )
+            .await;
+        let doc = response.data.as_ref().unwrap()["AgentRequest"][0]["_docID"]
+            .as_str()
+            .unwrap();
+        // Deliberately reuse an authorized logical alias: only the physical
+        // owner may contribute this call to usage.
+        let response = node.execute(&format!(r#"mutation {{ create_InferenceCall(input: {{
+            call_id: "foreign-usage", call_seq: 1, call_kind: "inference", agent_did: "did:key:z-sessions", request_id: "request-a-new",
+            request_doc_id: "{}", prompt_tokens: 9000, completion_tokens: 1000, cached_input_tokens: 0,
+            queued_at: "2026-06-04T12:00:00Z"
+        }}) {{_docID}} }}"#, escape_graphql_string(doc))).await;
+        crate::graphql::ensure_no_errors(&response, "foreign usage fixture").unwrap();
+        assert_eq!(
+            load_session_inference_observation(&node, "did:key:z-sessions", None, "session-a")
+                .await
+                .unwrap(),
+            baseline
+        );
+        assert_eq!(
+            load_request_context_observation(
+                &node,
+                "did:key:z-sessions",
+                None,
+                "session-a",
+                "request-a-new"
+            )
+            .await
+            .unwrap()
+            .unwrap(),
+            live
+        );
+        let foreign = load_session_inference_observation(
+            &node,
+            "did:key:z-sessions",
+            Some("did:foreign"),
+            "session-a",
+        )
+        .await
+        .unwrap();
+        assert_eq!(foreign.token_usage.input_tokens, Some(9000));
+        assert!(foreign.latest_context.is_none());
+        let absent = load_session_inference_observation(
+            &node,
+            "did:key:z-sessions",
+            Some("not-an-owner"),
+            "session-a",
+        )
+        .await
+        .unwrap();
+        assert_eq!(absent.token_usage.model_calls, 0);
+        assert!(absent.latest_context.is_none());
     }
 
     #[tokio::test]

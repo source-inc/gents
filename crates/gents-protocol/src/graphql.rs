@@ -902,7 +902,11 @@ fn retryable_graphql_error_message(value: &serde_json::Value) -> Option<String> 
     retryable_graphql_error_text(&rendered).then_some(rendered)
 }
 
-fn retryable_graphql_error_text(message: &str) -> bool {
+/// Whether GraphQL/DefraDB error text describes a retryable store conflict.
+///
+/// This is intentionally case-insensitive and is shared with callers that
+/// must reconcile an ambiguous mutation before retrying it themselves.
+pub fn retryable_graphql_error_text(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("transaction conflict")
         || message.contains("please retry")
@@ -922,6 +926,20 @@ fn graphql_transport_error_is_retryable(error: &reqwest::Error) -> bool {
         || message.contains("unexpected eof")
         || message.contains("end of file before message length reached")
         || message.contains("error decoding response body")
+}
+
+/// Whether an anyhow error, including any wrapped cause, is retryable under
+/// the canonical GraphQL transport and DefraDB-conflict policy.
+///
+/// Inspecting the full cause chain matters because callers normally attach
+/// endpoint/operation context above the original `reqwest::Error`.
+pub fn graphql_error_is_retryable(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(graphql_transport_error_is_retryable)
+            || retryable_graphql_error_text(&cause.to_string())
+    })
 }
 
 fn scale_backoff(base: Duration, attempt: usize) -> Duration {
@@ -1264,10 +1282,21 @@ mod tx_tests {
     #[test]
     fn retryable_graphql_error_text_matches_store_conflict_variants() {
         assert!(retryable_graphql_error_text("Transaction conflict"));
+        assert!(retryable_graphql_error_text(
+            "wrapped backend: PLEASE RETRY the TRANSACTION CONFLICT"
+        ));
         assert!(retryable_graphql_error_text("please retry"));
         assert!(retryable_graphql_error_text("database is locked"));
         assert!(!retryable_graphql_error_text(
             "validation error: unknown collection"
         ));
+    }
+
+    #[test]
+    fn retryable_graphql_error_walks_wrapped_cause_chain_case_insensitively() {
+        let error = anyhow::anyhow!("TRANSACTION CONFLICT")
+            .context("request submit failed")
+            .context("outer shim context");
+        assert!(graphql_error_is_retryable(&error));
     }
 }

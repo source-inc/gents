@@ -211,6 +211,130 @@ async fn server_fails_closed_when_http_port_is_occupied() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fresh_home_apply_root_precedes_grok_behavior_binding() -> Result<()> {
+    const GROK_BEHAVIOR: &str = "port-live";
+    const APPLIED_BACKEND: &str = "fresh-applied-grok-backend";
+
+    let tempdir = tempfile::tempdir().context("creating tempdir")?;
+    let home_dir = tempdir.path().join("home");
+    let root = tempdir.path().join("pack");
+    fs::create_dir_all(&home_dir)?;
+
+    let model_name = format!("mock-grok-apply-model-{}", Uuid::new_v4().simple());
+    let mock_endpoint = MockModelEndpoint::start(&model_name)?;
+    let agent_name = format!("cli-grok-apply-{}", Uuid::new_v4().simple());
+    run_init_json(
+        &home_dir,
+        &[
+            "--agent-name",
+            &agent_name,
+            "--model-name",
+            &model_name,
+            mock_endpoint.endpoint(),
+        ],
+    )?;
+
+    // Export the freshly initialized home as a self-contained pack, then add
+    // the behavior that only --apply-root can make available to this server
+    // invocation. The home itself deliberately still has no port-live row.
+    run_cli_text(
+        &home_dir,
+        &["config", "export", "--root", &root.to_string_lossy()],
+    )?;
+
+    // The applied behavior uses a backend that does not exist when the
+    // runtime's recurring prober takes its immediate startup tick. Its
+    // exported runtime-owned health fields are deliberately absent, so the
+    // post-apply path must probe and promote it before readiness can publish.
+    let backends_dir = root.join("inference-backends");
+    let existing_backend = fs::read_dir(&backends_dir)
+        .context("reading exported backend directory")?
+        .next()
+        .ok_or_else(|| anyhow!("exported pack has no backend"))??;
+    let applied_backend_dir = backends_dir.join(APPLIED_BACKEND);
+    fs::create_dir_all(&applied_backend_dir)?;
+    for entry in fs::read_dir(existing_backend.path()).context("reading exported backend")? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            fs::copy(entry.path(), applied_backend_dir.join(entry.file_name()))?;
+        }
+    }
+    let backend_path = applied_backend_dir.join("object.json");
+    let mut backend = read_json_file(&backend_path)?;
+    backend["backend_id"] = Value::String(APPLIED_BACKEND.to_string());
+    if let Some(object) = backend.as_object_mut() {
+        object.remove("probe_status");
+        object.remove("last_probe");
+    }
+    write_json_file(&backend_path, &backend)?;
+
+    let behaviors_dir = root.join("agent-behaviors");
+    let existing = fs::read_dir(&behaviors_dir)
+        .context("reading exported behavior directory")?
+        .next()
+        .ok_or_else(|| anyhow!("exported pack has no behavior"))??;
+    let grok_behavior_dir = behaviors_dir.join(GROK_BEHAVIOR);
+    fs::create_dir_all(&grok_behavior_dir)?;
+    for entry in fs::read_dir(existing.path()).context("reading exported behavior")? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            fs::copy(entry.path(), grok_behavior_dir.join(entry.file_name()))?;
+        }
+    }
+    let behavior_path = grok_behavior_dir.join("object.json");
+    let mut behavior = read_json_file(&behavior_path)?;
+    behavior["behavior_id"] = Value::String(GROK_BEHAVIOR.to_string());
+    behavior["backend_id"] = Value::String(APPLIED_BACKEND.to_string());
+    write_json_file(&behavior_path, &behavior)?;
+
+    let port = allocate_port()?;
+    let socket_path = tempdir.path().join("grok.sock");
+    let (mut serve, readiness) = spawn_server_with_ready_json(
+        &home_dir,
+        port,
+        &[
+            "--p2p-transport",
+            "none",
+            "--apply-root",
+            root.to_str().context("pack root path is not UTF-8")?,
+            "--grok-shim",
+            "--grok-shim-socket-path",
+            socket_path.to_str().context("socket path is not UTF-8")?,
+            "--grok-shim-behavior-id",
+            GROK_BEHAVIOR,
+        ],
+        &[],
+    )?;
+    wait_for_port(port, &mut serve)?;
+    let (_stdout, stderr) = serve.captured_output()?;
+
+    assert_eq!(
+        readiness.pointer("/apply_root/ok").and_then(Value::as_bool),
+        Some(true),
+        "the pack must apply before readiness: {readiness}"
+    );
+    assert_eq!(
+        readiness
+            .pointer("/grok_shim/bound")
+            .and_then(Value::as_bool),
+        Some(true),
+        "the behavior supplied by --apply-root must bind in the same invocation: {readiness}; stderr: {stderr}"
+    );
+    assert_eq!(
+        readiness
+            .pointer("/grok_shim/socket")
+            .and_then(Value::as_str),
+        socket_path.to_str()
+    );
+    assert!(
+        socket_path.exists(),
+        "the bound Grok leader must publish its socket"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_exposes_prometheus_metrics_endpoint() -> Result<()> {
     let tempdir = tempfile::tempdir().context("creating tempdir")?;
     let home_dir = tempdir.path().join("home");

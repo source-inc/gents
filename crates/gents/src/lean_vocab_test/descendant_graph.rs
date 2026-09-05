@@ -16,4 +16,9 @@ pub(crate) struct LeanDescendantGraphCase {
     pub(crate) listed_by_default: bool,
     pub(crate) controllable: bool,
     pub(crate) cursor_anchor_survives_terminal: bool,
+    pub(crate) caller_session: String,
+    pub(crate) caller_agent: String,
+    pub(crate) caller_requester: Option<String>,
+    pub(crate) session_authorized: bool,
+    pub(crate) session_controllable: bool,
 }

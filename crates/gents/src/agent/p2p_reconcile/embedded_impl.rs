@@ -1215,7 +1215,6 @@ mod tests {
         seed_agent_tool_call(&sender, "bridge-match", "did:key:host").await;
         seed_agent_tool_call(&sender, "bridge-other", "did:key:other").await;
 
-        let collections = vec!["AgentRequest".to_string(), "AgentToolCall".to_string()];
         sender_admin
             .connect(&receiver_addresses)
             .await
@@ -1223,12 +1222,37 @@ mod tests {
         wait_for_active_peer(&sender_admin).await;
         wait_for_active_peer(&receiver_admin).await;
 
+        let collections = vec!["AgentRequest".to_string(), "AgentToolCall".to_string()];
         // Receiver-side authorization mirrors the production embedded P2P setup;
-        // the data flow asserted below is still sender -> receiver.
+        // the data flow asserted below is still sender -> receiver. This is a
+        // Push topology: neither peer may subscribe to the whole collections,
+        // because collection subscriptions are an independent unfiltered
+        // gossip path that can race the filtered replicator replay.
         receiver_admin
             .add_replicator(&sender_addresses, &collections, &PairingFilters::default())
             .await
             .expect("authorize sender as receiver-side replicator");
+        assert!(
+            sender_admin
+                .list_p2p_collections()
+                .await
+                .expect("list sender P2P subscriptions")
+                .is_empty(),
+            "filtered Push sender must not subscribe to whole collections"
+        );
+        assert!(
+            receiver_admin
+                .list_p2p_collections()
+                .await
+                .expect("list receiver P2P subscriptions")
+                .is_empty(),
+            "filtered Push receiver must not subscribe to whole collections"
+        );
+
+        // Give any independently configured route a chance to replay before
+        // installing the sender filter. With the former whole-collection
+        // subscriptions this reliably admitted non-matching seeded rows.
+        tokio::time::sleep(Duration::from_millis(250)).await;
 
         let mut filters = PairingFilters::new();
         filters.insert(

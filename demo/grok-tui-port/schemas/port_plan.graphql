@@ -1,0 +1,9 @@
+type PortPlan {
+  run_id: String @index(unique: true) @immutable
+  work_unit_count: String @immutable
+  implement_count: String @immutable
+  stub_count: String @immutable
+  ignore_count: String @immutable
+  expected_total: String @immutable
+  summary: String @immutable
+}

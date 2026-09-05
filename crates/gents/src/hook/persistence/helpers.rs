@@ -99,59 +99,6 @@ pub(super) async fn wait_for_external_lifecycle_owner(
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
-struct RunningSubagentBridgeRow {
-    tool_call_id: String,
-    child_request_id: Option<String>,
-}
-
-pub(super) async fn running_subagent_bridge_ids(
-    node: &defra_node::EmbeddedNode,
-    session_id: &str,
-) -> anyhow::Result<Vec<String>> {
-    let escaped_session_id = crate::graphql::escape_graphql_string(session_id);
-    let query = format!(
-        r#"{{
-            AgentToolCall(
-                filter: {{
-                    session_id: {{ _eq: "{escaped_session_id}" }},
-                    lifecycle_state: {{ _eq: "running" }},
-                    cancel_policy: {{ _eq: "cascade" }}
-                }},
-                order: [{{ started_at: ASC }}, {{ tool_call_id: ASC }}]
-            ) {{
-                tool_call_id
-                child_request_id
-            }}
-        }}"#
-    );
-
-    let response = node.execute(&query).await;
-    if response.has_errors() {
-        anyhow::bail!(
-            "query running subagent bridges for session {session_id} failed: {:?}",
-            response.errors
-        );
-    }
-
-    let rows: Vec<RunningSubagentBridgeRow> = response
-        .data
-        .as_ref()
-        .and_then(|data| data.get("AgentToolCall"))
-        .and_then(|value| serde_json::from_value(value.clone()).ok())
-        .unwrap_or_default();
-
-    Ok(rows
-        .into_iter()
-        .filter(|row| {
-            row.child_request_id
-                .as_deref()
-                .is_some_and(|value| !value.trim().is_empty())
-        })
-        .map(|row| row.tool_call_id)
-        .collect())
-}
-
 pub(super) async fn load_stored_tool_call_result(
     node: &defra_node::EmbeddedNode,
     session_id: &str,

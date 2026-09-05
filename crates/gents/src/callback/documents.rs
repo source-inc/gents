@@ -219,6 +219,11 @@ pub struct CallbackResultDoc {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub(super) struct CallbackResultInvocationRow {
+    pub invocation_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct RepositoryPlacementRow {
     repository_id: String,
     deployment_id: String,
@@ -627,7 +632,7 @@ async fn load_callback_results_for_invocations(
             response.errors
         );
     }
-    let rows: Vec<CallbackResultDoc> = rows(&response, "CallbackResult")?;
+    let rows: Vec<CallbackResultInvocationRow> = rows(&response, "CallbackResult")?;
     Ok(rows.into_iter().map(|row| row.invocation_id).collect())
 }
 

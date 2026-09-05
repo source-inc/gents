@@ -12,7 +12,7 @@
   "command_network_mode": "disabled",
   "cli_tool_names": [],
   "enable_meta_tools": false,
-  "enable_goal_tools": false,
+  "enable_goal_tools": true,
   "enable_goal_creation": false,
   "allowed_mcp_service_ids": [],
   "enable_memory": false,

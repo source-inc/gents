@@ -1,0 +1,30 @@
+{
+  "surface_id": "port-recon-writes",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Recon: PortSurface writes",
+  "enabled": true,
+  "entries": [
+    {
+      "tool_name": "write_port_surface",
+      "collection": "PortSurface",
+      "description": "Record one Grok TUI feature surface mapped from grok-build, with a live prompt that must later pass.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1, "expected_count_field": "expected_total"},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "surface_id", "required": true},
+        {"name": "area", "required": true},
+        {"name": "verdict", "required": true},
+        {"name": "grok_call_sites", "required": true},
+        {"name": "grok_wire", "required": true},
+        {"name": "grok_wire_continuation", "required": false},
+        {"name": "gents_docs", "required": true},
+        {"name": "live_prompt", "required": true},
+        {"name": "live_expect", "required": true},
+        {"name": "evidence", "required": true},
+        {"name": "repository_id", "required": false, "fill": {"source_field": "repository_id"}},
+        {"name": "base_sha", "required": false, "fill": {"source_field": "base_sha"}},
+        {"name": "expected_total", "required": true}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "task_id": "port-publish-task",
+  "name": "port-publish-task",
+  "description": null,
+  "behavior_id": "port-publish",
+  "prompt_template": "./prompt.md",
+  "goal_objective_template": "Complete publication of the reviewed Grok TUI port run {{ event.correlation }} as an unmerged pull request and persist its receipt.",
+  "goal_token_budget": 300000,
+  "enabled": true,
+  "output_schema_ref": null
+}

@@ -1,0 +1,52 @@
+{
+  "surface_id": "port-publish-writes",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Publish one PR from the integrated trunk",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_grok_port_job",
+      "collection": "GrokPortJob",
+      "description": "Load pr_base, branch, and checkout paths for this run.",
+      "fields": ["gents_root", "pr_base", "branch", "base_sha", "live_model"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_live_report",
+      "collection": "PortLiveReport",
+      "description": "Load the live-review totals before opening a PR.",
+      "fields": ["passed_count", "failed_count", "blocked_count", "expected_count", "observed_count", "coverage_complete", "final_review_head", "summary"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_final_review_report",
+      "collection": "PortFinalReviewReport",
+      "description": "Load the exact reviewed head, rounds, and remaining findings.",
+      "fields": ["status", "review_rounds", "confirmed_findings", "head_sha", "summary"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_port_pull_request",
+      "collection": "PortPullRequest",
+      "description": "Record the GitHub PR opened from the integrated operator checkout, or skipped.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "branch", "required": true},
+        {"name": "pr_base", "required": true},
+        {"name": "status", "required": true},
+        {"name": "url", "required": true},
+        {"name": "title", "required": true},
+        {"name": "commit_count", "required": true},
+        {"name": "review_rounds", "required": true},
+        {"name": "confirmed_review_findings", "required": true},
+        {"name": "ci_status", "required": true},
+        {"name": "validation", "required": true},
+        {"name": "summary", "required": true}
+      ]
+    }
+  ]
+}

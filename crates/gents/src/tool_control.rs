@@ -15,6 +15,38 @@ pub enum CancelBackgroundToolCallOutcome {
     NotFound,
 }
 
+/// Session-principal boundary for client process controls. Keep authorization
+/// identical to the model-facing process tools; the operator API below is
+/// deliberately broader and must not be exposed directly to client IDs.
+pub async fn cancel_session_background_process(
+    node: Arc<EmbeddedNode>,
+    executions: &BackgroundExecutionRegistry,
+    agent_did: &str,
+    requester_did: Option<&str>,
+    session_id: &str,
+    tool_call_id: &str,
+) -> Result<CancelBackgroundToolCallOutcome> {
+    let Some(lifecycle) = ToolCallLifecycle::load(node.clone(), session_id, tool_call_id).await?
+    else {
+        return Ok(CancelBackgroundToolCallOutcome::NotFound);
+    };
+    let scope = crate::background_tools::ProcessControlScope {
+        request_id: String::new(),
+        session_id: session_id.into(),
+        agent_did: agent_did.into(),
+        requester_did: requester_did.map(str::to_owned),
+    };
+    if !scope.authorizes(
+        lifecycle.session_id(),
+        lifecycle.agent_did(),
+        lifecycle.requester_did(),
+    ) || lifecycle.is_subagent_bridge()
+    {
+        return Ok(CancelBackgroundToolCallOutcome::NotFound);
+    }
+    cancel_background_tool_call(node, executions, agent_did, session_id, tool_call_id).await
+}
+
 pub async fn cancel_background_tool_call(
     node: Arc<EmbeddedNode>,
     background_executions: &BackgroundExecutionRegistry,
@@ -114,10 +146,27 @@ mod tests {
         );
         lifecycle.start_running().await.unwrap();
 
-        let outcome = cancel_background_tool_call(
+        let denied = cancel_session_background_process(
             node.clone(),
             &registry,
             "did:test:test",
+            Some("foreign"),
+            "session-1",
+            "tool-1",
+        )
+        .await
+        .unwrap();
+        assert_eq!(denied, CancelBackgroundToolCallOutcome::NotFound);
+        assert!(
+            !token.is_cancelled(),
+            "unauthorized UI cancellation must not signal the worker"
+        );
+
+        let outcome = cancel_session_background_process(
+            node.clone(),
+            &registry,
+            "did:test:test",
+            None,
             "session-1",
             "tool-1",
         )

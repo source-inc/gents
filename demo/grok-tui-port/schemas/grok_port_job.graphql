@@ -1,0 +1,20 @@
+type GrokPortJob {
+  run_id: String @index(unique: true) @immutable
+  gents_root: String @immutable
+  grok_root: String @immutable
+  ceiling: String @immutable
+  focus: String @immutable
+  surface_min: String @immutable
+  surface_max: String @immutable
+  live_model: String @immutable
+  live_endpoint: String @immutable
+  orchestrator_home: String @immutable
+  orchestrator_graphql: String @immutable
+  live_home: String @immutable
+  live_graphql: String @immutable
+  live_socket: String @immutable
+  repository_id: String @immutable
+  base_sha: String @immutable
+  pr_base: String @immutable
+  branch: String @immutable
+}

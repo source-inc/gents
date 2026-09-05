@@ -1,0 +1,11 @@
+{
+  "task_id": "port-live-task",
+  "name": "port-live-task",
+  "description": null,
+  "behavior_id": "port-live",
+  "prompt_template": "./prompt.md",
+  "goal_objective_template": "Complete live Grok pager edge verification for run {{ event.correlation }} and persist every required probe result.",
+  "goal_token_budget": 500000,
+  "enabled": true,
+  "output_schema_ref": null
+}

@@ -1,0 +1,276 @@
+{
+  "name": "grok-tui-port",
+  "description": "Map the Grok TUI wire, fan out eight path-disjoint GLM writers, retry rejected seals in fresh workspaces, record host-confirmed serial integration, semantically converge, full-review, live-prove, then open a PR",
+  "init": {
+    "inference_url": "${GENTS_GROK_PORT_ENDPOINT_1:-http://127.0.0.1:8000/v1}",
+    "model_name": "${GENTS_GROK_PORT_MODEL:-GLM-5.3-Flash-NVFP4}",
+    "tool_package": "write",
+    "tool_root": "${GENTS_GROK_PORT_CEILING:-.}",
+    "tool_root_env_var": "GENTS_GROK_PORT_CEILING",
+    "tool_root_markers": ["Cargo.toml"],
+    "backend_preset": "vllm",
+    "openai_wire_api": "chat-completions",
+    "max_concurrent": ${GENTS_GROK_PORT_MAX_CONCURRENT_1:-16}
+  },
+  "seed": {
+    "collection": "GrokPortJob",
+    "job_id_field": "run_id",
+    "prompt_field": "focus",
+    "fields": {
+      "gents_root": "${GENTS_GROK_PORT_GENTS_ROOT:-.}",
+      "grok_root": "${GENTS_GROK_PORT_GROK_ROOT:-demo/grok-tui-port/recon-input}",
+      "ceiling": "${GENTS_GROK_PORT_CEILING:-.}",
+      "surface_min": "${GENTS_GROK_PORT_MIN_SURFACES:-13}",
+      "surface_max": "${GENTS_GROK_PORT_MAX_SURFACES:-13}",
+      "live_model": "${GENTS_GROK_PORT_MODEL:-GLM-5.3-Flash-NVFP4}",
+      "live_endpoint": "${GENTS_GROK_PORT_ENDPOINT_1:-http://127.0.0.1:8000/v1}",
+      "orchestrator_home": "${GENTS_GROK_PORT_ORCHESTRATOR_HOME:-.gents/grok-port-home}",
+      "orchestrator_graphql": "${GENTS_GROK_PORT_ORCHESTRATOR_GRAPHQL:-http://127.0.0.1:19195/api/v0/graphql}",
+      "live_home": "${GENTS_GROK_PORT_LIVE_HOME:-.gents/grok-port-live-home}",
+      "live_graphql": "${GENTS_GROK_PORT_LIVE_GRAPHQL:-http://127.0.0.1:19196/api/v0/graphql}",
+      "live_socket": "${GENTS_GROK_PORT_LIVE_SOCKET:-.gents/grok-port-live.sock}",
+      "repository_id": "gents-checkout",
+      "base_sha": "${GENTS_GROK_PORT_BASE_SHA:-HEAD}",
+      "pr_base": "${GENTS_GROK_PORT_PR_BASE:-main}",
+      "branch": "${GENTS_GROK_PORT_BRANCH:-agent/grok-tui-port-pack8}"
+    }
+  },
+  "default_prompt": "${GENTS_GROK_PORT_PROMPT:-Map the Grok TUI wire from grok-build and implement a Gents-only thin client. Do not add DefraDB access control or Grok permission UI. Prove model name, context window, tool-call semantics, subprocesses, subagents, and interrupts with live GLM turns.}",
+  "expect": {
+    "trigger_ids": [
+      "port-recon",
+      "port-recon-audit",
+      "port-plan",
+      "port-plan-skip",
+      "port-implement",
+      "port-review",
+      "port-retry",
+      "port-integrate",
+      "port-integrate-record",
+      "port-converge",
+      "port-final-review",
+      "port-live",
+      "port-live-review",
+      "port-publish"
+    ],
+    "trigger_request_count_sources": {
+      "port-plan-skip": {
+        "collection": "PortPlan",
+        "correlation_field": "run_id",
+        "match_field": "work_unit_count",
+        "match_value": "0"
+      },
+      "port-implement": {
+        "collection": "PortWorkUnit",
+        "correlation_field": "run_id",
+        "match_field": "status",
+        "match_value": "ready"
+      },
+      "port-review": {
+        "collection": "PortWorkUnit",
+        "correlation_field": "run_id",
+        "match_field": "status",
+        "match_value": "ready"
+      },
+      "port-integrate": {
+        "collection": "PortUnitClosure",
+        "correlation_field": "run_id",
+        "match_field": "status",
+        "match_value": "accepted"
+      },
+      "port-retry": {
+        "collection": "PortUnitClosure",
+        "correlation_field": "run_id",
+        "match_field": "status",
+        "match_value": "retry"
+      },
+      "port-integrate-record": {
+        "collection": "WorkspaceReceipt",
+        "correlation_field": "caused_by_correlation",
+        "match_field": "kind",
+        "match_value": "integrator"
+      }
+    },
+    "signed_provenance": true,
+    "required_tool_call_trigger_ids": [
+      "port-recon",
+      "port-recon-audit",
+      "port-plan",
+      "port-implement",
+      "port-review",
+      "port-retry",
+      "port-integrate-record",
+      "port-converge",
+      "port-final-review",
+      "port-live",
+      "port-live-review",
+      "port-publish"
+    ],
+    "prompt_tool_contracts": [
+      {
+        "task_id": "port-recon-task",
+        "required_tool_names": ["write_port_surface"]
+      },
+      {
+        "task_id": "port-recon-audit-task",
+        "required_tool_names": ["read_grok_port_job", "read_port_surface", "write_port_recon_audit"]
+      },
+      {
+        "task_id": "port-plan-task",
+        "required_tool_names": ["read_port_recon_audit", "read_port_surface", "write_port_work_unit", "write_port_plan"]
+      },
+      {
+        "task_id": "port-plan-skip-task",
+        "required_tool_names": ["write_port_unit_closure", "write_port_integrate_result"]
+      },
+      {
+        "task_id": "port-implement-task",
+        "required_tool_names": ["read_port_work_unit", "read_port_surface", "write_port_implementation"]
+      },
+      {
+        "task_id": "port-review-task",
+        "required_tool_names": ["read_port_work_unit", "read_port_surface", "read_port_implementation", "write_port_review", "write_port_unit_closure"]
+      },
+      {
+        "task_id": "port-retry-task",
+        "required_tool_names": ["read_port_work_unit", "read_port_review", "write_port_work_unit"]
+      },
+      {
+        "task_id": "port-integrate-record-task",
+        "required_tool_names": ["read_port_work_unit", "read_port_implementation", "write_port_integrate_result"]
+      },
+      {
+        "task_id": "port-converge-task",
+        "required_tool_names": ["read_grok_port_job", "read_port_integrate_result", "read_port_implementation", "read_port_surface", "write_port_convergence_report"]
+      },
+      {
+        "task_id": "port-final-review-task",
+        "required_tool_names": ["read_grok_port_job", "read_port_convergence_report", "read_port_surface", "write_port_final_review_report"]
+      },
+      {
+        "task_id": "port-live-task",
+        "required_tool_names": ["read_grok_port_job", "read_port_final_review_report", "read_port_surface", "write_port_live_environment_proof", "write_port_live_result"]
+      },
+      {
+        "task_id": "port-live-review-task",
+        "required_tool_names": ["read_grok_port_job", "read_port_final_review_report", "read_port_surface", "read_port_live_result", "read_port_live_environment_proof", "write_port_live_report"]
+      },
+      {
+        "task_id": "port-publish-task",
+        "required_tool_names": ["read_grok_port_job", "read_port_live_report", "read_port_final_review_report", "write_port_pull_request"]
+      }
+    ],
+    "stage_tool_sequences": [
+      {
+        "trigger_id": "port-recon",
+        "boundary_tool_name": "write_port_surface",
+        "max_calls_before_boundary": 32,
+        "max_calls_per_message_before_boundary": 20,
+        "exact_boundary_calls": 13,
+        "allowed_at_or_after_boundary": ["write_port_surface", "get_goal", "update_goal"]
+      }
+    ],
+    "workspace_receipt_paths": {
+      "work_unit_collection": "PortWorkUnit",
+      "correlation_field": "run_id",
+      "work_unit_id_field": "work_unit_id",
+      "owned_paths_field": "owned_paths"
+    },
+    "source_edges": [],
+    "projections": ["atif", "openai-codex", "langgraph", "multi-agent"],
+    "collection_counts": {
+      "PortSurface": 13,
+      "PortReconAudit": 1,
+      "PortPlan": 1,
+      "PortIntegrateResult": 8,
+      "PortConvergenceReport": 1,
+      "PortFinalReviewReport": 1,
+      "PortLiveResult": 1,
+      "PortLiveReport": 1,
+      "PortPullRequest": 1
+    },
+    "result_documents": [
+      {
+        "collection": "PortReconAudit",
+        "correlation_field": "run_id",
+        "fields": ["status", "surface_count", "required_areas", "missing_areas", "repository_id", "base_sha", "summary"]
+      },
+      {
+        "collection": "PortPlan",
+        "correlation_field": "run_id",
+        "fields": ["work_unit_count", "implement_count", "stub_count", "ignore_count", "expected_total", "summary"]
+      },
+      {
+        "collection": "PortSurface",
+        "correlation_field": "run_id",
+        "fields": ["surface_id", "area", "verdict", "grok_wire", "grok_wire_continuation", "gents_docs", "live_prompt", "live_expect", "evidence"]
+      },
+      {
+        "collection": "PortWorkUnit",
+        "correlation_field": "run_id",
+        "fields": ["work_unit_id", "logical_unit_id", "surface_ids", "area", "verdict", "status", "attempt", "title", "owned_paths", "prior_work_unit_id", "repair_context", "expected_total"]
+      },
+      {
+        "collection": "PortReview",
+        "correlation_field": "run_id",
+        "fields": ["review_id", "work_unit_id", "logical_unit_id", "implementation_id", "attempt", "verdict", "evidence", "notes"]
+      },
+      {
+        "collection": "PortUnitClosure",
+        "correlation_field": "run_id",
+        "fields": ["work_unit_id", "logical_unit_id", "implementation_id", "status", "attempt", "expected_total"]
+      },
+      {
+        "collection": "PortIntegrateResult",
+        "correlation_field": "run_id",
+        "fields": ["integrate_id", "work_unit_id", "logical_unit_id", "status", "attempt", "head_sha", "seal_hash", "summary"]
+      },
+      {
+        "collection": "PortConvergenceReport",
+        "correlation_field": "run_id",
+        "fields": ["status", "applied_count", "expected_count", "head_sha", "tests_run", "summary"]
+      },
+      {
+        "collection": "PortFinalReviewReport",
+        "correlation_field": "run_id",
+        "fields": ["status", "review_rounds", "confirmed_findings", "head_sha", "implement_surface_count", "live_result_count", "summary"]
+      },
+      {
+        "collection": "PortLiveEnvironmentProof",
+        "correlation_field": "run_id",
+        "fields": ["final_review_head", "preflight_nonce", "preflight_port_vacant", "preflight_socket_absent", "expected_endpoint", "applied_endpoint", "backend_id", "live_home", "live_graphql", "live_socket", "endpoint_env_name", "endpoint_verified", "listener_pid", "listener_command", "listener_verified", "pty_challenge", "pty_expected", "pty_prompt_sha256", "pty_pre_submit_bytes", "pty_session_id", "pty_terminal_request_id", "pty_idle_challenge", "pty_idle_expected", "pty_idle_probe_request_id", "pty_idle_transition", "pty_verified", "cleanup_listener_absent", "cleanup_socket_absent", "proof_json", "proof_json_continuation"]
+      },
+      {
+        "collection": "PortLiveResult",
+        "correlation_field": "run_id",
+        "fields": ["probe_id", "surface_id", "live_prompt", "status", "grok_wire_observed", "gents_docs_observed", "evidence"]
+      },
+      {
+        "collection": "PortLiveReport",
+        "correlation_field": "run_id",
+        "fields": ["passed_count", "failed_count", "blocked_count", "expected_count", "observed_count", "coverage_complete", "final_review_head", "summary"]
+      },
+      {
+        "collection": "PortPullRequest",
+        "correlation_field": "run_id",
+        "fields": ["branch", "pr_base", "status", "url", "title", "commit_count", "review_rounds", "confirmed_review_findings", "ci_status", "validation", "summary"]
+      }
+    ]
+  },
+  "await_timeout_secs": ${GENTS_GROK_PORT_AWAIT_TIMEOUT_SECS:-86400},
+  "bundled_graph_packages": ["code-review"],
+  "bundled_graph_bindings": {
+    "code-review": {
+      "backend_id": "grok-port-backend-ws1",
+      "profile_id": "grok-port-code-review-profile",
+      "model_name": "${GENTS_GROK_PORT_MODEL:-GLM-5.3-Flash-NVFP4}",
+      "role_overrides": {
+        "reviewer": {
+          "backend_id": "grok-port-backend-ws1",
+          "profile_id": "grok-port-code-review-scan-profile",
+          "model_name": "${GENTS_GROK_PORT_MODEL:-GLM-5.3-Flash-NVFP4}"
+        }
+      }
+    }
+  }
+}

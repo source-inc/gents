@@ -1,0 +1,10 @@
+type PortUnitClosure {
+  run_id: String @index @immutable
+  work_unit_id: String @index(unique: true) @immutable
+  logical_unit_id: String @index @immutable
+  implementation_id: String @immutable
+  workspace_id: String @immutable
+  status: String @immutable
+  attempt: String @immutable
+  expected_total: String @immutable
+}

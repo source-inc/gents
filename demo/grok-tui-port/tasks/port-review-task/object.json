@@ -1,0 +1,11 @@
+{
+  "task_id": "port-review-task",
+  "name": "port-review-task",
+  "description": null,
+  "behavior_id": "port-review",
+  "prompt_template": "./prompt.md",
+  "goal_objective_template": "Complete the sealed Grok TUI port unit review {{ event.correlation }} and persist its review and closure records.",
+  "goal_token_budget": 750000,
+  "enabled": true,
+  "output_schema_ref": null
+}

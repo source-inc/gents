@@ -1,0 +1,18 @@
+{
+  "behavior_id": "port-live",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Live GLM probes through the Grok wire",
+  "description": "Drive real prompts at the integrated shim and record wire plus Gents observations.",
+  "summary": null,
+  "system_prompt": "./system_prompt.md",
+  "request_context_template": null,
+  "backend_id": "grok-port-backend-ws1",
+  "model_name": "${GENTS_GROK_PORT_MODEL:-GLM-5.3-Flash-NVFP4}",
+  "tool_selection_id": "port-live-tools",
+  "inference_profile_id": "grok-port-profile",
+  "compaction_strategy": "StripThenSummarize",
+  "compaction_threshold": ${GENTS_GROK_PORT_COMPACTION_THRESHOLD:-0.762939453125},
+  "enabled": true,
+  "skill_refs": [],
+  "skill_excludes": []
+}

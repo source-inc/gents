@@ -11,7 +11,8 @@
     "fields": [
       {"name": "run_id", "required": false, "fill": "correlation"},
       {"name": "area_id", "required": true},
-      {"name": "repository_path", "required": true},
+      {"name": "repository_path", "required": false, "fill": {"source_field": "repository_path"}},
+      {"name": "evidence_id", "required": false, "fill": {"source_field": "evidence_id"}},
       {"name": "lens", "required": true},
       {"name": "path", "required": true},
       {"name": "instructions", "required": true},

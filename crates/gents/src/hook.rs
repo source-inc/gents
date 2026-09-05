@@ -135,6 +135,40 @@ pub struct BackgroundExecutionRegistry {
 }
 
 impl BackgroundExecutionRegistry {
+    /// Authorized observation of the runtime-owned output buffer. Adapters
+    /// use the same output and identity boundary as read_process, but read one
+    /// complete retained snapshot without changing the model's page budget.
+    pub async fn read_process_output_snapshot(
+        &self,
+        node: &EmbeddedNode,
+        session_id: &str,
+        agent_did: &str,
+        requester_did: Option<&str>,
+        tool_call_id: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        let caller = crate::background_tools::ProcessControlScope {
+            request_id: String::new(),
+            session_id: session_id.to_owned(),
+            agent_did: agent_did.to_owned(),
+            requester_did: requester_did.map(str::to_owned),
+        };
+        let result = crate::background_tools::read_tool_output_slice(
+            node,
+            &caller,
+            &self.live_outputs.registry,
+            tool_call_id,
+            0,
+            usize::MAX,
+        )
+        .await?;
+        Ok(match result {
+            crate::background_tools::ReadToolOutputOutcome::Found(page) => {
+                Some(serde_json::to_value(page)?)
+            }
+            _ => None,
+        })
+    }
+
     pub async fn cancel(&self, tool_call_id: &str) -> bool {
         let Some(execution) = self.lock_executions().get(tool_call_id).cloned() else {
             return false;

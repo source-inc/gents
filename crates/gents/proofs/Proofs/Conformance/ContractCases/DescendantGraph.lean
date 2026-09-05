@@ -19,6 +19,11 @@ structure DescendantGraphCase where
   listedByDefault : Bool
   controllable : Bool
   cursorAnchorSurvivesTerminal : Bool
+  callerSession : String
+  callerAgent : String
+  callerRequester : Option String
+  sessionAuthorized : Bool
+  sessionControllable : Bool
   deriving Repr
 
 def viewer : Viewer :=
@@ -63,7 +68,11 @@ def lifecycleString : Lifecycle → String
   | .failed => "failed"
   | .cancelled => "cancelled"
 
-def descendantCase (name : String) (edge : Edge) : DescendantGraphCase :=
+def sessionOwner : SessionOwner :=
+  { sessionId := "conversation", agentDid := "did:owner", requesterDid := none }
+
+def descendantCase (name : String) (edge : Edge)
+    (caller : SessionOwner := sessionOwner) : DescendantGraphCase :=
   { name
   , rootRequestId := edge.rootRequestId
   , parentRequestId := edge.parentRequestId
@@ -80,7 +89,12 @@ def descendantCase (name : String) (edge : Edge) : DescendantGraphCase :=
   , cursorAnchorSurvivesTerminal :=
       (DescendantGraph.afterCursor
         (DescendantGraph.cursor edge)
-        [{ edge with lifecycle := .completed }, baseEdge]).isSome }
+        [{ edge with lifecycle := .completed }, baseEdge]).isSome
+  , callerSession := caller.sessionId
+  , callerAgent := caller.agentDid
+  , callerRequester := caller.requesterDid
+  , sessionAuthorized := sameSessionOwner caller sessionOwner
+  , sessionControllable := DescendantGraph.sessionControllable caller sessionOwner viewer edge }
 
 def descendantGraphCases : List DescendantGraphCase :=
   [ descendantCase "background_direct" baseEdge
@@ -111,6 +125,23 @@ def descendantGraphCases : List DescendantGraphCase :=
       { { baseEdge with childRequestId := 12 } with lineageId := 9999 }
   , descendantCase "uncorroborated_materialized"
       { { baseEdge with childRequestId := 13 } with physicalCorroborated := false }
+  , descendantCase "later_user_turn" baseEdge sessionOwner
+  , descendantCase "other_conversation" baseEdge
+      { sessionOwner with sessionId := "other" }
+  , descendantCase "other_agent" baseEdge
+      { sessionOwner with agentDid := "did:other" }
+  , descendantCase "other_requester" baseEdge
+      { sessionOwner with requesterDid := some "did:requester" }
+  , descendantCase "empty_requester_is_not_absent" baseEdge
+      { sessionOwner with requesterDid := some "" }
+  , descendantCase "missing_agent" baseEdge
+      { sessionOwner with agentDid := "" }
+  , descendantCase "missing_session" baseEdge
+      { sessionOwner with sessionId := "" }
+  , descendantCase "blank_agent" baseEdge
+      { sessionOwner with agentDid := " \t" }
+  , descendantCase "blank_session" baseEdge
+      { sessionOwner with sessionId := " \t" }
   ]
 
 end Conformance.ContractCases

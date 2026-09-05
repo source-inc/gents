@@ -1,0 +1,11 @@
+{
+  "task_id": "port-recon-task",
+  "name": "port-recon-task",
+  "description": null,
+  "behavior_id": "port-recon",
+  "prompt_template": "./prompt.md",
+  "goal_objective_template": "Complete Grok TUI port reconnaissance for run {{ event.correlation }} and persist its required durable output.",
+  "goal_token_budget": 1000000,
+  "enabled": true,
+  "output_schema_ref": null
+}

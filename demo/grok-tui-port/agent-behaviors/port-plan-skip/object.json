@@ -1,0 +1,18 @@
+{
+  "behavior_id": "port-plan-skip",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Close a non-executable Grok port plan",
+  "description": "Write sentinel closure and integrate rows without provisioning a workspace.",
+  "summary": null,
+  "system_prompt": "./system_prompt.md",
+  "request_context_template": null,
+  "backend_id": "grok-port-backend-ws1",
+  "model_name": "${GENTS_GROK_PORT_MODEL:-GLM-5.3-Flash-NVFP4}",
+  "tool_selection_id": "port-plan-skip-tools",
+  "inference_profile_id": "grok-port-profile",
+  "compaction_strategy": null,
+  "compaction_threshold": null,
+  "enabled": true,
+  "skill_refs": [],
+  "skill_excludes": []
+}

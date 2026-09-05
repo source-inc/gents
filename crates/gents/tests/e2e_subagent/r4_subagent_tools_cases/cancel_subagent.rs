@@ -1,6 +1,117 @@
 use super::*;
 
 #[tokio::test]
+async fn shared_cancel_subagent_controls_prior_turn_only_for_the_same_session_principal() {
+    let fixture =
+        setup_spawn_fixture("shared_cancel_prior_turn", vec![CHILD_BEHAVIOR_ID], 0, true).await;
+    let spawn = fixture
+        .hook
+        .on_tool_call(
+            "spawn_subagent",
+            Some("shared-cancel-spawn".into()),
+            "shared-cancel-bridge",
+            &json!({"name": CHILD_BEHAVIOR_ID,
+            "prompt": "background child", "await_mode": "background"})
+            .to_string(),
+        )
+        .await;
+    let receipt = skip_reason_json(spawn);
+    let child = receipt["child_request_id"].as_str().unwrap();
+    wait_for_child_session_id(fixture.db.node.as_ref(), child).await;
+    update_request_state(fixture.db.node.as_ref(), child, "processing").await;
+    update_request_state(fixture.db.node.as_ref(), &fixture.request_id, "completed").await;
+
+    create_parent_request_with_extra_fields(
+        fixture.db.node.as_ref(),
+        &fixture.agent_did,
+        "foreign-session-principal",
+        &fixture.session_id,
+        0,
+        fixture.parent_deadline,
+        "requester_did: \"did:foreign:requester\"",
+    )
+    .await;
+    let denied = gents::cancel_session_subagent(
+        fixture.db.node.clone(),
+        "foreign-session-principal",
+        child,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        denied,
+        gents::CancelSubagentOutcome::Unavailable { .. }
+            | gents::CancelSubagentOutcome::NotAuthorized
+    ));
+    assert_eq!(
+        fetch_tool_call(
+            fixture.db.node.as_ref(),
+            &fixture.session_id,
+            "shared-cancel-bridge"
+        )
+        .await
+        .lifecycle_state
+        .as_deref(),
+        Some("running")
+    );
+    assert!(
+        fetch_interrupt_requested_at(fixture.db.node.as_ref(), child)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    create_parent_request(
+        fixture.db.node.as_ref(),
+        &fixture.agent_did,
+        "later-session-turn",
+        &fixture.session_id,
+        0,
+        fixture.parent_deadline,
+    )
+    .await;
+    let cancelled = gents::cancel_session_subagent(
+        fixture.db.node.clone(),
+        "later-session-turn",
+        child,
+        Some("later turn cancellation"),
+    )
+    .await
+    .unwrap();
+    let gents::CancelSubagentOutcome::Cancelled(receipt) = cancelled else {
+        panic!("expected cancelled outcome, got {cancelled:?}");
+    };
+    assert_eq!(receipt.child_request_id, child);
+    assert_eq!(receipt.parent_session_id, fixture.session_id);
+    assert!(
+        fetch_interrupt_requested_at(fixture.db.node.as_ref(), child)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        fetch_tool_call(
+            fixture.db.node.as_ref(),
+            &fixture.session_id,
+            "shared-cancel-bridge"
+        )
+        .await
+        .lifecycle_state
+        .as_deref(),
+        Some("cancelled")
+    );
+
+    update_request_state(fixture.db.node.as_ref(), child, "interrupted").await;
+    assert!(matches!(
+        gents::cancel_session_subagent(fixture.db.node.clone(), "later-session-turn", child, None)
+            .await
+            .unwrap(),
+        gents::CancelSubagentOutcome::AlreadyTerminal(_)
+    ));
+}
+
+#[tokio::test]
 async fn cancel_subagent_cancels_bridge_active_descendants_and_owned_queue() {
     let fixture =
         setup_spawn_fixture("cancel_subagent_active", vec![CHILD_BEHAVIOR_ID], 0, true).await;

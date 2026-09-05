@@ -1,0 +1,11 @@
+{
+  "task_id": "port-plan-skip-task",
+  "name": "port-plan-skip-task",
+  "description": null,
+  "behavior_id": "port-plan-skip",
+  "prompt_template": "./prompt.md",
+  "goal_objective_template": "Complete the Grok TUI port skip-plan stage for run {{ event.correlation }} and persist its required terminal records.",
+  "goal_token_budget": 100000,
+  "enabled": true,
+  "output_schema_ref": null
+}

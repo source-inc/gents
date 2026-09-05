@@ -11,4 +11,7 @@ type CodeReviewJob {
   lens_max: String
   pr_number: String
   focus: String
+  evidence_id: String @immutable
+  evidence_summary: String
+  evidence_chunk_count: String
 }

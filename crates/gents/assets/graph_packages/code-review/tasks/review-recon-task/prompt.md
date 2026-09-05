@@ -1,14 +1,16 @@
-Review job {{ event.correlation }} targets the repository at `{{ doc.repository_path }}` from `{{ doc.base_ref }}` to `{{ doc.head_ref }}`. Operator focus: {{ doc.focus }}.
+<host_review_summary>
+{{ doc.evidence_summary }}
+</host_review_summary>
 
-Your sole job is to create a closed set of parallel review assignments. Establish the merge base, changed-file list, diff stat, repository language/build metadata, and any applicable read-only baseline diagnostics. Do not edit files or investigate defects deeply; delegate that work in each lens's instructions.
+Dispatch exactly four scanner assignments. Do not reason about the summary and do not list individual files: every scanner receives the complete immutable evidence packet. Your first output must be tool calls, with no text before or after them.
 
-Create exactly {{ doc.lens_count }} distinct concern-based lenses. Before the first write, decide the complete list and immutable `expected_total`. Include correctness and architecture/reuse, then choose the remaining concerns from authorization, persistence, concurrency, error handling, compatibility, performance, testing, or repository-specific invariants according to the diff. Partition by concern, not directory.
+Call `write_review_area` exactly once for each row below. For every call set `expected_total` to `4`, set `baseline` to `{{ doc.base_ref }}..{{ doc.head_ref }}`, omit `repository_path`, and copy the row values literally except for the shown run id.
 
-For every lens call `write_review_area` exactly once with:
+| `area_id` | `lens` | `path` | `instructions` |
+| --- | --- | --- | --- |
+| `{{ event.correlation }}:correctness` | `correctness` | `all changed paths` | `Find concrete functional, state-machine, cancellation, error-handling, compatibility, or test defects introduced by the complete diff. Honor the operator focus: {{ doc.focus }}` |
+| `{{ event.correlation }}:architecture-reuse` | `architecture-reuse` | `all changed paths` | `Find concrete duplication, abstraction-boundary violations, or incompatible reimplementations introduced by the complete diff. Prefer existing repository abstractions when the evidence proves one exists.` |
+| `{{ event.correlation }}:security-concurrency` | `security-concurrency` | `all changed paths` | `Find concrete authorization, filesystem, identity, race, lifecycle, recovery, resource-bound, or unsafe-concurrency defects introduced by the complete diff.` |
+| `{{ event.correlation }}:workflow-invariants` | `workflow-invariants` | `all changed paths` | `Find concrete repository-specific workflow, evidence, worktree seal/integration, live-probe, review-gating, or never-merge invariant violations introduced by the complete diff.` |
 
-- `area_id`: `{{ event.correlation }}:<lens-slug>`
-- `repository_path`: exactly `{{ doc.repository_path }}`
-- the same concise baseline and `expected_total`
-- a distinct lens, comma-separated changed paths, and self-contained instructions naming invariants, entry points, and compact `path:line` diff excerpts
-
-Never repeat a successful command or tool call, change cardinality after the first write, or retry a successful write. Keep `baseline` under 2,000 characters, `instructions` under 8,000 characters, and `path` to at most sixteen comma-separated paths. Do not finish until the complete closed set is durable.
+Emit all four complete calls now, preferably in one parallel batch. Never emit analysis or prose. Never retry a successful write. After all four area rows are durably written, call `update_goal` with `status="complete"`. Never complete the goal while any required row is missing.

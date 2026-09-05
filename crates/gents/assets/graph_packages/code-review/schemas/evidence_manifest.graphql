@@ -1,0 +1,8 @@
+type CodeReviewEvidenceManifest {
+  evidence_id: String @index(unique: true) @immutable
+  format_version: String @immutable
+  page_count: String @immutable
+  evidence_chunk_count: String @immutable
+  evidence_byte_count: String @immutable
+  evidence_sha256: String @immutable
+}

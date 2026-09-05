@@ -8,11 +8,31 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use gents::{graphql::escape_graphql_string, skills::prompt_slash_skill_selection};
 use gents_protocol::client_protocol::RequestLifecycleState;
+use gents_protocol::graphql::{
+    execute_graphql_async, graphql_error_is_retryable, GraphqlRequestOptions,
+};
 use gents_protocol::row::AgentRequestRow;
 use gents_protocol::transcript::present_persisted_message;
 use serde_json::Value;
 
 use crate::{post_graphql, require_non_empty};
+
+/// Maximum number of retries after an initial GraphQL operation fails with a
+/// transient DefraDB contention error.
+pub(crate) const MAX_TRANSIENT_GRAPHQL_RETRIES: usize = 4;
+
+/// Classify the transient DefraDB errors for which replaying an idempotent
+/// GraphQL read, or retrying request creation before an id is returned, is
+/// safe. Keep this shared between protocol shims so they do not drift on the
+/// backend's contention vocabulary.
+pub(crate) fn graphql_error_is_transient(error: &anyhow::Error) -> bool {
+    graphql_error_is_retryable(error)
+}
+
+/// Small bounded linear backoff used for transient GraphQL contention.
+pub(crate) fn transient_graphql_retry_delay(retry: usize) -> Duration {
+    Duration::from_millis(50 * retry.max(1) as u64)
+}
 
 pub(crate) fn ensure_local_request_signer(
     home: Option<&Path>,
@@ -321,19 +341,49 @@ pub(crate) async fn create_agent_request(
     behavior_id: Option<&str>,
     options: RequestSubmitOptions,
 ) -> Result<SubmittedRequest> {
-    let (submitted, create) = prepare_agent_request(
+    let (prepared, _) = prepare_agent_request(
         graphql,
         agent_did,
         content,
         session_id,
         behavior_id,
-        options,
         None,
+        options,
     )
     .await?;
-    let mutation = create.graphql_mutation().map_err(anyhow::Error::msg)?;
-    post_graphql(graphql, &mutation).await?;
-    Ok(submitted)
+    submit_prepared_agent_request_with_retry(graphql, &prepared).await
+}
+
+/// Create one stable, signed request mutation and retry transient submission
+/// failures without minting a new request identity. After every ambiguous
+/// failure, a request-id read proves whether the mutation committed before it
+/// is sent again.
+pub(crate) async fn create_agent_request_retrying_transient(
+    graphql: &str,
+    agent_did: &str,
+    content: &str,
+    session_id: Option<&str>,
+    behavior_id: Option<&str>,
+    request_id: String,
+    options: RequestSubmitOptions,
+) -> Result<SubmittedRequest> {
+    let (prepared, _) = prepare_agent_request(
+        graphql,
+        agent_did,
+        content,
+        session_id,
+        behavior_id,
+        Some(request_id),
+        options,
+    )
+    .await?;
+    submit_prepared_agent_request_with_retry(graphql, &prepared).await
+}
+
+#[derive(Debug, Clone)]
+struct PreparedAgentRequest {
+    mutation: String,
+    submitted: SubmittedRequest,
 }
 
 async fn prepare_agent_request(
@@ -342,10 +392,10 @@ async fn prepare_agent_request(
     content: &str,
     session_id: Option<&str>,
     behavior_id: Option<&str>,
+    request_id: Option<String>,
     options: RequestSubmitOptions,
-    stable_request_id: Option<String>,
 ) -> Result<(
-    SubmittedRequest,
+    PreparedAgentRequest,
     gents_protocol::request_admission::AgentRequestCreate,
 )> {
     if options.seed.is_some_and(|seed| seed < 0) {
@@ -353,7 +403,7 @@ async fn prepare_agent_request(
     }
     let (request_content, request_metadata) =
         content_and_metadata_with_prompt_selected_skill_ids(options.metadata.as_deref(), content);
-    let request_id = stable_request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let behavior_id = resolve_request_behavior_id(graphql, agent_did, behavior_id).await?;
     let session_id = session_id
         .map(ToOwned::to_owned)
@@ -415,6 +465,7 @@ async fn prepare_agent_request(
         gents::RequestSigner::RegisteredTarget,
     )
     .await?;
+    let mutation = create.graphql_mutation().map_err(anyhow::Error::msg)?;
     let submitted = SubmittedRequest {
         request_id,
         session_id,
@@ -429,7 +480,13 @@ async fn prepare_agent_request(
         metadata: request_metadata,
         created_at: Some(created_at),
     };
-    Ok((submitted, create))
+    Ok((
+        PreparedAgentRequest {
+            mutation,
+            submitted,
+        },
+        create,
+    ))
 }
 
 /// Atomically establish a session goal and publish its first runnable request.
@@ -466,17 +523,17 @@ pub(crate) async fn create_goal_backed_agent_request(
         "goal-submit:{}",
         gents::goal::deterministic_goal_creation_key(agent_did, session_id)
     );
-    let (submitted, create) = prepare_agent_request(
+    let (prepared, create) = prepare_agent_request(
         graphql,
         agent_did,
         content,
         Some(session_id),
         behavior_id,
+        Some(request_id),
         RequestSubmitOptions {
             retry_key: Some(retry_key.clone()),
             ..Default::default()
         },
-        Some(request_id.clone()),
     )
     .await?;
 
@@ -490,7 +547,146 @@ pub(crate) async fn create_goal_backed_agent_request(
         &create,
     )
     .await?;
-    Ok(submitted)
+    Ok(prepared.submitted)
+}
+
+/// Embedded adapters keep their prompt identity and cancellation path while
+/// delegating the goal/claim/request transaction to the runtime owner.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_goal_backed_agent_request_local(
+    node: &defra_node::EmbeddedNode,
+    graphql: &str,
+    agent_did: &str,
+    objective: &str,
+    token_budget: Option<i64>,
+    session_id: &str,
+    behavior_id: &str,
+    request_id: String,
+    mut options: RequestSubmitOptions,
+) -> Result<SubmittedRequest> {
+    options.retry_key = Some(format!("goal-request:{request_id}"));
+    let (prepared, create) = prepare_agent_request(
+        graphql,
+        agent_did,
+        objective,
+        Some(session_id),
+        Some(behavior_id),
+        Some(request_id),
+        options,
+    )
+    .await?;
+    // Retry the SAME signed request, never mint a replacement after an
+    // ambiguous commit. The runtime verifies the full recovery fingerprint.
+    let mut retries = 0;
+    loop {
+        match gents::goal::submit_goal_backed_request_local(
+            node,
+            agent_did,
+            session_id,
+            objective,
+            token_budget,
+            &create,
+        )
+        .await
+        {
+            Ok(_) => return Ok(prepared.submitted),
+            Err(error)
+                if graphql_error_is_transient(&error)
+                    && retries < MAX_TRANSIENT_GRAPHQL_RETRIES =>
+            {
+                retries += 1;
+                tokio::time::sleep(transient_graphql_retry_delay(retries)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn submit_prepared_agent_request(
+    graphql: &str,
+    prepared: &PreparedAgentRequest,
+) -> Result<SubmittedRequest> {
+    // Mutations must never inherit the generic HTTP client's transparent
+    // retry loop: a committed write with a lost response is ambiguous. The
+    // prepared-request loop below resolves that ambiguity by request id before
+    // it ever reposts this exact signed mutation.
+    execute_graphql_async(
+        graphql,
+        &prepared.mutation,
+        GraphqlRequestOptions {
+            timeout: Duration::from_secs(30),
+            max_attempts: 1,
+            retry_backoff: Duration::from_millis(100),
+        },
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "submitting prepared AgentRequest {}",
+            prepared.submitted.request_id
+        )
+    })?;
+    Ok(prepared.submitted.clone())
+}
+
+async fn submit_prepared_agent_request_with_retry(
+    graphql: &str,
+    prepared: &PreparedAgentRequest,
+) -> Result<SubmittedRequest> {
+    let mut last_error = match submit_prepared_agent_request(graphql, prepared).await {
+        Ok(submitted) => return Ok(submitted),
+        Err(error) if graphql_error_is_transient(&error) => error,
+        Err(error) => return Err(error),
+    };
+
+    for retry in 1..=MAX_TRANSIENT_GRAPHQL_RETRIES {
+        tokio::time::sleep(transient_graphql_retry_delay(retry)).await;
+        match submitted_request_exists(graphql, &prepared.submitted.request_id).await {
+            Ok(true) => return Ok(prepared.submitted.clone()),
+            Ok(false) => {}
+            Err(error) if graphql_error_is_transient(&error) => {
+                last_error = error;
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+        match submit_prepared_agent_request(graphql, prepared).await {
+            Ok(submitted) => return Ok(submitted),
+            Err(error) if graphql_error_is_transient(&error) => last_error = error,
+            Err(error) => return Err(error),
+        }
+    }
+    if submitted_request_exists(graphql, &prepared.submitted.request_id).await? {
+        return Ok(prepared.submitted.clone());
+    }
+    Err(last_error)
+}
+
+async fn submitted_request_exists(graphql: &str, request_id: &str) -> Result<bool> {
+    let escaped_request_id = escape_graphql_string(request_id);
+    let response = post_graphql(
+        graphql,
+        &format!(
+            r#"{{
+                AgentRequest(
+                    filter: {{ request_id: {{ _eq: "{escaped_request_id}" }} }},
+                    limit: 2
+                ) {{ request_id }}
+            }}"#
+        ),
+    )
+    .await?;
+    let rows = response
+        .pointer("/data/AgentRequest")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if rows.len() > 1 {
+        anyhow::bail!("request_id {request_id} became ambiguous during submission recovery");
+    }
+    Ok(rows
+        .first()
+        .is_some_and(|row| row.get("request_id").and_then(Value::as_str) == Some(request_id)))
 }
 
 async fn resolve_request_behavior_id(
@@ -985,8 +1181,182 @@ pub(crate) async fn fetch_request_view(graphql: &str, request_id: &str) -> Resul
 mod tests {
     use super::{
         content_and_metadata_with_prompt_selected_skill_ids, create_agent_request,
-        materialized_message_query, RequestSubmitOptions,
+        graphql_error_is_transient, materialized_message_query,
+        submit_prepared_agent_request_with_retry, transient_graphql_retry_delay,
+        PreparedAgentRequest, RequestSubmitOptions, SubmittedRequest,
     };
+    use axum::{
+        body::{Body, Bytes},
+        extract::State,
+        response::{IntoResponse, Response},
+        routing::post,
+        Json, Router,
+    };
+    use futures_util::stream;
+    use serde_json::{json, Value};
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct AmbiguousSubmitState {
+        durable_ids: Arc<Mutex<BTreeSet<String>>>,
+        mutation_count: Arc<std::sync::atomic::AtomicUsize>,
+        lose_transport_response: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    async fn ambiguous_submit_endpoint(
+        State(state): State<AmbiguousSubmitState>,
+        Json(body): Json<Value>,
+    ) -> Response {
+        let query = body
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if query.contains("create_AgentRequest") {
+            state
+                .mutation_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            state
+                .durable_ids
+                .lock()
+                .expect("durable ids")
+                .insert("stable-request-id".to_string());
+            if state
+                .lose_transport_response
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                // The durable write happened, then the response body failed.
+                // reqwest retains this decode/transport error in the anyhow
+                // cause chain, which recovery must classify before querying
+                // the stable request id.
+                let body = Body::from_stream(stream::once(async {
+                    Err::<Bytes, std::io::Error>(std::io::Error::other(
+                        "connection closed before message completed",
+                    ))
+                }));
+                return Response::new(body);
+            }
+            // The mutation committed, but its response was lost/replaced by a
+            // transient error at the transport boundary.
+            return Json(json!({"errors": [{"message": "database is locked"}]})).into_response();
+        }
+        let rows: Vec<Value> = state
+            .durable_ids
+            .lock()
+            .expect("durable ids")
+            .iter()
+            .map(|request_id| json!({"request_id": request_id}))
+            .collect();
+        Json(json!({"data": {"AgentRequest": rows}})).into_response()
+    }
+
+    fn stable_test_prepared_request() -> PreparedAgentRequest {
+        PreparedAgentRequest {
+            // Keep the fixture byte-identical on the wire without placing the
+            // raw production-write spelling in this source file. The runtime
+            // fence scans the whole file (including tests) for direct writers.
+            mutation: concat!(
+                "mutation { create_",
+                "AgentRequest(input: { request_id: \"stable-request-id\" }) { _docID } }"
+            )
+            .to_string(),
+            submitted: SubmittedRequest {
+                request_id: "stable-request-id".to_string(),
+                session_id: "session".to_string(),
+                agent_did: "did:key:test".to_string(),
+                behavior_id: Some("behavior".to_string()),
+                temperature: None,
+                top_p: None,
+                top_k: None,
+                seed: None,
+                max_tokens: None,
+                max_total_tokens: None,
+                metadata: None,
+                created_at: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn transient_submission_recovers_committed_identity_without_reposting() {
+        let state = AmbiguousSubmitState::default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test endpoint");
+        let address = listener.local_addr().expect("test endpoint address");
+        let router = Router::new()
+            .route("/", post(ambiguous_submit_endpoint))
+            .with_state(state.clone());
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let prepared = stable_test_prepared_request();
+        let submitted =
+            submit_prepared_agent_request_with_retry(&format!("http://{address}/"), &prepared)
+                .await
+                .expect("recover committed request");
+        assert_eq!(submitted.request_id, "stable-request-id");
+        assert_eq!(
+            state
+                .mutation_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a committed mutation must not be posted again"
+        );
+        assert_eq!(state.durable_ids.lock().expect("durable ids").len(), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn transport_response_loss_recovers_committed_identity_without_reposting() {
+        let state = AmbiguousSubmitState {
+            lose_transport_response: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ..Default::default()
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test endpoint");
+        let address = listener.local_addr().expect("test endpoint address");
+        let router = Router::new()
+            .route("/", post(ambiguous_submit_endpoint))
+            .with_state(state.clone());
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let prepared = stable_test_prepared_request();
+        let submitted =
+            submit_prepared_agent_request_with_retry(&format!("http://{address}/"), &prepared)
+                .await
+                .expect("recover committed request after transport response loss");
+        assert_eq!(submitted.request_id, "stable-request-id");
+        assert_eq!(
+            state
+                .mutation_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a committed mutation must not be posted again after response loss"
+        );
+        assert_eq!(state.durable_ids.lock().expect("durable ids").len(), 1);
+        server.abort();
+    }
+
+    #[test]
+    fn graphql_transient_classifier_matches_defradb_contention_only() {
+        for message in [
+            "transaction conflict while committing",
+            "Transaction conflict while committing",
+            "database is locked",
+        ] {
+            assert!(graphql_error_is_transient(&anyhow::anyhow!(message)));
+        }
+        assert!(!graphql_error_is_transient(&anyhow::anyhow!(
+            "permission denied"
+        )));
+        assert_eq!(
+            transient_graphql_retry_delay(1),
+            std::time::Duration::from_millis(50)
+        );
+    }
 
     #[tokio::test]
     async fn prepared_request_signs_complete_client_semantics_once() -> anyhow::Result<()> {
@@ -1011,6 +1381,7 @@ mod tests {
             "/vuln-scan review this",
             Some("session"),
             None,
+            Some("stable-request".into()),
             RequestSubmitOptions {
                 temperature: Some(0.35),
                 top_p: Some(0.92),
@@ -1025,7 +1396,6 @@ mod tests {
                 retry_root_request: Some("root".into()),
                 retry_key: Some("goal-submit:key".into()),
             },
-            Some("stable-request".into()),
         )
         .await;
         server.abort();

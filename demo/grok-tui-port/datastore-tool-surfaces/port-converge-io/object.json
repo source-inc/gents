@@ -1,0 +1,55 @@
+{
+  "surface_id": "port-converge-io",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Converge: inspect applied slices and write stitched result",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_grok_port_job",
+      "collection": "GrokPortJob",
+      "description": "Load the pinned base and repository authority.",
+      "fields": ["gents_root", "base_sha"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_integrate_result",
+      "collection": "PortIntegrateResult",
+      "description": "Load the complete serial integration ledger.",
+      "fields": ["integrate_id", "work_unit_id", "logical_unit_id", "workspace_id", "status", "attempt", "expected_total", "head_sha", "seal_hash", "summary"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_implementation",
+      "collection": "PortImplementation",
+      "description": "Load exact slice paths, tests, and contract notes.",
+      "fields": ["implementation_id", "work_unit_id", "logical_unit_id", "surface_ids", "attempt", "changed_paths", "tests_run", "summary", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_surface",
+      "collection": "PortSurface",
+      "description": "Load audited combined protocol and document requirements.",
+      "fields": ["surface_id", "area", "verdict", "grok_wire", "grok_wire_continuation", "gents_docs", "evidence"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_port_convergence_report",
+      "collection": "PortConvergenceReport",
+      "description": "Pin the compiled and tested semantic merge head.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "status", "required": true},
+        {"name": "applied_count", "required": true},
+        {"name": "expected_count", "required": true},
+        {"name": "head_sha", "required": true},
+        {"name": "tests_run", "required": true},
+        {"name": "summary", "required": true}
+      ]
+    }
+  ]
+}

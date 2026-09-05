@@ -1,9 +1,7 @@
-use std::time::Duration;
-
 use anyhow::Result;
 
 use super::super::ShimState;
-use crate::{create_agent_request, RequestSubmitOptions, SubmittedRequest};
+use crate::{create_agent_request_retrying_transient, RequestSubmitOptions, SubmittedRequest};
 
 pub(super) async fn create_agent_request_with_retry(
     state: &ShimState,
@@ -11,37 +9,28 @@ pub(super) async fn create_agent_request_with_retry(
     session_id: Option<&str>,
     options: RequestSubmitOptions,
 ) -> Result<SubmittedRequest> {
-    let mut last_error = None;
-    for attempt in 0..5 {
-        match create_agent_request(
-            state.graphql.as_ref(),
-            state.agent_did.as_ref(),
-            content,
-            session_id,
-            Some(state.behavior_id.as_ref()),
-            options.clone(),
-        )
-        .await
-        {
-            Ok(submitted) => return Ok(submitted),
-            Err(error) if graphql_submission_error_is_retryable(&error) && attempt < 4 => {
-                tracing::warn!(
-                    attempt,
-                    error = %error,
-                    "retrying Codex shim AgentRequest submission"
-                );
-                last_error = Some(error);
-                tokio::time::sleep(Duration::from_millis(50 * (attempt + 1) as u64)).await;
-            }
-            Err(error) => return Err(error),
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let result = create_agent_request_retrying_transient(
+        state.graphql.as_ref(),
+        state.agent_did.as_ref(),
+        content,
+        session_id,
+        Some(state.behavior_id.as_ref()),
+        request_id.clone(),
+        options,
+    )
+    .await;
+    if result.is_err() {
+        // The final failure may still be an ambiguous lost response. The shim
+        // owns the embedded node and the stable id, so best-effort interruption
+        // closes that leak without risking a different request generation.
+        if let Err(error) = gents::interrupt_request(state.node.as_ref(), &request_id).await {
+            tracing::debug!(
+                %error,
+                request_id,
+                "Codex shim found no committed request to interrupt after submission failure"
+            );
         }
     }
-    Err(last_error.expect("retry loop stores the retryable submission error"))
-}
-
-fn graphql_submission_error_is_retryable(error: &anyhow::Error) -> bool {
-    let message = error.to_string();
-    message.contains("transaction conflict")
-        || message.contains("Transaction conflict")
-        || message.contains("database is locked")
+    result
 }

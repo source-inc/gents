@@ -1,0 +1,11 @@
+{
+  "binding_id": "port-implement-workspace",
+  "source_collection": "PortWorkUnit",
+  "event_kind": "created",
+  "filter": "{ status: { _eq: \"ready\" } }",
+  "source_fields": "[\"work_unit_id\",\"repository_id\",\"base_sha\",\"caused_by_correlation\"]",
+  "builtin_emitter": "create_workspace",
+  "principal_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "capability_set": "[\"create_workspace\",\"observe_dirty_base\",\"clone_artifacts\"]",
+  "enabled": true
+}

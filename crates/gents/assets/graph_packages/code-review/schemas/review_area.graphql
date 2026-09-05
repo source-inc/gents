@@ -2,6 +2,7 @@ type CodeReviewArea {
   run_id: String @index @immutable
   area_id: String @index(unique: true) @immutable
   repository_path: String @immutable
+  evidence_id: String @immutable
   lens: String
   path: String
   instructions: String

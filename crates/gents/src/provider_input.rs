@@ -365,7 +365,7 @@ fn field_estimate(value: &Value, fields: &[&str]) -> Result<usize> {
     })
 }
 
-fn estimate_json(value: &Value) -> Result<usize> {
+pub(crate) fn estimate_json(value: &Value) -> Result<usize> {
     Ok(serde_json::to_vec(value)
         .context("serializing provider input for token estimate")?
         .len()

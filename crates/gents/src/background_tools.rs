@@ -2,6 +2,7 @@
 
 mod buffer;
 pub(crate) mod r4c_args;
+pub(crate) mod subagent_control;
 mod transcript_render;
 
 use std::collections::{HashMap, HashSet};
@@ -15,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::descendant_graph::{
-    resolve_descendant_edge, resolve_descendant_graph, resolve_descendant_root_request_id,
+    resolve_descendant_edge, resolve_session_descendant_edge, resolve_session_descendant_graph,
     DescendantGraphAccess, DescendantQuery,
 };
 pub use crate::descendant_graph::{AWAITING_CHILD_MATERIALIZATION, PENDING_CHILD_AUTHORIZATION};
@@ -508,13 +509,10 @@ pub async fn handle_list_subagents(
     args: ListSubagentsArgs,
 ) -> Result<ListSubagentsResponse> {
     let limit = args.validated_limit() as usize;
-    let root_request_id =
-        resolve_descendant_root_request_id(DescendantGraphAccess::Local(node), caller_request_id)
-            .await?;
-    let page = resolve_descendant_graph(
+    let page = resolve_session_descendant_graph(
         DescendantGraphAccess::Local(node),
         &DescendantQuery {
-            root_request_id,
+            root_request_id: caller_request_id.to_owned(),
             scope: args.scope,
             after: args.after.clone(),
             limit: crate::descendant_graph::MAX_DESCENDANT_PAGE_LIMIT,
@@ -686,12 +684,9 @@ pub async fn handle_read_subagent(
     args: ReadSubagentArgs,
 ) -> Result<Option<ReadSubagentResponse>> {
     let child_request_id = args.child_request_id.trim();
-    let root_request_id =
-        resolve_descendant_root_request_id(DescendantGraphAccess::Local(node), caller_request_id)
-            .await?;
-    let Some(canonical_edge) = resolve_descendant_edge(
+    let Some(canonical_edge) = resolve_session_descendant_edge(
         DescendantGraphAccess::Local(node),
-        &root_request_id,
+        caller_request_id,
         child_request_id,
     )
     .await?
@@ -941,7 +936,28 @@ pub(crate) async fn handle_read_tool_output(
     live_outputs: &LiveToolOutputRegistry,
     args: ReadToolOutputArgs,
 ) -> Result<ReadToolOutputOutcome> {
-    let tool_call_id = args.tool_call_id.trim();
+    read_tool_output_slice(
+        node,
+        caller,
+        live_outputs,
+        &args.tool_call_id,
+        args.offset,
+        args.validated_max_bytes(),
+    )
+    .await
+}
+
+/// Shared authorized output observation. Client snapshots read the retained
+/// buffer in one observation; model tools keep their configured page budget.
+pub(crate) async fn read_tool_output_slice(
+    node: &EmbeddedNode,
+    caller: &ProcessControlScope,
+    live_outputs: &LiveToolOutputRegistry,
+    tool_call_id: &str,
+    offset: u64,
+    max_bytes: usize,
+) -> Result<ReadToolOutputOutcome> {
+    let tool_call_id = tool_call_id.trim();
     if tool_call_id.is_empty() {
         return Ok(ReadToolOutputOutcome::NotAuthorized);
     }
@@ -997,7 +1013,6 @@ pub(crate) async fn handle_read_tool_output(
         .unwrap_or("running")
         .to_string();
     let exited = status != "running";
-    let max_bytes = args.validated_max_bytes();
     let (slice, exit_code) = if exited {
         let result = row.result.as_deref().unwrap_or_default();
         let persisted = persisted_tool_output_streams(&row.tool_name, result);
@@ -1008,15 +1023,15 @@ pub(crate) async fn handle_read_tool_output(
         // model: an orchestrator pages through ALL output gap-free from `offset`.
         let combined = combine_output_streams(&persisted.stdout, &persisted.stderr);
         (
-            read_combined_output_slice(&combined, args.offset, max_bytes),
+            read_combined_output_slice(&combined, offset, max_bytes),
             persisted.exit_code,
         )
     } else {
         let slice = live_outputs
             .snapshot(&row.tool_call_id)
             .await
-            .map(|snapshot| read_live_output_slice(snapshot, args.offset, max_bytes))
-            .unwrap_or_else(|| read_combined_output_slice("", args.offset, max_bytes));
+            .map(|snapshot| read_live_output_slice(snapshot, offset, max_bytes))
+            .unwrap_or_else(|| read_combined_output_slice("", offset, max_bytes));
         (slice, None)
     };
 
@@ -1142,12 +1157,9 @@ pub async fn load_steer_subagent_target(
     if child_request_id.trim().is_empty() {
         return Ok(SteerSubagentTarget::NotAuthorized);
     }
-    let root_request_id =
-        resolve_descendant_root_request_id(DescendantGraphAccess::Local(node), caller_request_id)
-            .await?;
-    let Some(canonical) = resolve_descendant_edge(
+    let Some(canonical) = resolve_session_descendant_edge(
         DescendantGraphAccess::Local(node),
-        &root_request_id,
+        caller_request_id,
         child_request_id,
     )
     .await?

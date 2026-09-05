@@ -1,0 +1,57 @@
+{
+  "surface_id": "port-retry-io",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Turn a rejected sealed attempt into a fresh work unit",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_port_work_unit",
+      "collection": "PortWorkUnit",
+      "description": "Load prior attempts and the immutable logical-unit contract.",
+      "fields": ["work_unit_id", "logical_unit_id", "surface_ids", "area", "verdict", "status", "attempt", "title", "instructions", "owned_paths", "grok_call_sites", "grok_wire", "gents_docs", "live_prompt", "live_expect", "evidence", "repository_id", "base_sha", "branch", "prior_work_unit_id", "repair_context", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_review",
+      "collection": "PortReview",
+      "description": "Load the exact rejected review and its actionable evidence.",
+      "fields": ["review_id", "work_unit_id", "logical_unit_id", "implementation_id", "workspace_id", "attempt", "verdict", "grok_call_site_checked", "evidence", "notes", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_port_work_unit",
+      "collection": "PortWorkUnit",
+      "description": "Create the next attempt in a new host-owned writable workspace.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "work_unit_id", "required": true},
+        {"name": "logical_unit_id", "required": true},
+        {"name": "surface_ids", "required": true},
+        {"name": "area", "required": true},
+        {"name": "verdict", "required": true},
+        {"name": "status", "required": true},
+        {"name": "attempt", "required": true},
+        {"name": "title", "required": true},
+        {"name": "instructions", "required": true},
+        {"name": "owned_paths", "required": true},
+        {"name": "grok_call_sites", "required": true},
+        {"name": "grok_wire", "required": true},
+        {"name": "gents_docs", "required": true},
+        {"name": "live_prompt", "required": true},
+        {"name": "live_expect", "required": true},
+        {"name": "evidence", "required": true},
+        {"name": "repository_id", "required": true},
+        {"name": "base_sha", "required": true},
+        {"name": "branch", "required": true},
+        {"name": "prior_work_unit_id", "required": true},
+        {"name": "repair_context", "required": true},
+        {"name": "prior_diff", "required": true},
+        {"name": "caused_by_correlation", "required": false, "fill": "correlation"},
+        {"name": "expected_total", "required": true}
+      ]
+    }
+  ]
+}

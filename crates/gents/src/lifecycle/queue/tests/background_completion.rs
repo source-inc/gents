@@ -305,6 +305,41 @@ async fn duplicate_notification_key_recovers_its_original_wake_binding() {
 }
 
 #[tokio::test]
+async fn many_concurrent_notifications_publish_one_wake_identity() {
+    let db = test_db("atomic-background-many-race").await;
+    let parent = root_parent(db.agent_did(), "atomic-background-many-race-session");
+    let enqueued = futures::future::join_all((0..16).map(|index| {
+        let node = db.node.clone();
+        let parent = parent.clone();
+        async move {
+            enqueue_background_completion_with_message(
+                node.as_ref(),
+                &parent,
+                &format!("concurrent notification {index}"),
+                &format!("background-completion-notification:many-race-{index}:tool"),
+                "review notifications",
+                background_hints(&parent),
+            )
+            .await
+            .unwrap()
+        }
+    }))
+    .await;
+
+    let wake_doc_id = &enqueued[0].request.doc_id;
+    assert!(enqueued
+        .iter()
+        .all(|result| result.request.doc_id == *wake_doc_id));
+    assert_eq!(
+        enqueued
+            .iter()
+            .filter(|result| result.created_request)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn restart_before_claim_preserves_pending_input_until_the_wake_completes() {
     let db = test_db("background-restart-before-claim").await;
     let node = db.node.clone();

@@ -52,6 +52,46 @@ structure Viewer where
   lineageId : LineageId
   deriving DecidableEq, Repr
 
+/-- Conversation control is shared across requests, not across principals or
+sessions. The spawning request and its physical bridge remain unchanged.
+An absent requester is an exact anonymous scope, never a wildcard. -/
+structure SessionOwner where
+  sessionId : String
+  agentDid : String
+  requesterDid : Option String
+  deriving DecidableEq, Repr
+
+def sameSessionOwner (caller owner : SessionOwner) : Bool :=
+  caller.sessionId.trim != "" && caller.agentDid.trim != "" &&
+    caller.sessionId == owner.sessionId && caller.agentDid == owner.agentDid &&
+    caller.requesterDid == owner.requesterDid
+
+theorem cross_session_denied (caller owner : SessionOwner)
+    (h : caller.sessionId ≠ owner.sessionId) :
+    sameSessionOwner caller owner = false := by
+  simp [sameSessionOwner, h]
+
+theorem cross_principal_denied (caller owner : SessionOwner)
+    (h : caller.agentDid ≠ owner.agentDid) :
+    sameSessionOwner caller owner = false := by
+  simp [sameSessionOwner, h]
+
+theorem cross_requester_denied (caller owner : SessionOwner)
+    (h : caller.requesterDid ≠ owner.requesterDid) :
+    sameSessionOwner caller owner = false := by
+  simp [sameSessionOwner, h]
+
+theorem missing_agent_denied (caller owner : SessionOwner)
+    (h : caller.agentDid = "") : sameSessionOwner caller owner = false := by
+  have emptyTrim : ("" : String).trim = "" := by native_decide
+  simp [sameSessionOwner, h, emptyTrim]
+
+theorem same_owner_survives_new_request (owner : SessionOwner)
+    (hs : owner.sessionId.trim ≠ "")
+    (ha : owner.agentDid.trim ≠ "") :
+    sameSessionOwner owner owner = true := by
+  simp [sameSessionOwner, hs, ha]
+
 structure Edge where
   rootRequestId : RequestId
   rootSessionId : SessionId
@@ -114,6 +154,24 @@ def controllable (viewer : Viewer) (edge : Edge) : Bool :=
   readable viewer edge &&
     edge.directFromRoot &&
     edge.controlPrincipal == viewer.rootPrincipal
+
+/-- A later user turn may select the original owner's graph only after the
+session authority check; canonical readability/direct-parent checks still apply. -/
+def sessionControllable (caller owner : SessionOwner) (viewer : Viewer) (edge : Edge) : Bool :=
+  sameSessionOwner caller owner && controllable viewer edge
+
+theorem session_access_never_grants_ancestor_control
+    (caller owner : SessionOwner) (viewer : Viewer) (edge : Edge)
+    (h : edge.directFromRoot = false) :
+    sessionControllable caller owner viewer edge = false := by
+  simp [sessionControllable, controllable, h]
+
+theorem session_control_requires_canonical_control
+    (caller owner : SessionOwner) (viewer : Viewer) (edge : Edge)
+    (h : sessionControllable caller owner viewer edge = true) :
+    controllable viewer edge = true := by
+  simp [sessionControllable] at h
+  exact h.2
 
 def inScope (scope : Scope) (edge : Edge) : Bool :=
   match scope with

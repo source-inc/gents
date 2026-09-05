@@ -1,0 +1,20 @@
+{
+  "profile_id": "grok-port-profile",
+  "display_name": "Grok TUI port profile",
+  "context_window": ${GENTS_GROK_PORT_CONTEXT_WINDOW:-524288},
+  "max_output_tokens": ${GENTS_GROK_PORT_MAX_OUTPUT_TOKENS:-65536},
+  "max_turns": ${GENTS_GROK_PORT_MAX_TURNS:-1000000},
+  "temperature": ${GENTS_GROK_PORT_TEMPERATURE:-1.0},
+  "top_p": ${GENTS_GROK_PORT_TOP_P:-0.95},
+  "top_k": null,
+  "min_p": null,
+  "frequency_penalty": null,
+  "reasoning_effort": "${GENTS_GROK_PORT_REASONING_EFFORT:-high}",
+  "stream_batch_ms": ${GENTS_GROK_PORT_STREAM_BATCH_MS:-5000},
+  "deadline_duration_secs": ${GENTS_GROK_PORT_DEADLINE_SECS:-86400},
+  "stream_liveness_timeout_secs": ${GENTS_GROK_PORT_STREAM_LIVENESS_SECS:-1800},
+  "retry_max_transport": ${GENTS_GROK_PORT_RETRY_MAX_TRANSPORT:-720},
+  "retry_backoff_ms": [5000, 30000, 120000],
+  "retry_max_resample": ${GENTS_GROK_PORT_RETRY_MAX_RESAMPLE:-32},
+  "retry_allow_repair": true
+}

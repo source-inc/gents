@@ -1,0 +1,40 @@
+{
+  "surface_id": "port-recon-audit-io",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Audit the closed Grok surface ledger",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_grok_port_job",
+      "collection": "GrokPortJob",
+      "description": "Load the immutable reconnaissance bounds.",
+      "fields": ["surface_min", "surface_max", "repository_id", "base_sha"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_surface",
+      "collection": "PortSurface",
+      "description": "Load the complete mapped Grok wire ledger.",
+      "fields": ["surface_id", "area", "verdict", "grok_call_sites", "grok_wire", "grok_wire_continuation", "gents_docs", "live_prompt", "live_expect", "evidence", "repository_id", "base_sha", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_port_recon_audit",
+      "collection": "PortReconAudit",
+      "description": "Accept or reject the closed reconnaissance ledger.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "status", "required": true},
+        {"name": "surface_count", "required": true},
+        {"name": "required_areas", "required": true},
+        {"name": "missing_areas", "required": true},
+        {"name": "repository_id", "required": false, "fill": {"source_field": "repository_id"}},
+        {"name": "base_sha", "required": false, "fill": {"source_field": "base_sha"}},
+        {"name": "summary", "required": true}
+      ]
+    }
+  ]
+}

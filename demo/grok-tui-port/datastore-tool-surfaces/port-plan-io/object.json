@@ -1,0 +1,72 @@
+{
+  "surface_id": "port-plan-io",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Plan: read surfaces, write work units",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_port_recon_audit",
+      "collection": "PortReconAudit",
+      "description": "Load the closed-ledger acceptance decision.",
+      "fields": ["status", "surface_count", "required_areas", "missing_areas", "repository_id", "base_sha", "summary"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_surface",
+      "collection": "PortSurface",
+      "description": "Load every mapped Grok TUI surface for this run.",
+      "fields": ["surface_id", "area", "verdict", "grok_call_sites", "grok_wire", "grok_wire_continuation", "gents_docs", "live_prompt", "live_expect", "evidence", "repository_id", "base_sha", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_port_work_unit",
+      "collection": "PortWorkUnit",
+      "description": "Create one path-disjoint implementation slice from PortSurface rows.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1, "expected_count_field": "expected_total"},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "work_unit_id", "required": true},
+        {"name": "logical_unit_id", "required": true},
+        {"name": "surface_ids", "required": true},
+        {"name": "area", "required": true},
+        {"name": "verdict", "required": true},
+        {"name": "status", "required": true},
+        {"name": "attempt", "required": true},
+        {"name": "title", "required": true},
+        {"name": "instructions", "required": true},
+        {"name": "owned_paths", "required": true},
+        {"name": "grok_call_sites", "required": true},
+        {"name": "grok_wire", "required": true},
+        {"name": "gents_docs", "required": true},
+        {"name": "live_prompt", "required": true},
+        {"name": "live_expect", "required": true},
+        {"name": "evidence", "required": true},
+        {"name": "repository_id", "required": false, "fill": {"source_field": "repository_id"}},
+        {"name": "base_sha", "required": false, "fill": {"source_field": "base_sha"}},
+        {"name": "branch", "required": true},
+        {"name": "prior_work_unit_id", "required": true},
+        {"name": "repair_context", "required": true},
+        {"name": "prior_diff", "required": true},
+        {"name": "caused_by_correlation", "required": false, "fill": "correlation"},
+        {"name": "expected_total", "required": true}
+      ]
+    },
+    {
+      "tool_name": "write_port_plan",
+      "collection": "PortPlan",
+      "description": "Close the work-unit ledger for this run.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "work_unit_count", "required": true},
+        {"name": "implement_count", "required": true},
+        {"name": "stub_count", "required": true},
+        {"name": "ignore_count", "required": true},
+        {"name": "expected_total", "required": true},
+        {"name": "summary", "required": true}
+      ]
+    }
+  ]
+}

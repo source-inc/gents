@@ -1265,7 +1265,13 @@ fn goal_transition_events(
         .collect()
 }
 
-fn child_bridge_is_corroborated(
+/// Whether a child request is physically corroborated by its parent request
+/// and, for tool-spawned children, the exact parent tool-call document.
+///
+/// This is the single shared provenance rule for read-side projections. It
+/// accepts the runtime's modeled request-only control continuations and
+/// otherwise requires matching logical and physical request/tool identities.
+pub fn child_bridge_is_corroborated(
     root_request: &TimelineRequestRow,
     child_request: &TimelineRequestRow,
     tool_calls: &[TimelineToolCallRow],

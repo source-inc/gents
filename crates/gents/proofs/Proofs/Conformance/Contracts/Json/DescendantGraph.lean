@@ -22,6 +22,13 @@ def descendantGraphCaseJson (value : DescendantGraphCase) : String :=
     ++ "\"controllable\":" ++ boolString value.controllable ++ ","
     ++ "\"cursor_anchor_survives_terminal\":"
       ++ boolString value.cursorAnchorSurvivesTerminal
+    ++ ",\"caller_session\":" ++ jsonString value.callerSession
+    ++ ",\"caller_agent\":" ++ jsonString value.callerAgent
+    ++ ",\"caller_requester\":" ++ (match value.callerRequester with
+        | none => "null"
+        | some requester => jsonString requester)
+    ++ ",\"session_authorized\":" ++ boolString value.sessionAuthorized
+    ++ ",\"session_controllable\":" ++ boolString value.sessionControllable
     ++ "}"
 
 def descendantGraphCasesJson : String :=

@@ -286,7 +286,11 @@ pub fn validate_signing_fields(request: &AgentRequestSigningFields<'_>) -> anyho
         )?;
     }
     if let Some(authority) = request.workspace_authority {
-        require_enum("workspace_authority", authority, &["readOnly", "readWrite"])?;
+        require_enum(
+            "workspace_authority",
+            authority,
+            &["readOnly", "readWrite", "integrate"],
+        )?;
     }
     parse_utc_seconds("created_at", request.created_at)?;
     if let Some(valid_until) = request.valid_until {
@@ -1393,5 +1397,21 @@ mod tests {
         let fields = create.graphql_input_fields().unwrap();
         assert!(fields.contains(r#"lifecycle_state: "workspaceBindingPending""#));
         assert!(!fields.contains("status:"));
+    }
+
+    #[test]
+    fn workspace_authority_accepts_every_mode_modeled_by_the_runtime() {
+        for authority in ["readOnly", "readWrite", "integrate"] {
+            let mut request = local_create();
+            request.workspace_authority = Some(authority.to_string());
+            assert!(
+                validate_signing_fields(&request.signing_fields()).is_ok(),
+                "workspace authority {authority} must be admissible"
+            );
+        }
+
+        let mut request = local_create();
+        request.workspace_authority = Some("operator".to_string());
+        assert!(validate_signing_fields(&request.signing_fields()).is_err());
     }
 }

@@ -1,0 +1,11 @@
+{
+  "task_id": "port-converge-task",
+  "name": "port-converge-task",
+  "description": null,
+  "behavior_id": "port-converge",
+  "prompt_template": "./prompt.md",
+  "goal_objective_template": "Complete combined Grok TUI port convergence for run {{ event.correlation }}, repair confirmed defects, and persist the convergence report.",
+  "goal_token_budget": 2000000,
+  "enabled": true,
+  "output_schema_ref": null
+}

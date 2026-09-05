@@ -169,6 +169,9 @@ pub use background_completion_diagnostics::{
     load_background_completion_diagnostics, BackgroundCompletionDiagnostics,
     BackgroundCompletionEpochDiagnostic,
 };
+pub use background_tools::subagent_control::{
+    cancel_session_subagent, CancelSubagentOutcome, SubagentCancellation,
+};
 pub use compaction::CompactionStrategy;
 pub use config::{
     AgentBehavior, ReasoningEffort, SamplingConfig, DEFAULT_COMPACTION_THRESHOLD,
@@ -180,6 +183,7 @@ pub use config_client::ConfigAccess;
 pub use defra_node;
 pub use descendant_graph::{
     resolve_descendant_edge, resolve_descendant_graph, resolve_descendant_root_request_id,
+    resolve_session_descendant_edge, resolve_session_descendant_graph,
     DescendantAuthorizationState, DescendantControlAuthority, DescendantEdge,
     DescendantGraphAccess, DescendantMaterializationState, DescendantPage, DescendantQuery,
     DescendantScope, MAX_DESCENDANT_PAGE_LIMIT,

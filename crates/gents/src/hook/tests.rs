@@ -11,6 +11,112 @@ use serde_json::json;
 use super::*;
 
 #[tokio::test]
+async fn client_output_snapshot_reads_full_retained_window_without_widening_model_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = Arc::new(
+        EmbeddedNode::builder()
+            .data_path(dir.path())
+            .build()
+            .await
+            .unwrap(),
+    );
+    crate::ensure_runtime_schemas(&node).await.unwrap();
+    let registry = BackgroundExecutionRegistry::default();
+    let mut lifecycle = ToolCallLifecycle::new_background_tool(
+        node.clone(),
+        "request".into(),
+        "session".into(),
+        "did:test:owner".into(),
+        "large-output".into(),
+        1,
+        "bash".into(),
+        "{}".into(),
+        Utc::now() + chrono::Duration::minutes(5),
+    );
+    lifecycle.start_running().await.unwrap();
+    let writer = registry
+        .live_outputs
+        .registry
+        .writer_for("large-output")
+        .await;
+    let text = format!("BEGIN\n{}\nEND ✅", "abcdefghij".repeat(10_000));
+    writer
+        .append(
+            crate::background_tools::LiveOutputStream::Stdout,
+            text.as_bytes(),
+        )
+        .await;
+    let snapshot = registry
+        .read_process_output_snapshot(&node, "session", "did:test:owner", None, "large-output")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot["output"], text);
+    assert_eq!(snapshot["first_available_offset"], 0);
+    assert_eq!(snapshot["has_more"], false);
+    assert!(registry
+        .read_process_output_snapshot(
+            &node,
+            "session",
+            "did:test:owner",
+            Some("foreign"),
+            "large-output"
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(registry
+        .read_process_output_snapshot(
+            &node,
+            "wrong-session",
+            "did:test:owner",
+            None,
+            "large-output"
+        )
+        .await
+        .unwrap()
+        .is_none());
+    let scope = crate::background_tools::ProcessControlScope {
+        request_id: "next".into(),
+        session_id: "session".into(),
+        agent_did: "did:test:owner".into(),
+        requester_did: None,
+    };
+    let page = crate::background_tools::handle_read_tool_output(
+        &node,
+        &scope,
+        &registry.live_outputs.registry,
+        crate::background_tools::r4c_args::ReadToolOutputArgs {
+            tool_call_id: "large-output".into(),
+            offset: 0,
+            max_tokens: 1024,
+        },
+    )
+    .await
+    .unwrap();
+    let crate::background_tools::ReadToolOutputOutcome::Found(page) = page else {
+        panic!("authorized page")
+    };
+    assert!(page.has_more);
+    assert!(page.output.len() <= 4096);
+    let overflow = vec![b'x'; crate::truncation::LIVE_STREAM_CAPACITY_BYTES + 17];
+    writer
+        .append(crate::background_tools::LiveOutputStream::Stdout, &overflow)
+        .await;
+    let snapshot = registry
+        .read_process_output_snapshot(&node, "session", "did:test:owner", None, "large-output")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(snapshot["first_available_offset"].as_u64().unwrap() > 0);
+    assert_eq!(
+        snapshot["output"].as_str().unwrap().len(),
+        crate::truncation::LIVE_STREAM_CAPACITY_BYTES
+    );
+    assert_eq!(snapshot["has_more"], false);
+}
+
+#[tokio::test]
 async fn goal_tool_interception_defaults_deny_and_create_depends_on_base_capability() {
     let node = Arc::new(defra_node::EmbeddedNode::builder().build().await.unwrap());
     let denied = DefraSessionHook::with_identity(

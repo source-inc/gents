@@ -1,0 +1,6 @@
+{
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Grok TUI Port Graph",
+  "default_behavior_id": "port-recon",
+  "enabled": true
+}

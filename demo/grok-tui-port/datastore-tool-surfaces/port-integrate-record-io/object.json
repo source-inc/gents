@@ -1,0 +1,43 @@
+{
+  "surface_id": "port-integrate-record-io",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Record only durable host integration receipts",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_port_work_unit",
+      "collection": "PortWorkUnit",
+      "description": "Resolve the attempt-specific receipt to its logical unit.",
+      "fields": ["work_unit_id", "logical_unit_id", "attempt", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_implementation",
+      "collection": "PortImplementation",
+      "description": "Verify that the integrated attempt has a writer receipt.",
+      "fields": ["implementation_id", "work_unit_id", "logical_unit_id", "attempt", "changed_paths", "summary", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_port_integrate_result",
+      "collection": "PortIntegrateResult",
+      "description": "Record an applied logical unit only after an integrator WorkspaceReceipt exists.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "integrate_id", "required": true},
+        {"name": "work_unit_id", "required": false, "fill": {"source_field": "work_unit_id"}},
+        {"name": "logical_unit_id", "required": true},
+        {"name": "workspace_id", "required": false, "fill": {"source_field": "workspace_id"}},
+        {"name": "status", "required": true},
+        {"name": "attempt", "required": true},
+        {"name": "expected_total", "required": true},
+        {"name": "head_sha", "required": false, "fill": {"source_field": "head_sha"}},
+        {"name": "seal_hash", "required": false, "fill": {"source_field": "seal_hash"}},
+        {"name": "summary", "required": true}
+      ]
+    }
+  ]
+}

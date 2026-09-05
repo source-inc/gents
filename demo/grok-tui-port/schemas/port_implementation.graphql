@@ -1,0 +1,13 @@
+type PortImplementation {
+  run_id: String @index @immutable
+  implementation_id: String @index(unique: true) @immutable
+  work_unit_id: String @immutable
+  logical_unit_id: String @index @immutable
+  surface_ids: String @immutable
+  attempt: String @immutable
+  workspace_id: String @immutable
+  changed_paths: String @immutable
+  tests_run: String @immutable
+  summary: String @immutable
+  expected_total: String @immutable
+}

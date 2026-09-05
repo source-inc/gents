@@ -1,8 +1,8 @@
 {
   "manifest_version": 1,
   "name": "code-review",
-  "version": "1.0.1",
-  "description": "Bounded four-stage review: reconnaissance, lens swarm, verification, and triage.",
+  "version": "1.6.0",
+  "description": "Host-evidenced four-stage review: deterministic dispatch, immutable paged evidence, bounded lens swarm, verification, and triage.",
   "compiler_version": "graph-intent-v3",
   "roles": [
     {"name": "coordinator", "description": "Runs reconnaissance, verification, and triage."},
@@ -10,6 +10,8 @@
   ],
   "schemas": [
     "schemas/review_job.graphql",
+    "schemas/evidence_manifest.graphql",
+    "schemas/evidence_page.graphql",
     "schemas/review_area.graphql",
     "schemas/candidate_finding.graphql",
     "schemas/scan_result.graphql",

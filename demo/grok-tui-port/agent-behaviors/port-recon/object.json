@@ -1,0 +1,18 @@
+{
+  "behavior_id": "port-recon",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Map Grok TUI feature surfaces",
+  "description": "Read grok-build call sites and emit PortSurface rows.",
+  "summary": null,
+  "system_prompt": "./system_prompt.md",
+  "request_context_template": null,
+  "backend_id": "grok-port-backend-ws1",
+  "model_name": "${GENTS_GROK_PORT_MODEL:-GLM-5.3-Flash-NVFP4}",
+  "tool_selection_id": "port-recon-tools",
+  "inference_profile_id": "grok-port-recon-profile",
+  "compaction_strategy": "StripThenSummarize",
+  "compaction_threshold": ${GENTS_GROK_PORT_COMPACTION_THRESHOLD:-0.762939453125},
+  "enabled": true,
+  "skill_refs": [],
+  "skill_excludes": []
+}

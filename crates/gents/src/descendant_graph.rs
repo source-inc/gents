@@ -165,6 +165,7 @@ pub struct DescendantPage {
     pub has_more: bool,
 }
 
+#[derive(Clone, Copy)]
 pub enum DescendantGraphAccess<'a> {
     Local(&'a EmbeddedNode),
     Config(&'a ConfigAccess),
@@ -292,6 +293,15 @@ pub async fn resolve_descendant_graph(
     let root = load_unique_request(&access, root_id)
         .await?
         .with_context(|| format!("root AgentRequest {root_id} not found"))?;
+    let edges = collect_descendant_edges(&access, root, query.scope).await?;
+    page_descendant_edges(query, edges)
+}
+
+async fn collect_descendant_edges(
+    access: &DescendantGraphAccess<'_>,
+    root: AgentRequestRow,
+    scope: DescendantScope,
+) -> Result<Vec<DescendantEdge>> {
     let root_context = RootContext::from_request(&root);
 
     let mut frontier = VecDeque::from([ParentNode {
@@ -362,7 +372,7 @@ pub async fn resolve_descendant_graph(
                 );
             }
 
-            if query.scope != DescendantScope::DirectChildren {
+            if scope != DescendantScope::DirectChildren {
                 if let Some(child) = projected.child.clone() {
                     frontier.push_back(ParentNode {
                         row: child,
@@ -373,16 +383,24 @@ pub async fn resolve_descendant_graph(
             edges.push(projected.edge);
         }
 
-        if query.scope == DescendantScope::DirectChildren {
+        if scope == DescendantScope::DirectChildren {
             break;
         }
     }
 
     populate_transcript_cursors(&access, &mut edges).await?;
-    edges.retain(|edge| match query.scope {
+    edges.retain(|edge| match scope {
         DescendantScope::DirectChildren => edge.is_direct(),
         DescendantScope::AllDescendants => true,
     });
+    edges.sort_by(|left, right| left.cursor.cmp(&right.cursor));
+    Ok(edges)
+}
+
+fn page_descendant_edges(
+    query: &DescendantQuery,
+    mut edges: Vec<DescendantEdge>,
+) -> Result<DescendantPage> {
     edges.sort_by(|left, right| left.cursor.cmp(&right.cursor));
 
     // Resolve the cursor against the stable scoped edge set before applying
@@ -413,12 +431,140 @@ pub async fn resolve_descendant_graph(
         .flatten();
 
     Ok(DescendantPage {
-        root_request_id: root_id.to_string(),
+        root_request_id: query.root_request_id.clone(),
         scope: query.scope,
         edges: page_edges,
         next_cursor,
         has_more,
     })
+}
+
+/// The session is an authority boundary, not merely a label for convenient
+/// lookup. Match requester absence exactly and never grant cross-turn access
+/// to missing agent/session identities. Physical bridges are checked separately.
+fn same_session_owner(caller: &AgentRequestRow, owner: &AgentRequestRow) -> bool {
+    caller
+        .session_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty())
+        && caller
+            .agent_did
+            .as_deref()
+            .is_some_and(|did| !did.trim().is_empty())
+        && caller.session_id == owner.session_id
+        && caller.agent_did == owner.agent_did
+        && caller.requester_did == owner.requester_did
+}
+
+async fn session_bridge_owners(
+    access: &DescendantGraphAccess<'_>,
+    caller: &AgentRequestRow,
+) -> Result<Vec<AgentRequestRow>> {
+    if !same_session_owner(caller, caller) {
+        return Ok(Vec::new());
+    }
+    // Enumerate only requests with durable child receipts, not every message
+    // or unrelated request in a long-running conversation.
+    let session = escape_graphql_string(request_session_id(caller));
+    let query = format!(
+        r#"{{ AgentToolCall(filter: {{ session_id: {{ _eq: "{session}" }},
+        child_request_id: {{ _ne: "" }} }}) {{ request_id }} }}"#
+    );
+    #[derive(Deserialize)]
+    struct OwnerId {
+        request_id: String,
+    }
+    let ids = load_rows::<OwnerId>(access, "AgentToolCall", &query)
+        .await?
+        .into_iter()
+        .map(|row| row.request_id)
+        .collect::<BTreeSet<_>>();
+    let mut owners = Vec::new();
+    // Keep query envelopes bounded without imposing a conversation-size cap.
+    for page in ids.into_iter().collect::<Vec<_>>().chunks(128) {
+        let rows = load_requests(access, page).await?;
+        let mut seen = BTreeSet::new();
+        for row in rows {
+            if !seen.insert(row.request_id.clone()) {
+                anyhow::bail!("ambiguous descendant owner request {}", row.request_id);
+            }
+            if same_session_owner(caller, &row) {
+                owners.push(row);
+            }
+        }
+    }
+    Ok(owners)
+}
+
+/// Project descendants owned by this caller's conversation and exact principal
+/// scope. `query.root_request_id` identifies the caller, not a fabricated parent;
+/// every returned edge retains its actual owning request and physical receipt.
+pub async fn resolve_session_descendant_graph(
+    access: DescendantGraphAccess<'_>,
+    query: &DescendantQuery,
+) -> Result<DescendantPage> {
+    let caller = load_unique_request(&access, &query.root_request_id)
+        .await?
+        .context("session descendant caller request not found")?;
+    let mut edges = Vec::new();
+    let mut children = BTreeSet::new();
+    for owner in session_bridge_owners(&access, &caller).await? {
+        for edge in collect_descendant_edges(&access, owner, query.scope).await? {
+            if !children.insert(edge.child_request_id.clone()) {
+                anyhow::bail!(
+                    "ambiguous child {} across session descendant roots",
+                    edge.child_request_id
+                );
+            }
+            edges.push(edge);
+        }
+    }
+    page_descendant_edges(query, edges)
+}
+
+/// Exact-handle lookup with the same authority as session enumeration. The
+/// canonical resolver still enforces direct-parent control and physical joins.
+pub async fn resolve_session_descendant_edge(
+    access: DescendantGraphAccess<'_>,
+    caller_request_id: &str,
+    child_request_id: &str,
+) -> Result<Option<DescendantEdge>> {
+    let caller = load_unique_request(&access, caller_request_id)
+        .await?
+        .context("session descendant caller request not found")?;
+    if child_request_id.trim().is_empty() {
+        return Ok(None);
+    }
+    let candidates = load_requests(&access, &[child_request_id.to_owned()]).await?;
+    let mut matches = Vec::new();
+    for bridge in load_bridges_by_child(&access, child_request_id).await? {
+        let Some(parent) = load_unique_request(&access, &bridge.request_id).await? else {
+            continue;
+        };
+        let Some((owner, depth)) = trace_parent_to_matching_root(&access, &parent, |candidate| {
+            same_session_owner(&caller, candidate)
+        })
+        .await?
+        else {
+            continue;
+        };
+        if let Some(projected) = project_descendant_edge(
+            &RootContext::from_request(&owner),
+            &ParentNode { row: parent, depth },
+            &bridge,
+            &candidates,
+        )? {
+            matches.push(projected.edge);
+        }
+    }
+    match matches.len() {
+        0 => Ok(None),
+        1 => {
+            populate_transcript_cursors(&access, &mut matches).await?;
+            Ok(matches.pop())
+        }
+        _ => anyhow::bail!("ambiguous child {child_request_id} across session descendant roots"),
+    }
 }
 
 fn project_descendant_edge(
@@ -626,13 +772,27 @@ async fn trace_parent_to_root(
     root: &AgentRequestRow,
     candidate_parent: &AgentRequestRow,
 ) -> Result<Option<usize>> {
+    Ok(
+        trace_parent_to_matching_root(access, candidate_parent, |current| {
+            request_doc_id(current) == request_doc_id(root) && current.request_id == root.request_id
+        })
+        .await?
+        .map(|(_, depth)| depth),
+    )
+}
+
+async fn trace_parent_to_matching_root(
+    access: &DescendantGraphAccess<'_>,
+    candidate_parent: &AgentRequestRow,
+    matches: impl Fn(&AgentRequestRow) -> bool,
+) -> Result<Option<(AgentRequestRow, usize)>> {
     let mut current = candidate_parent.clone();
     let mut depth = 0usize;
     let mut seen = BTreeSet::new();
 
     loop {
-        if request_doc_id(&current) == request_doc_id(root) {
-            return Ok((current.request_id == root.request_id).then_some(depth));
+        if matches(&current) {
+            return Ok(Some((current, depth)));
         }
         if depth >= MAX_DESCENDANT_DEPTH || !seen.insert(request_doc_id(&current).to_string()) {
             return Ok(None);
@@ -1029,8 +1189,37 @@ mod tests {
     #[test]
     fn generated_descendant_graph_cases_fence_visibility_and_control() {
         let cases = lean_descendant_graph_cases();
-        assert_eq!(cases.len(), 11);
+        assert_eq!(cases.len(), 20);
         for case in cases {
+            let owner = AgentRequestRow {
+                doc_id: Some("owner-doc".into()),
+                request_id: "owner-turn".into(),
+                session_id: Some("conversation".into()),
+                agent_did: Some("did:owner".into()),
+                requester_did: None,
+                behavior_id: None,
+                caused_by_parent_request_id: None,
+                caused_by_parent_request_doc_id: None,
+                caused_by_parent_tool_call_id: None,
+                caused_by_parent_tool_call_doc_id: None,
+                ..Default::default()
+            };
+            let caller = AgentRequestRow {
+                doc_id: Some("later-doc".into()),
+                request_id: "later-turn".into(),
+                session_id: Some(case.caller_session.clone()),
+                agent_did: Some(case.caller_agent.clone()),
+                requester_did: case.caller_requester.clone(),
+                ..owner.clone()
+            };
+            let authorized = same_session_owner(&caller, &owner);
+            assert_eq!(authorized, case.session_authorized, "{}", case.name);
+            assert_eq!(
+                authorized && case.controllable,
+                case.session_controllable,
+                "{}",
+                case.name
+            );
             assert!(case.root_request_id > 0, "{}", case.name);
             assert!(case.parent_request_id > 0, "{}", case.name);
             assert!(case.child_request_id > 0, "{}", case.name);

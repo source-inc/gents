@@ -1,0 +1,11 @@
+type PortLiveResult {
+  run_id: String @index @immutable
+  probe_id: String @index(unique: true) @immutable
+  surface_id: String @immutable
+  live_prompt: String @immutable
+  status: String @immutable
+  grok_wire_observed: String @immutable
+  gents_docs_observed: String @immutable
+  evidence: String @immutable
+  expected_total: String @immutable
+}

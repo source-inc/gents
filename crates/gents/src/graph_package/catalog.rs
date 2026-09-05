@@ -166,10 +166,18 @@ fn validate_tool_selection_asset(package_name: &str, path: &str) -> Result<()> {
             crate::tool_surface::TOOL_POLICY_V1
         );
     }
-    for field in ["enable_goal_tools", "enable_goal_creation"] {
-        if object.get(field) != Some(&serde_json::Value::Bool(false)) {
-            anyhow::bail!("bundled tool selection asset {path:?} must explicitly disable {field}");
-        }
+    if !matches!(
+        object.get("enable_goal_tools"),
+        Some(serde_json::Value::Bool(_))
+    ) {
+        anyhow::bail!(
+            "bundled tool selection asset {path:?} must explicitly declare boolean enable_goal_tools"
+        );
+    }
+    if object.get("enable_goal_creation") != Some(&serde_json::Value::Bool(false)) {
+        anyhow::bail!(
+            "bundled tool selection asset {path:?} must explicitly disable enable_goal_creation"
+        );
     }
     Ok(())
 }
@@ -269,6 +277,7 @@ mod tests {
     use super::*;
     use crate::document_config::{SurfaceToolDecl, WriteToolFieldFill};
     use crate::graph_pipeline::{compile_graph, CompilerPolicy, StageCapability};
+    use serde_json::{json, Value};
 
     #[test]
     fn bundled_catalog_is_read_only_complete_and_compiler_valid() {
@@ -665,6 +674,211 @@ mod tests {
                 area_id.fill,
                 Some(WriteToolFieldFill::SourceField("area_id".to_owned())),
                 "{tool_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_review_evidence_handoff_is_compact_and_correlation_scoped() {
+        let package = load_bundled_graph_package("code-review").unwrap();
+        let surface: BundledToolSurface = serde_json::from_str(
+            package
+                .asset_text("datastore-tool-surfaces/review-recon-writes/object.json")
+                .unwrap(),
+        )
+        .unwrap();
+        let SurfaceToolDecl::Create(entry) = &surface.entries[0] else {
+            panic!("review recon writer must be a create tool");
+        };
+        let repository_path = entry
+            .fields
+            .iter()
+            .find(|field| field.name == "repository_path")
+            .unwrap();
+        assert!(!repository_path.required);
+        assert_eq!(
+            repository_path.fill,
+            Some(WriteToolFieldFill::SourceField(
+                "repository_path".to_owned()
+            ))
+        );
+        let evidence_id = entry
+            .fields
+            .iter()
+            .find(|field| field.name == "evidence_id")
+            .unwrap();
+        assert!(!evidence_id.required);
+        assert_eq!(
+            evidence_id.fill,
+            Some(WriteToolFieldFill::SourceField("evidence_id".to_owned()))
+        );
+        assert!(entry.fields.iter().all(|field| field.name != "evidence"));
+        let expected_total = entry
+            .fields
+            .iter()
+            .find(|field| field.name == "expected_total")
+            .unwrap();
+        assert!(expected_total.required);
+        assert_eq!(expected_total.fill, None);
+        let recon_prompt = package
+            .asset_text("tasks/review-recon-task/prompt.md")
+            .unwrap();
+        assert!(recon_prompt.contains("{{ doc.evidence_summary }}"));
+        assert!(!recon_prompt.contains("{{ doc.evidence }}"));
+        let scan_prompt = package
+            .asset_text("tasks/review-scan-task/prompt.md")
+            .unwrap();
+        assert!(!scan_prompt.contains("{{ doc.evidence }}"));
+
+        let scan_surface: BundledToolSurface = serde_json::from_str(
+            package
+                .asset_text("datastore-tool-surfaces/review-scan-writes/object.json")
+                .unwrap(),
+        )
+        .unwrap();
+        let manifest_tool = scan_surface
+            .entries
+            .iter()
+            .find(|entry| entry.tool_name() == "read_review_evidence_manifest")
+            .unwrap();
+        let SurfaceToolDecl::Query(manifest_tool) = manifest_tool else {
+            panic!("review evidence manifest must be a query tool");
+        };
+        assert_eq!(manifest_tool.collection, "CodeReviewEvidenceManifest");
+        assert_eq!(manifest_tool.filter_fields.len(), 1);
+        assert_eq!(manifest_tool.filter_fields[0].name, "evidence_id");
+        assert_eq!(
+            manifest_tool.filter_fields[0].fill,
+            Some(WriteToolFieldFill::SourceField("evidence_id".to_owned()))
+        );
+
+        let page_tool = scan_surface
+            .entries
+            .iter()
+            .find(|entry| entry.tool_name() == "read_review_evidence_page")
+            .unwrap();
+        let SurfaceToolDecl::Query(page_tool) = page_tool else {
+            panic!("review evidence page must be a query tool");
+        };
+        assert_eq!(page_tool.collection, "CodeReviewEvidencePage");
+        assert_eq!(page_tool.filter_fields.len(), 2);
+        assert_eq!(page_tool.filter_fields[0].name, "evidence_id");
+        assert_eq!(
+            page_tool.filter_fields[0].fill,
+            Some(WriteToolFieldFill::SourceField("evidence_id".to_owned()))
+        );
+        assert_eq!(page_tool.filter_fields[1].name, "page_index");
+        assert!(page_tool.filter_fields[1].required);
+        assert_eq!(page_tool.filter_fields[1].fill, None);
+        let expected_chunk_fields = (0..16)
+            .map(|chunk| format!("evidence_chunk_{chunk}"))
+            .collect::<Vec<_>>();
+        assert!(expected_chunk_fields
+            .iter()
+            .all(|field| page_tool.fields.contains(field)));
+
+        let manifest_schema = package
+            .asset_text("schemas/evidence_manifest.graphql")
+            .unwrap();
+        assert!(manifest_schema.starts_with("type CodeReviewEvidenceManifest {"));
+        let page_schema = package.asset_text("schemas/evidence_page.graphql").unwrap();
+        assert!(page_schema.starts_with("type CodeReviewEvidencePage {"));
+        assert!(page_schema.contains("page_key: String @index(unique: true) @immutable"));
+        assert!(page_schema.contains("evidence_chunk_15: String @immutable"));
+
+        assert!(scan_prompt.contains("read_review_evidence_manifest"));
+        assert!(scan_prompt.contains("read_review_evidence_page"));
+        assert!(scan_prompt.contains("page_count - 1"));
+        assert!(scan_prompt.contains("evidence_chunk_15"));
+        assert!(!scan_prompt.contains("read_review_evidence_0"));
+    }
+
+    #[test]
+    fn code_review_stages_use_role_specific_least_privilege_tools() {
+        let package = load_bundled_graph_package("code-review").unwrap();
+        for asset in [
+            "tool-selections/review-recon-tools/object.json",
+            "tool-selections/review-scan-tools/object.json",
+        ] {
+            let selection: Value =
+                serde_json::from_str(package.asset_text(asset).unwrap()).unwrap();
+            assert_eq!(selection["enable_file_tools"], false, "{asset}");
+            assert_eq!(selection["file_tools_mode"], "Off", "{asset}");
+            assert_eq!(selection["enable_bash"], false, "{asset}");
+            assert_eq!(selection["bash_mode"], "Off", "{asset}");
+            assert!(selection["command_execution_policy"].is_null(), "{asset}");
+            assert!(selection["command_network_mode"].is_null(), "{asset}");
+            assert_eq!(selection["enable_lsp"], false, "{asset}");
+            assert_eq!(selection["enable_context_budget"], false, "{asset}");
+            assert_eq!(selection["backgroundable_tool_names"], json!([]), "{asset}");
+        }
+
+        let asset = "tool-selections/review-verify-tools/object.json";
+        let selection: Value = serde_json::from_str(package.asset_text(asset).unwrap()).unwrap();
+        assert_eq!(selection["enable_file_tools"], true, "{asset}");
+        assert_eq!(selection["file_tools_mode"], "ReadOnly", "{asset}");
+        assert_eq!(selection["enable_bash"], true, "{asset}");
+        assert_eq!(selection["bash_mode"], "ReadOnly", "{asset}");
+        assert_eq!(
+            selection["command_execution_policy"], "read_only",
+            "{asset}"
+        );
+        assert_eq!(selection["command_network_mode"], "disabled", "{asset}");
+        assert_eq!(selection["enable_lsp"], false, "{asset}");
+        assert_eq!(selection["enable_context_budget"], true, "{asset}");
+        assert_eq!(
+            selection["backgroundable_tool_names"],
+            json!(["bash"]),
+            "{asset}"
+        );
+    }
+
+    #[test]
+    fn code_review_stages_are_durable_goal_controlled() {
+        let package = load_bundled_graph_package("code-review").unwrap();
+        for capability in &package.capabilities {
+            let task: Value =
+                serde_json::from_str(package.asset_text(&capability.task_asset).unwrap()).unwrap();
+            assert!(
+                task["goal_objective_template"]
+                    .as_str()
+                    .is_some_and(|objective| !objective.trim().is_empty()),
+                "{} must provision a controller-owned durable goal",
+                capability.task_asset
+            );
+            assert!(
+                task["goal_token_budget"].is_null(),
+                "{}",
+                capability.task_asset
+            );
+
+            let selection: Value = serde_json::from_str(
+                package
+                    .asset_text(&capability.tool_selection_asset)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                selection["enable_goal_tools"], true,
+                "{}",
+                capability.tool_selection_asset
+            );
+            assert_eq!(
+                selection["enable_goal_creation"], false,
+                "{}",
+                capability.tool_selection_asset
+            );
+
+            let prompt = package.asset_text(&capability.task_prompt_asset).unwrap();
+            assert!(
+                prompt.contains("`update_goal`"),
+                "{}",
+                capability.task_prompt_asset
+            );
+            assert!(
+                prompt.contains("`status=\"complete\"`"),
+                "{}",
+                capability.task_prompt_asset
             );
         }
     }

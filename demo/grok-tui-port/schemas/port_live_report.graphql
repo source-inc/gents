@@ -1,0 +1,11 @@
+type PortLiveReport {
+  run_id: String @index(unique: true) @immutable
+  passed_count: String @immutable
+  failed_count: String @immutable
+  blocked_count: String @immutable
+  expected_count: String @immutable
+  observed_count: String @immutable
+  coverage_complete: String @immutable
+  final_review_head: String @immutable
+  summary: String @immutable
+}

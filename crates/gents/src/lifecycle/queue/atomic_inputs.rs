@@ -1,25 +1,54 @@
 use super::*;
 
-fn background_completion_enqueue_gate(
-    node: &EmbeddedNode,
-) -> std::sync::Arc<tokio::sync::Mutex<()>> {
-    type Gate = tokio::sync::Mutex<()>;
-    static GATES: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::BTreeMap<usize, std::sync::Weak<Gate>>>,
-    > = std::sync::OnceLock::new();
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 
-    let node_key = node as *const EmbeddedNode as usize;
+use tokio::sync::Mutex;
+
+type BackgroundCompletionGate = Mutex<()>;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct BackgroundCompletionGateKey {
+    node: usize,
+    session_id: String,
+    agent_did: String,
+    queue_key: String,
+}
+
+/// Serialize the read/create/reconcile path for one local coalescing domain.
+/// The proven queue transition is sequential: one coalescing enqueue must
+/// observe the pending entry created by the previous transition. DefraDB
+/// transactions conflict only when they touch the same document, so two empty
+/// reads could otherwise create disjoint requests and return before duplicate
+/// reconciliation converges them. The weak registry does not retain either
+/// nodes or idle gates; stale entries are pruned when a new gate is created.
+fn background_completion_gate(
+    node: &EmbeddedNode,
+    session_id: &str,
+    agent_did: &str,
+    queue_key: &str,
+) -> Arc<BackgroundCompletionGate> {
+    static GATES: OnceLock<
+        StdMutex<HashMap<BackgroundCompletionGateKey, Weak<BackgroundCompletionGate>>>,
+    > = OnceLock::new();
+
+    let key = BackgroundCompletionGateKey {
+        node: node as *const EmbeddedNode as usize,
+        session_id: session_id.to_string(),
+        agent_did: agent_did.to_string(),
+        queue_key: queue_key.to_string(),
+    };
     let mut gates = GATES
-        .get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
+        .get_or_init(|| StdMutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(gate) = gates.get(&node_key).and_then(std::sync::Weak::upgrade) {
+    if let Some(gate) = gates.get(&key).and_then(Weak::upgrade) {
         return gate;
     }
 
     gates.retain(|_, gate| gate.strong_count() > 0);
-    let gate = std::sync::Arc::new(Gate::new(()));
-    gates.insert(node_key, std::sync::Arc::downgrade(&gate));
+    let gate = Arc::new(Mutex::new(()));
+    gates.insert(key, Arc::downgrade(&gate));
     gate
 }
 
@@ -48,14 +77,8 @@ pub(crate) async fn enqueue_background_completion_with_message(
         .context("atomic background completion enqueue requires a queue key")?
         .to_string();
 
-    // The proven queue transition is sequential: one coalescing enqueue must
-    // observe the pending entry created by the previous transition. DefraDB
-    // transactions conflict only when they touch the same document, so two
-    // empty reads could otherwise create disjoint requests and return before
-    // duplicate reconciliation converges them. Serialize this boundary per
-    // embedded node; cross-process duplicates still converge below.
-    let gate = background_completion_enqueue_gate(node);
-    let _enqueue_guard = gate.lock().await;
+    let gate = background_completion_gate(node, &parent.session_id, &parent.agent_did, &queue_key);
+    let _guard = gate.lock().await;
 
     let behavior_id = parent_behavior_id(node, parent).await?;
     let metadata = queue_metadata_json(&queue_hints);

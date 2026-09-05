@@ -42,6 +42,16 @@ struct PackManifest {
     await_timeout_secs: u64,
     #[serde(default)]
     scan: Option<PackScan>,
+    /// Bundled graph packages installed into the fresh demo home before seed.
+    /// This lets a pack call a reusable graph without relying on ambient home
+    /// state from a previous run.
+    #[serde(default)]
+    bundled_graph_packages: Vec<String>,
+    /// Optional package-specific inference bindings. Every declared role in
+    /// the named package inherits this backend/profile/model instead of the
+    /// bootstrap behavior's defaults, unless that role has an override.
+    #[serde(default)]
+    bundled_graph_bindings: BTreeMap<String, PackGraphBinding>,
 }
 
 fn default_timeout() -> u64 {
@@ -102,6 +112,10 @@ struct PackInit {
     backend_preset: Option<String>,
     #[serde(default)]
     openai_wire_api: Option<String>,
+    /// Initial backend concurrency. Pack-owned backends can still override
+    /// this, but bundled graphs must not accidentally inherit a tiny default.
+    #[serde(default)]
+    max_concurrent: Option<i64>,
     /// `gents init --tool-root`. Required for readonly/write/yolo when not
     /// inferable. Relative paths resolve against the process cwd.
     #[serde(default)]
@@ -115,6 +129,24 @@ struct PackInit {
     /// Packs use this to fail fast when invoked from the wrong checkout.
     #[serde(default)]
     tool_root_markers: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PackGraphBinding {
+    backend_id: String,
+    profile_id: String,
+    model_name: String,
+    /// Optional tighter bindings for individual logical package roles. Roles
+    /// not listed here inherit the package-level binding above.
+    #[serde(default)]
+    role_overrides: BTreeMap<String, PackGraphRoleBinding>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PackGraphRoleBinding {
+    backend_id: String,
+    profile_id: String,
+    model_name: String,
 }
 
 fn default_tool_package() -> String {
@@ -156,7 +188,19 @@ struct PackExpect {
     #[serde(default)]
     tool_calls: Vec<ToolCallExpectation>,
     #[serde(default)]
+    stage_tool_sequences: Vec<StageToolSequenceExpectation>,
+    #[serde(default)]
+    workspace_receipt_paths: Option<WorkspaceReceiptPathExpectation>,
+    #[serde(default)]
     result_documents: Vec<ResultDocumentExpectation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkspaceReceiptPathExpectation {
+    work_unit_collection: String,
+    correlation_field: String,
+    work_unit_id_field: String,
+    owned_paths_field: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,6 +234,16 @@ struct ToolCallExpectation {
     symbol: Option<String>,
     #[serde(default)]
     result_contains: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StageToolSequenceExpectation {
+    trigger_id: String,
+    boundary_tool_name: String,
+    max_calls_before_boundary: usize,
+    max_calls_per_message_before_boundary: usize,
+    exact_boundary_calls: usize,
+    allowed_at_or_after_boundary: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -661,6 +715,57 @@ fn validate_manifest(manifest: &PackManifest) -> Result<()> {
         bail!("expect.source_edges requires expect.signed_provenance=true");
     }
     validate_tool_package(&manifest.init.tool_package)?;
+    let mut graph_packages = BTreeSet::new();
+    for package in &manifest.bundled_graph_packages {
+        let package = package.trim();
+        if package.is_empty() {
+            bail!("bundled_graph_packages entries must not be empty");
+        }
+        if !graph_packages.insert(package) {
+            bail!("bundled_graph_packages contains duplicate {package}");
+        }
+        let package_asset = gents::graph_package::load_bundled_graph_package(package)
+            .with_context(|| format!("loading bundled graph dependency {package}"))?;
+        let Some(binding) = manifest.bundled_graph_bindings.get(package) else {
+            continue;
+        };
+        for (field, value) in [
+            ("backend_id", &binding.backend_id),
+            ("profile_id", &binding.profile_id),
+            ("model_name", &binding.model_name),
+        ] {
+            if value.trim().is_empty() {
+                bail!("bundled_graph_bindings[{package}].{field} must not be empty");
+            }
+        }
+        let declared_roles = package_asset
+            .manifest
+            .roles
+            .iter()
+            .map(|role| role.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for (role, override_binding) in &binding.role_overrides {
+            if !declared_roles.contains(role.as_str()) {
+                bail!("bundled_graph_bindings[{package}].role_overrides names unknown role {role}");
+            }
+            for (field, value) in [
+                ("backend_id", &override_binding.backend_id),
+                ("profile_id", &override_binding.profile_id),
+                ("model_name", &override_binding.model_name),
+            ] {
+                if value.trim().is_empty() {
+                    bail!(
+                        "bundled_graph_bindings[{package}].role_overrides[{role}].{field} must not be empty"
+                    );
+                }
+            }
+        }
+    }
+    for package in manifest.bundled_graph_bindings.keys() {
+        if !graph_packages.contains(package.as_str()) {
+            bail!("bundled_graph_bindings names package {package} that is not bundled");
+        }
+    }
     let mut result_collections = BTreeSet::new();
     for result in &manifest.expect.result_documents {
         validate_collection_identifier(&result.collection)?;
@@ -727,6 +832,53 @@ fn validate_manifest(manifest: &PackManifest) -> Result<()> {
             }
         }
     }
+    let mut sequenced_triggers = BTreeSet::new();
+    for expected in &manifest.expect.stage_tool_sequences {
+        if !manifest.expect.trigger_ids.contains(&expected.trigger_id) {
+            bail!(
+                "expect.stage_tool_sequences names unknown trigger {}",
+                expected.trigger_id
+            );
+        }
+        if !sequenced_triggers.insert(&expected.trigger_id) {
+            bail!(
+                "expect.stage_tool_sequences contains duplicate trigger {}",
+                expected.trigger_id
+            );
+        }
+        if expected.boundary_tool_name.trim().is_empty() {
+            bail!("expect.stage_tool_sequences boundary_tool_name must not be empty");
+        }
+        if expected.exact_boundary_calls == 0 {
+            bail!("expect.stage_tool_sequences exact_boundary_calls must be greater than zero");
+        }
+        if expected.max_calls_per_message_before_boundary == 0 {
+            bail!(
+                "expect.stage_tool_sequences max_calls_per_message_before_boundary must be greater than zero"
+            );
+        }
+        if !expected
+            .allowed_at_or_after_boundary
+            .iter()
+            .any(|name| name == &expected.boundary_tool_name)
+        {
+            bail!(
+                "expect.stage_tool_sequences for {} must allow its boundary tool {}",
+                expected.trigger_id,
+                expected.boundary_tool_name
+            );
+        }
+    }
+    if let Some(expected) = &manifest.expect.workspace_receipt_paths {
+        validate_collection_identifier(&expected.work_unit_collection)?;
+        for field in [
+            &expected.correlation_field,
+            &expected.work_unit_id_field,
+            &expected.owned_paths_field,
+        ] {
+            gents::graphql::validate_graphql_name(field)?;
+        }
+    }
     if let Some(fan_in) = &manifest.expect.fan_in {
         if fan_in.min_expected_count == Some(0) || fan_in.max_expected_count == Some(0) {
             bail!("expect.fan_in count bounds must be greater than zero");
@@ -759,6 +911,123 @@ fn validate_manifest(manifest: &PackManifest) -> Result<()> {
             "init.tool_package={} requires init.tool_root (a read-only/write ceiling needs a workspace root)",
             manifest.init.tool_package
         );
+    }
+    Ok(())
+}
+
+async fn install_bundled_graph_dependencies(
+    bin: &Path,
+    home: &Path,
+    graphql: &str,
+    agent_did: &str,
+    packages: &[String],
+    bindings: &BTreeMap<String, PackGraphBinding>,
+    timeout: Duration,
+) -> Result<()> {
+    for package in packages {
+        tracing::info!(%package, "installing bundled graph dependency");
+        let explicit_binding = bindings.get(package);
+        let mut binding_path = None;
+        if let Some(binding) = explicit_binding {
+            let query = format!(
+                r#"{{
+                  HostDeployment(order: {{ created_at: ASC }}, limit: 8) {{ deployment_id }}
+                  InferenceBackend(filter: {{ backend_id: {{ _eq: "{}" }} }}, limit: 2) {{ backend_id enabled }}
+                  InferenceProfile(filter: {{ profile_id: {{ _eq: "{}" }} }}, limit: 2) {{ profile_id }}
+                }}"#,
+                escape_graphql_string(&binding.backend_id),
+                escape_graphql_string(&binding.profile_id),
+            );
+            let response = wait_for_unique_graphql_rows(
+                graphql,
+                &query,
+                &["HostDeployment", "InferenceBackend", "InferenceProfile"],
+                "bundled graph binding targets",
+                timeout,
+            )
+            .await?;
+            let deployment_id = response
+                .pointer("/data/HostDeployment/0/deployment_id")
+                .and_then(Value::as_str)
+                .context("bundled graph binding has no unambiguous HostDeployment")?;
+            let package_asset = gents::graph_package::load_bundled_graph_package(package)?;
+            for override_binding in binding.role_overrides.values() {
+                let override_query = format!(
+                    r#"{{
+                      InferenceBackend(filter: {{ backend_id: {{ _eq: "{}" }} }}, limit: 2) {{ backend_id enabled }}
+                      InferenceProfile(filter: {{ profile_id: {{ _eq: "{}" }} }}, limit: 2) {{ profile_id }}
+                    }}"#,
+                    escape_graphql_string(&override_binding.backend_id),
+                    escape_graphql_string(&override_binding.profile_id),
+                );
+                wait_for_unique_graphql_rows(
+                    graphql,
+                    &override_query,
+                    &["InferenceBackend", "InferenceProfile"],
+                    "bundled graph role override targets",
+                    timeout,
+                )
+                .await?;
+            }
+            let explicit = gents::graph_package::GraphPackageInstallBindings {
+                owner_did: agent_did.to_string(),
+                roles: package_asset
+                    .manifest
+                    .roles
+                    .iter()
+                    .map(|declared| {
+                        let (backend_id, profile_id, model_name) = binding
+                            .role_overrides
+                            .get(&declared.name)
+                            .map(|role| (&role.backend_id, &role.profile_id, &role.model_name))
+                            .unwrap_or((
+                                &binding.backend_id,
+                                &binding.profile_id,
+                                &binding.model_name,
+                            ));
+                        (
+                            declared.name.clone(),
+                            gents::graph_pipeline::PackageRoleBinding {
+                                principal_did: agent_did.to_string(),
+                                deployment_id: deployment_id.to_string(),
+                                backend_id: Some(backend_id.clone()),
+                                profile_id: Some(profile_id.clone()),
+                                model_name: Some(model_name.clone()),
+                            },
+                        )
+                    })
+                    .collect(),
+            };
+            let path = home.join(format!("bundled-graph-bindings-{package}.json"));
+            std::fs::write(
+                &path,
+                serde_json::to_vec_pretty(&explicit)
+                    .context("serializing bundled graph bindings")?,
+            )
+            .with_context(|| format!("writing bundled graph bindings {}", path.display()))?;
+            binding_path = Some(path);
+        }
+        let mut args = vec![
+            "graph".to_string(),
+            "install".to_string(),
+            package.clone(),
+            "--home".to_string(),
+            path_arg(home),
+            "--graphql".to_string(),
+            graphql.to_string(),
+            "--agent-did".to_string(),
+            agent_did.to_string(),
+            "--output".to_string(),
+            "json".to_string(),
+        ];
+        if let Some(path) = binding_path.as_ref() {
+            args.push("--bindings".to_string());
+            args.push(path_arg(path));
+        }
+        run_cli_json(bin, &args)
+            .await
+            .with_context(|| format!("installing bundled graph dependency {package}"))?;
+        tracing::info!(%package, "installed bundled graph dependency");
     }
     Ok(())
 }
@@ -873,6 +1142,45 @@ async fn wait_for_event_source(log: &Path, collection: &str, deadline: Duration)
         deadline.as_secs(),
         log.display()
     )
+}
+
+/// `server --apply-root` opens HTTP before its applied configuration has
+/// crossed the authoritative readiness fence. Demo-run dependencies must not
+/// mutate configuration in that interval: doing so changes the fingerprint
+/// the server is waiting to publish and can make it shut itself down while a
+/// prematurely seeded request is already streaming.
+async fn wait_for_server_ready_marker(
+    log: &Path,
+    server: &mut tokio::process::Child,
+    deadline: Duration,
+) -> Result<()> {
+    let started = Instant::now();
+    while started.elapsed() < deadline {
+        if let Ok(text) = std::fs::read_to_string(log) {
+            if server_ready_marker(&text) {
+                return Ok(());
+            }
+        }
+        if let Ok(Some(status)) = server.try_wait() {
+            bail!(
+                "demo server exited before publishing post-apply readiness ({status}); check {}",
+                log.display()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    bail!(
+        "timed out after {}s waiting for the server's post-apply readiness marker; check {}",
+        deadline.as_secs(),
+        log.display()
+    )
+}
+
+fn server_ready_marker(log: &str) -> bool {
+    log.lines().any(|line| {
+        let line = strip_ansi(line);
+        line.contains("gents server is running ") && line.contains("Press Ctrl-C to stop.")
+    })
 }
 
 fn event_source_ready(log: &str, collection: &str) -> bool {
@@ -991,6 +1299,10 @@ fn pack_init_cli_args(
         init_args.push("--api-key-env-var".into());
         init_args.push(api_key_env_var.into());
     }
+    if let Some(max_concurrent) = manifest.init.max_concurrent {
+        init_args.push("--max-concurrent".into());
+        init_args.push(max_concurrent.to_string());
+    }
     init_args
 }
 
@@ -1013,17 +1325,23 @@ fn has_correlated_request(response: &Value) -> bool {
         .is_some_and(|rows| !rows.is_empty())
 }
 
-async fn wait_until<F, Fut>(label: &str, deadline: Duration, mut probe: F) -> Result<()>
+async fn wait_until_value<T, F, Fut, P>(
+    label: &str,
+    deadline: Duration,
+    mut probe: F,
+    ready: P,
+) -> Result<T>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<bool>>,
+    Fut: std::future::Future<Output = Result<T>>,
+    P: Fn(&T) -> bool,
 {
     let started = Instant::now();
     let mut last = None::<String>;
     while started.elapsed() < deadline {
         match probe().await {
-            Ok(true) => return Ok(()),
-            Ok(false) => {}
+            Ok(value) if ready(&value) => return Ok(value),
+            Ok(_) => {}
             Err(error) => last = Some(error.to_string()),
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
@@ -1032,6 +1350,39 @@ where
         Some(error) => bail!("{label} timed out after {}s: {error}", deadline.as_secs()),
         None => bail!("{label} timed out after {}s", deadline.as_secs()),
     }
+}
+
+async fn wait_until<F, Fut>(label: &str, deadline: Duration, probe: F) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    wait_until_value(label, deadline, probe, |ready| *ready)
+        .await
+        .map(|_| ())
+}
+
+async fn wait_for_unique_graphql_rows(
+    graphql: &str,
+    query: &str,
+    fields: &[&str],
+    label: &str,
+    deadline: Duration,
+) -> Result<Value> {
+    wait_until_value(
+        label,
+        deadline,
+        || post_graphql(graphql, query),
+        |response| {
+            fields.iter().all(|field| {
+                response
+                    .pointer(&format!("/data/{field}"))
+                    .and_then(Value::as_array)
+                    .is_some_and(|rows| rows.len() == 1)
+            })
+        },
+    )
+    .await
 }
 
 async fn wait_http_ok(url: &str, deadline: Duration) -> Result<()> {
@@ -1057,6 +1408,160 @@ struct StageResult {
     request_id: String,
     lifecycle_state: RequestLifecycleState,
     caused_by_source_doc_id: Option<String>,
+}
+
+async fn verify_stage_tool_sequences(
+    graphql: &str,
+    stage: &StageResult,
+    expectations: &[StageToolSequenceExpectation],
+) -> Result<()> {
+    for expected in expectations
+        .iter()
+        .filter(|expected| expected.trigger_id == stage.trigger_id)
+    {
+        let escaped = escape_graphql_string(&stage.request_id);
+        let query = format!(
+            r#"{{ AgentToolCall(filter: {{ request_id: {{ _eq: "{escaped}" }} }}) {{
+                message_sequence
+                tool_name
+                args
+                lifecycle_state
+            }} }}"#
+        );
+        let rows = graphql_rows(graphql, "AgentToolCall", &query).await?;
+        verify_stage_tool_sequence_rows(stage, expected, &rows)?;
+    }
+    Ok(())
+}
+
+fn verify_stage_tool_sequence_rows(
+    stage: &StageResult,
+    expected: &StageToolSequenceExpectation,
+    rows: &[Value],
+) -> Result<()> {
+    let sequence_name_and_args = rows
+        .iter()
+        .map(|row| {
+            let sequence = row
+                .get("message_sequence")
+                .and_then(Value::as_i64)
+                .with_context(|| {
+                    format!(
+                        "trigger {} request {} has a tool call without message_sequence",
+                        stage.trigger_id, stage.request_id
+                    )
+                })?;
+            let name = row
+                .get("tool_name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .with_context(|| {
+                    format!(
+                        "trigger {} request {} has a tool call without tool_name",
+                        stage.trigger_id, stage.request_id
+                    )
+                })?;
+            let args = row.get("args").and_then(Value::as_str).with_context(|| {
+                format!(
+                    "trigger {} request {} has a tool call without args",
+                    stage.trigger_id, stage.request_id
+                )
+            })?;
+            Ok((sequence, name, args))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let boundary_sequence = sequence_name_and_args
+        .iter()
+        .filter(|(_, name, _)| *name == expected.boundary_tool_name)
+        .map(|(sequence, _, _)| *sequence)
+        .min()
+        .with_context(|| {
+            format!(
+                "trigger {} request {} never called boundary tool {}",
+                stage.trigger_id, stage.request_id, expected.boundary_tool_name
+            )
+        })?;
+    let calls_before_boundary = sequence_name_and_args
+        .iter()
+        .filter(|(sequence, _, _)| *sequence < boundary_sequence)
+        .count();
+    if calls_before_boundary > expected.max_calls_before_boundary {
+        bail!(
+            "trigger {} request {} made {} tool calls before {}; maximum is {}",
+            stage.trigger_id,
+            stage.request_id,
+            calls_before_boundary,
+            expected.boundary_tool_name,
+            expected.max_calls_before_boundary
+        );
+    }
+    let mut calls_by_message = BTreeMap::new();
+    for (sequence, _, _) in sequence_name_and_args
+        .iter()
+        .filter(|(sequence, _, _)| *sequence < boundary_sequence)
+    {
+        *calls_by_message.entry(sequence).or_insert(0usize) += 1;
+    }
+    if let Some((sequence, count)) = calls_by_message
+        .into_iter()
+        .find(|(_, count)| *count > expected.max_calls_per_message_before_boundary)
+    {
+        bail!(
+            "trigger {} request {} made {} tool calls in pre-boundary message {}; maximum is {}",
+            stage.trigger_id,
+            stage.request_id,
+            count,
+            sequence,
+            expected.max_calls_per_message_before_boundary
+        );
+    }
+    // A provider may repeat the exact same deterministic write while checking
+    // its own work.  The durable collection/fan-in gates below remain the
+    // authority for materialized output count, so count byte-identical write
+    // arguments once here.  A conflicting retry or an extra logical write has
+    // different arguments and still fails closed.
+    let boundary_attempts = sequence_name_and_args
+        .iter()
+        .filter(|(_, name, _)| *name == expected.boundary_tool_name)
+        .count();
+    let boundary_calls = sequence_name_and_args
+        .iter()
+        .filter(|(_, name, _)| *name == expected.boundary_tool_name)
+        .map(|(_, _, args)| *args)
+        .collect::<BTreeSet<_>>()
+        .len();
+    if boundary_calls != expected.exact_boundary_calls {
+        bail!(
+            "trigger {} request {} made {} distinct {} calls across {} attempts; expected exactly {} distinct calls",
+            stage.trigger_id,
+            stage.request_id,
+            boundary_calls,
+            expected.boundary_tool_name,
+            boundary_attempts,
+            expected.exact_boundary_calls
+        );
+    }
+    let disallowed = sequence_name_and_args
+        .iter()
+        .filter(|(sequence, name, _)| {
+            *sequence >= boundary_sequence
+                && !expected
+                    .allowed_at_or_after_boundary
+                    .iter()
+                    .any(|allowed| allowed == *name)
+        })
+        .map(|(_, name, _)| *name)
+        .collect::<Vec<_>>();
+    if !disallowed.is_empty() {
+        bail!(
+            "trigger {} request {} called disallowed tools at or after {} began: {}",
+            stage.trigger_id,
+            stage.request_id,
+            expected.boundary_tool_name,
+            disallowed.join(", ")
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1774,16 +2279,126 @@ async fn sourced_trigger_request_count(
     Ok(expected)
 }
 
+async fn verify_workspace_receipt_paths(
+    graphql: &str,
+    expected: &WorkspaceReceiptPathExpectation,
+    correlation: &str,
+) -> Result<()> {
+    let escaped = escape_graphql_string(correlation);
+    let unit_query = format!(
+        r#"{{ {collection}(filter: {{ {correlation_field}: {{ _eq: "{escaped}" }} }}) {{ {work_unit_id_field} {owned_paths_field} }} }}"#,
+        collection = expected.work_unit_collection,
+        correlation_field = expected.correlation_field,
+        work_unit_id_field = expected.work_unit_id_field,
+        owned_paths_field = expected.owned_paths_field,
+    );
+    let unit_rows = graphql_rows(graphql, &expected.work_unit_collection, &unit_query).await?;
+    let receipt_query = format!(
+        r#"{{ WorkspaceReceipt(filter: {{ caused_by_correlation: {{ _eq: "{escaped}" }}, kind: {{ _eq: "writer" }} }}) {{ work_unit_id changed_files }} }}"#
+    );
+    let receipt_rows = graphql_rows(graphql, "WorkspaceReceipt", &receipt_query).await?;
+    validate_workspace_receipt_path_rows(expected, &unit_rows, &receipt_rows)
+}
+
+fn validate_workspace_receipt_path_rows(
+    expected: &WorkspaceReceiptPathExpectation,
+    unit_rows: &[Value],
+    receipt_rows: &[Value],
+) -> Result<()> {
+    let mut ownership = BTreeMap::<String, BTreeSet<String>>::new();
+    for row in unit_rows {
+        let work_unit_id = row
+            .get(&expected.work_unit_id_field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .with_context(|| {
+                format!(
+                    "{}.{} must be a non-empty string",
+                    expected.work_unit_collection, expected.work_unit_id_field
+                )
+            })?;
+        let encoded = row
+            .get(&expected.owned_paths_field)
+            .and_then(Value::as_str)
+            .with_context(|| {
+                format!(
+                    "{}.{} must be a JSON string array for {work_unit_id}",
+                    expected.work_unit_collection, expected.owned_paths_field
+                )
+            })?;
+        let paths: Vec<String> = serde_json::from_str(encoded).with_context(|| {
+            format!(
+                "{}.{} is not a JSON string array for {work_unit_id}",
+                expected.work_unit_collection, expected.owned_paths_field
+            )
+        })?;
+        let mut exact = BTreeSet::new();
+        for path in paths {
+            let canonical = !path.is_empty()
+                && path.trim() == path
+                && !Path::new(&path).is_absolute()
+                && !path.contains('\\')
+                && path
+                    .split('/')
+                    .all(|component| !component.is_empty() && !matches!(component, "." | ".."));
+            if !canonical || !exact.insert(path.clone()) {
+                bail!(
+                    "{}.{} contains an invalid, non-canonical, or duplicate path for {work_unit_id}",
+                    expected.work_unit_collection,
+                    expected.owned_paths_field
+                );
+            }
+        }
+        if ownership.insert(work_unit_id.to_string(), exact).is_some() {
+            bail!("duplicate work unit ownership declaration for {work_unit_id}");
+        }
+    }
+
+    for receipt in receipt_rows {
+        let work_unit_id = receipt
+            .get("work_unit_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .context("writer WorkspaceReceipt.work_unit_id must be a non-empty string")?;
+        let allowed = ownership.get(work_unit_id).with_context(|| {
+            format!("writer WorkspaceReceipt references unknown work unit {work_unit_id}")
+        })?;
+        let changed: Vec<String> = match receipt.get("changed_files") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::String(encoded)) => serde_json::from_str(encoded).with_context(|| {
+                format!("WorkspaceReceipt.changed_files is not a JSON string array for {work_unit_id}")
+            })?,
+            Some(_) => bail!(
+                "WorkspaceReceipt.changed_files must be null or a JSON string array for {work_unit_id}"
+            ),
+        };
+        for path in changed {
+            if !allowed.contains(&path) {
+                bail!(
+                    "writer WorkspaceReceipt for {work_unit_id} changed out-of-scope path {path}; allowed paths: {}",
+                    allowed.iter().cloned().collect::<Vec<_>>().join(", ")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn await_stages(
     graphql: &str,
     trigger_ids: &[String],
     trigger_request_counts: &BTreeMap<String, usize>,
     trigger_request_count_sources: &BTreeMap<String, TriggerRequestCountSource>,
+    stage_tool_sequences: &[StageToolSequenceExpectation],
+    workspace_receipt_paths: Option<&WorkspaceReceiptPathExpectation>,
     correlation: &str,
     deadline: Duration,
 ) -> Result<Vec<StageResult>> {
     let started = Instant::now();
     loop {
+        if let Some(expected) = workspace_receipt_paths {
+            verify_workspace_receipt_paths(graphql, expected, correlation).await?;
+        }
         let mut done: Vec<StageResult> = Vec::new();
         let mut resolved_counts = BTreeMap::new();
         for trigger_id in trigger_ids {
@@ -1827,7 +2442,7 @@ async fn await_stages(
                             .unwrap_or_default();
                         bail!("trigger {trigger_id} request {request_id} ended {state}: {reason}");
                     }
-                    done.push(StageResult {
+                    let stage = StageResult {
                         trigger_id: trigger_id.clone(),
                         request_id: request_id.to_string(),
                         lifecycle_state: RequestLifecycleState::Completed,
@@ -1835,7 +2450,9 @@ async fn await_stages(
                             .get("caused_by_source_doc_id")
                             .and_then(Value::as_str)
                             .map(ToOwned::to_owned),
-                    });
+                    };
+                    verify_stage_tool_sequences(graphql, &stage, stage_tool_sequences).await?;
+                    done.push(stage);
                 }
             }
         }
@@ -2700,7 +3317,23 @@ pub(crate) async fn run(args: DemoRunArgs) -> Result<()> {
     )?;
     let outcome = async {
         wait_http(&format!("http://127.0.0.1:{port}/healthz"), &mut server).await?;
+        wait_for_server_ready_marker(
+            &log,
+            &mut server,
+            Duration::from_secs(manifest.await_timeout_secs),
+        )
+        .await?;
         wait_runtime_ready(&graphql, &agent_did, &mut server).await?;
+        install_bundled_graph_dependencies(
+            &bin,
+            &home,
+            &graphql,
+            &agent_did,
+            &manifest.bundled_graph_packages,
+            &manifest.bundled_graph_bindings,
+            Duration::from_secs(manifest.await_timeout_secs),
+        )
+        .await?;
         println!(
             "runtime  ready; waiting for {} event source collection(s)…",
             observed_collections.len()
@@ -2742,6 +3375,8 @@ pub(crate) async fn run(args: DemoRunArgs) -> Result<()> {
             &manifest.expect.trigger_ids,
             &manifest.expect.trigger_request_counts,
             &manifest.expect.trigger_request_count_sources,
+            &manifest.expect.stage_tool_sequences,
+            manifest.expect.workspace_receipt_paths.as_ref(),
             &job_id,
             Duration::from_secs(manifest.await_timeout_secs),
         )
@@ -3059,6 +3694,19 @@ mod tests {
     }
 
     #[test]
+    fn post_apply_server_marker_is_required_before_pack_mutations() {
+        assert!(!server_ready_marker(
+            "gents ready runnable_behaviors=1 unavailable_behaviors=0"
+        ));
+        assert!(server_ready_marker(
+            "gents server is running local-only. Press Ctrl-C to stop."
+        ));
+        assert!(server_ready_marker(
+            "\u{1b}[32mgents server is running with IROH P2P. Press Ctrl-C to stop.\u{1b}[0m"
+        ));
+    }
+
+    #[test]
     fn seed_mutation_escapes_prompt_and_extra_fields() {
         let seed = PackSeed {
             collection: "ReviewJob".into(),
@@ -3164,6 +3812,7 @@ mod tests {
                 api_key_env_var: None,
                 backend_preset: None,
                 openai_wire_api: None,
+                max_concurrent: None,
                 tool_root: None,
                 tool_root_env_var: None,
                 tool_root_markers: Vec::new(),
@@ -3193,10 +3842,14 @@ mod tests {
                 prompt_tool_contracts: Vec::new(),
                 background_completion: None,
                 tool_calls: Vec::new(),
+                stage_tool_sequences: Vec::new(),
+                workspace_receipt_paths: None,
                 result_documents: Vec::new(),
             },
             await_timeout_secs: 1,
             scan: None,
+            bundled_graph_packages: Vec::new(),
+            bundled_graph_bindings: BTreeMap::new(),
         };
 
         let error = validate_manifest(&manifest).expect_err("unsigned source edges must fail");
@@ -4215,6 +4868,7 @@ mod tests {
                 "maintenance-execute-workspace",
                 "MaintenanceReport",
             ),
+            ("grok-tui-port", "port-implement-workspace", "PortWorkUnit"),
         ] {
             let pack = demo.join(pack_name);
             let binding = read_pack_json_defaults(
@@ -4232,7 +4886,644 @@ mod tests {
             let trigger_ids = experiment["expect"]["trigger_ids"]
                 .as_array()
                 .expect("trigger_ids");
-            if pack_name == "repo-maintenance" {
+            if pack_name == "grok-tui-port" {
+                assert!(trigger_ids.iter().any(|id| id == "port-retry"));
+                assert!(trigger_ids.iter().any(|id| id == "port-integrate-record"));
+                assert!(trigger_ids.iter().any(|id| id == "port-recon-audit"));
+                assert!(trigger_ids.iter().any(|id| id == "port-final-review"));
+                assert!(trigger_ids.iter().any(|id| id == "port-converge"));
+                assert!(trigger_ids.iter().any(|id| id == "port-publish"));
+                assert!(trigger_ids.iter().any(|id| id == "port-review"));
+                let integrate_trigger = read_pack_json_defaults(
+                    &pack
+                        .join("event_triggers")
+                        .join("port-integrate")
+                        .join("object.json"),
+                )
+                .expect("port-integrate trigger should load");
+                assert_eq!(
+                    integrate_trigger["concurrency"], "parallel",
+                    "per-document integration triggers must not drop accepted closures while another integration is in flight; workspace binding remains the exclusive integration boundary"
+                );
+                for (stage, budget) in [
+                    ("recon", 1_000_000),
+                    ("recon-audit", 500_000),
+                    ("plan", 300_000),
+                    ("plan-skip", 100_000),
+                    ("implement", 2_000_000),
+                    ("review", 750_000),
+                    ("retry", 200_000),
+                    ("integrate", 200_000),
+                    ("integrate-record", 200_000),
+                    ("converge", 2_000_000),
+                    ("final-review", 2_000_000),
+                    ("live", 500_000),
+                    ("live-review", 500_000),
+                    ("publish", 300_000),
+                ] {
+                    let task = read_pack_json_defaults(
+                        &pack
+                            .join("tasks")
+                            .join(format!("port-{stage}-task"))
+                            .join("object.json"),
+                    )
+                    .unwrap_or_else(|error| panic!("port-{stage} task should load: {error:#}"));
+                    assert_eq!(task["goal_token_budget"], budget);
+                    assert!(task["goal_objective_template"]
+                        .as_str()
+                        .is_some_and(|objective| objective.contains("{{ event.correlation }}")));
+
+                    let tools = read_pack_json_defaults(
+                        &pack
+                            .join("tool-selections")
+                            .join(format!("port-{stage}-tools"))
+                            .join("object.json"),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("port-{stage} tool selection should load: {error:#}")
+                    });
+                    assert_eq!(tools["tool_policy_version"], "tool-policy/v1");
+                    assert!(tools.get("orchestration_enabled").is_none());
+                    assert_eq!(tools["enable_goal_tools"], true);
+                    assert_eq!(tools["enable_goal_creation"], false);
+
+                    let prompt = std::fs::read_to_string(
+                        pack.join("tasks")
+                            .join(format!("port-{stage}-task"))
+                            .join("prompt.md"),
+                    )
+                    .unwrap_or_else(|error| panic!("port-{stage} prompt should load: {error:#}"));
+                    assert!(prompt.contains("`update_goal`"));
+                    assert!(prompt.contains("`status=\"complete\"`"));
+                }
+                assert!(!pack.join("event_triggers/port-revise").exists());
+                assert!(!pack.join("tasks/port-revise-task").exists());
+                assert_eq!(experiment["bundled_graph_packages"], json!(["code-review"]));
+                assert_eq!(experiment["init"]["max_concurrent"], 16);
+                assert!(experiment["expect"]["stage_tool_sequences"][0]
+                    ["allowed_at_or_after_boundary"]
+                    .as_array()
+                    .is_some_and(|tools| ["get_goal", "update_goal"]
+                        .iter()
+                        .all(|expected| tools.iter().any(|tool| tool == expected))));
+                assert_eq!(
+                    experiment["bundled_graph_bindings"]["code-review"]["backend_id"],
+                    "grok-port-backend-ws1"
+                );
+                assert_eq!(
+                    experiment["bundled_graph_bindings"]["code-review"]["profile_id"],
+                    "grok-port-code-review-profile"
+                );
+                assert_eq!(
+                    experiment["bundled_graph_bindings"]["code-review"]["role_overrides"]
+                        ["reviewer"]["profile_id"],
+                    "grok-port-code-review-scan-profile"
+                );
+                let scan_profile = read_pack_json_defaults(
+                    &pack.join("inference-profiles/grok-port-code-review-scan-profile/object.json"),
+                )
+                .expect("code-review scan profile should load");
+                assert_eq!(scan_profile["max_turns"], 1_000_000);
+                assert_eq!(scan_profile["reasoning_effort"], "high");
+                let coordinator_profile = read_pack_json_defaults(
+                    &pack.join("inference-profiles/grok-port-code-review-profile/object.json"),
+                )
+                .expect("code-review coordinator profile should load");
+                assert_eq!(coordinator_profile["reasoning_effort"], "high");
+                let backend_dirs = std::fs::read_dir(pack.join("inference-backends"))
+                    .expect("grok backend directory should load")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("grok backend entries should load");
+                assert_eq!(backend_dirs.len(), 1);
+                for behavior in std::fs::read_dir(pack.join("agent-behaviors"))
+                    .expect("grok behavior directory should load")
+                {
+                    let behavior = behavior.expect("grok behavior entry should load");
+                    let object = read_pack_json_defaults(&behavior.path().join("object.json"))
+                        .expect("grok behavior should load");
+                    assert_eq!(object["backend_id"], "grok-port-backend-ws1");
+                }
+                assert_eq!(
+                    experiment["expect"]["trigger_request_count_sources"]["port-implement"]
+                        ["match_value"],
+                    "ready"
+                );
+                assert_eq!(
+                    experiment["expect"]["trigger_request_count_sources"]["port-integrate"]
+                        ["match_value"],
+                    "accepted"
+                );
+                assert_eq!(
+                    experiment["expect"]["trigger_request_count_sources"]["port-retry"]
+                        ["match_value"],
+                    "retry"
+                );
+                assert_eq!(
+                    experiment["expect"]["trigger_request_count_sources"]["port-integrate-record"]
+                        ["match_value"],
+                    "integrator"
+                );
+                let retry_trigger = read_pack_json_defaults(
+                    &pack
+                        .join("event_triggers")
+                        .join("port-retry")
+                        .join("object.json"),
+                )
+                .expect("port-retry trigger should load");
+                assert_eq!(retry_trigger["source_collection"], "PortUnitClosure");
+                assert_eq!(retry_trigger["filter"], "{ status: { _eq: \"retry\" } }");
+                assert!(retry_trigger.get("workspace_authority").is_none());
+                let integrate_record_trigger = read_pack_json_defaults(
+                    &pack
+                        .join("event_triggers")
+                        .join("port-integrate-record")
+                        .join("object.json"),
+                )
+                .expect("port-integrate-record trigger should load");
+                assert_eq!(
+                    integrate_record_trigger["source_collection"],
+                    "WorkspaceReceipt"
+                );
+                assert_eq!(
+                    integrate_record_trigger["filter"],
+                    "{ kind: { _eq: \"integrator\" } }"
+                );
+                assert_eq!(integrate_record_trigger["workspace_authority"], "readOnly");
+                let route_review =
+                    std::fs::read_to_string(pack.join("tasks/port-review-task/prompt.md"))
+                        .expect("route review prompt should load");
+                assert!(!route_review.contains("gents graph run code-review"));
+                assert!(route_review.contains("structured `owned_paths` JSON"));
+                assert!(route_review.contains("There are no exceptions for `.tmp-build`"));
+                let review_io = read_pack_json_defaults(
+                    &pack.join("datastore-tool-surfaces/port-review-io/object.json"),
+                )
+                .expect("port review IO should load");
+                assert!(review_io["entries"]
+                    .as_array()
+                    .is_some_and(|entries| entries.iter().any(|entry| entry["tool_name"]
+                        == "read_port_work_unit"
+                        && entry["fields"].as_array().is_some_and(|fields| fields
+                            .iter()
+                            .any(|field| field == "owned_paths")))));
+                let review_behavior =
+                    read_pack_json_defaults(&pack.join("agent-behaviors/port-review/object.json"))
+                        .expect("review behavior should load");
+                assert_eq!(
+                    review_behavior["inference_profile_id"],
+                    "grok-port-review-profile"
+                );
+                let review_profile = read_pack_json_defaults(
+                    &pack.join("inference-profiles/grok-port-review-profile/object.json"),
+                )
+                .expect("review profile should load");
+                assert_eq!(review_profile["max_turns"], 1_000_000);
+                let recon = std::fs::read_to_string(pack.join("tasks/port-recon-task/prompt.md"))
+                    .expect("recon prompt should load");
+                assert!(recon.contains("`grok_wire_continuation`"));
+                assert!(recon.contains("preserve both wire fields verbatim"));
+                let recon_tools = read_pack_json_defaults(
+                    &pack.join("tool-selections/port-recon-tools/object.json"),
+                )
+                .expect("recon tool selection should load");
+                assert_eq!(recon_tools["enable_bash"], false);
+                assert_eq!(recon_tools["command_network_mode"], "disabled");
+                assert_eq!(
+                    recon_tools["file_tool_root"],
+                    "./demo/grok-tui-port/recon-input"
+                );
+                let recon_write = read_pack_json_defaults(
+                    &pack.join("datastore-tool-surfaces/port-recon-writes/object.json"),
+                )
+                .expect("recon write surface should load");
+                let recon_fields = recon_write["entries"][0]["fields"]
+                    .as_array()
+                    .expect("recon write fields should be an array");
+                assert!(recon_fields.iter().any(|field| {
+                    field["name"] == "grok_wire_continuation" && field["required"] == false
+                }));
+                let surface_schema =
+                    std::fs::read_to_string(pack.join("schemas/port_surface.graphql"))
+                        .expect("PortSurface schema should load");
+                assert!(surface_schema.contains("grok_wire_continuation: String @immutable"));
+                let audited_ledger: Value = serde_json::from_slice(
+                    &std::fs::read(pack.join("recon-input/audited-ledger.json"))
+                        .expect("audited recon ledger should exist"),
+                )
+                .expect("audited recon ledger should be valid JSON");
+                assert_eq!(
+                    audited_ledger["provenance"]["grok_build_sha"],
+                    "bc7f02eddd3d84085849dc19ed216f11c23b0571"
+                );
+                assert_eq!(
+                    audited_ledger["surfaces"]
+                        .as_array()
+                        .expect("audited surfaces should be an array")
+                        .len(),
+                    13
+                );
+                let audited_surfaces = audited_ledger["surfaces"]
+                    .as_array()
+                    .expect("audited surfaces should be an array");
+                assert_eq!(
+                    audited_surfaces
+                        .iter()
+                        .filter(|surface| surface["verdict"] != "ignore")
+                        .count(),
+                    12
+                );
+                let tracker_surface = audited_surfaces
+                    .iter()
+                    .find(|surface| {
+                        surface["surface_id"]
+                            .as_str()
+                            .is_some_and(|id| id.ends_with(":tool_call:tracker-stream"))
+                    })
+                    .expect("audited tool tracker surface should exist");
+                let tracker_wire = tracker_surface["grok_wire"]
+                    .as_str()
+                    .expect("tool tracker wire should be text");
+                let tracker_expect = tracker_surface["live_expect"]
+                    .as_str()
+                    .expect("tool tracker live expectation should be text");
+                assert!(tracker_wire.contains("When canonical tool metadata is present"));
+                assert!(tracker_wire.contains("task remains on the standard ACP rail"));
+                assert!(tracker_wire.contains("pager owns task suppression"));
+                assert!(tracker_expect.contains("optional `_meta`"));
+                assert!(tracker_expect.contains("explicit `_meta.subagentBackground` boolean"));
+                let subprocess_surface = audited_surfaces
+                    .iter()
+                    .find(|surface| {
+                        surface["surface_id"]
+                            .as_str()
+                            .is_some_and(|id| id.ends_with(":subprocess:terminal-acp"))
+                    })
+                    .expect("audited subprocess surface should exist");
+                let subprocess_docs = subprocess_surface["gents_docs"]
+                    .as_str()
+                    .expect("subprocess document contract should be text");
+                let subprocess_expect = subprocess_surface["live_expect"]
+                    .as_str()
+                    .expect("subprocess live expectation should be text");
+                assert!(
+                    subprocess_docs.contains("AgentToolCall` (execute kind) is the authoritative")
+                );
+                assert!(subprocess_docs.contains("AgentToolResult` is an optional spill"));
+                assert!(subprocess_expect.contains("a spill row is not required"));
+                let subagent_surface = audited_surfaces
+                    .iter()
+                    .find(|surface| {
+                        surface["surface_id"]
+                            .as_str()
+                            .is_some_and(|id| id.ends_with(":subagent:lifecycle"))
+                    })
+                    .expect("audited subagent lifecycle surface should exist");
+                let subagent_wire = subagent_surface["grok_wire"]
+                    .as_str()
+                    .expect("subagent lifecycle wire head should be text");
+                let subagent_wire_continuation = subagent_surface["grok_wire_continuation"]
+                    .as_str()
+                    .expect("subagent lifecycle wire continuation should be text");
+                assert!(!subagent_wire.is_empty() && subagent_wire.len() <= 2_000);
+                assert!(
+                    !subagent_wire_continuation.is_empty()
+                        && subagent_wire_continuation.len() <= 2_000
+                );
+                let complete_subagent_wire = format!("{subagent_wire}{subagent_wire_continuation}");
+                for lifecycle in ["subagent_spawned", "subagent_progress", "subagent_finished"] {
+                    assert!(complete_subagent_wire.contains(lifecycle));
+                }
+                for surface in audited_surfaces {
+                    for field in [
+                        "evidence",
+                        "grok_call_sites",
+                        "grok_wire",
+                        "grok_wire_continuation",
+                        "gents_docs",
+                        "live_prompt",
+                        "live_expect",
+                    ] {
+                        assert!(
+                            surface[field]
+                                .as_str()
+                                .is_none_or(|value| value.len() <= 2_000),
+                            "audited {field} exceeds the native datastore string ceiling"
+                        );
+                    }
+                    let call_sites = surface["grok_call_sites"]
+                        .as_str()
+                        .expect("audited call sites should be text");
+                    assert!(
+                        !call_sites.split_whitespace().any(|token| {
+                            token
+                                .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+                                .strip_prefix('L')
+                                .is_some_and(|suffix| {
+                                    suffix
+                                        .split('-')
+                                        .all(|part| part.chars().all(|c| c.is_ascii_digit()))
+                                })
+                        }),
+                        "audited call sites must use symbols, not stale line anchors"
+                    );
+                }
+                let recon_behavior =
+                    read_pack_json_defaults(&pack.join("agent-behaviors/port-recon/object.json"))
+                        .expect("recon behavior should load");
+                assert_eq!(
+                    recon_behavior["inference_profile_id"],
+                    "grok-port-recon-profile"
+                );
+                let recon_profile = read_pack_json_defaults(
+                    &pack.join("inference-profiles/grok-port-recon-profile/object.json"),
+                )
+                .expect("recon profile should load");
+                assert_eq!(recon_profile["max_turns"], 1_000_000);
+                assert_eq!(recon_profile["reasoning_effort"], "high");
+                assert_eq!(
+                    experiment["expect"]["stage_tool_sequences"][0]["boundary_tool_name"],
+                    "write_port_surface"
+                );
+                let implement_prompt =
+                    std::fs::read_to_string(pack.join("tasks/port-implement-task/prompt.md"))
+                        .expect("implement prompt should load");
+                assert!(implement_prompt.contains("Navigate by symbol, not line number"));
+                assert!(implement_prompt.contains("`grok_wire_continuation`"));
+                assert!(implement_prompt.contains("The host seal captures untracked files too"));
+                assert!(implement_prompt.contains("There is no exception for `.tmp-build`"));
+                let work_unit_schema =
+                    std::fs::read_to_string(pack.join("schemas/port_work_unit.graphql"))
+                        .expect("PortWorkUnit schema should load");
+                assert!(work_unit_schema.contains("owned_paths: String @immutable"));
+                let receipt_paths = experiment["expect"]["workspace_receipt_paths"]
+                    .as_object()
+                    .expect("workspace receipt path verification should be configured");
+                assert_eq!(receipt_paths["work_unit_collection"], "PortWorkUnit");
+                assert_eq!(receipt_paths["owned_paths_field"], "owned_paths");
+                let implement_behavior = read_pack_json_defaults(
+                    &pack.join("agent-behaviors/port-implement/object.json"),
+                )
+                .expect("implement behavior should load");
+                assert_eq!(
+                    implement_behavior["inference_profile_id"],
+                    "grok-port-implement-profile"
+                );
+                let implement_profile = read_pack_json_defaults(
+                    &pack.join("inference-profiles/grok-port-implement-profile/object.json"),
+                )
+                .expect("implement profile should load");
+                assert_eq!(implement_profile["max_turns"], 1_000_000);
+                assert_eq!(implement_profile["max_output_tokens"], 65536);
+                assert_eq!(implement_profile["retry_max_resample"], 2);
+                assert_eq!(implement_profile["reasoning_effort"], "high");
+                for selection in ["port-implement-tools", "port-converge-tools"] {
+                    let tools = read_pack_json_defaults(
+                        &pack
+                            .join("tool-selections")
+                            .join(selection)
+                            .join("object.json"),
+                    )
+                    .unwrap_or_else(|error| panic!("{selection} should load: {error:#}"));
+                    assert_eq!(
+                        tools["enable_bash"], true,
+                        "{selection} needs compiler shell"
+                    );
+                    assert_eq!(tools["bash_mode"], "Unrestricted");
+                    assert_eq!(tools["file_tools_mode"], "ReadWrite");
+                    let expected_execution_policy = if selection == "port-converge-tools" {
+                        "unrestricted"
+                    } else {
+                        "workspace_write"
+                    };
+                    assert_eq!(
+                        tools["command_execution_policy"], expected_execution_policy,
+                        "convergence must run the full foundation suite outside a nested Seatbelt"
+                    );
+                    let expected_network_mode = if selection == "port-converge-tools" {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    };
+                    assert_eq!(
+                        tools["command_network_mode"], expected_network_mode,
+                        "convergence must be allowed to bind the loopback listeners and Unix sockets exercised by the required Grok shim gate"
+                    );
+                    let expected_backgroundable = if selection == "port-converge-tools" {
+                        json!(["bash_unrestricted"])
+                    } else {
+                        json!([])
+                    };
+                    assert_eq!(
+                        tools["backgroundable_tool_names"], expected_backgroundable,
+                        "long convergence gates must use the managed background-process lifecycle"
+                    );
+                    assert!(
+                        tools["command_allowed_argv_prefixes"]
+                            .as_array()
+                            .is_none_or(Vec::is_empty),
+                        "{selection} must let the workspace sandbox admit compiler and shell commands without a second, brittle argv-prefix gate"
+                    );
+                    assert_ne!(
+                        (
+                            tools["command_execution_policy"].as_str(),
+                            tools["command_network_mode"].as_str(),
+                        ),
+                        (Some("unrestricted"), Some("disabled")),
+                        "{selection} must not request the unenforceable unrestricted+disabled pair"
+                    );
+                }
+                let final_review_tools = read_pack_json_defaults(
+                    &pack.join("tool-selections/port-final-review-tools/object.json"),
+                )
+                .expect("port-final-review-tools should load");
+                assert_eq!(final_review_tools["enable_bash"], true);
+                assert_eq!(final_review_tools["bash_mode"], "Unrestricted");
+                assert_eq!(final_review_tools["file_tools_mode"], "ReadWrite");
+                assert_eq!(
+                    final_review_tools["command_execution_policy"],
+                    "unrestricted"
+                );
+                assert_eq!(
+                    final_review_tools["command_network_mode"], "enabled",
+                    "final review must reach the local orchestrator GraphQL endpoint"
+                );
+                assert_eq!(
+                    final_review_tools["backgroundable_tool_names"],
+                    json!(["bash_unrestricted"]),
+                    "long final-review gates must use the managed background-process lifecycle"
+                );
+                for selection in ["port-live-tools", "port-publish-tools"] {
+                    let tools = read_pack_json_defaults(
+                        &pack
+                            .join("tool-selections")
+                            .join(selection)
+                            .join("object.json"),
+                    )
+                    .unwrap_or_else(|error| panic!("{selection} should load: {error:#}"));
+                    assert_eq!(tools["command_execution_policy"], "unrestricted");
+                    assert_eq!(tools["command_network_mode"], "enabled");
+                    let expected_backgroundable = if selection == "port-publish-tools" {
+                        json!(["bash_unrestricted"])
+                    } else {
+                        json!([])
+                    };
+                    assert_eq!(
+                        tools["backgroundable_tool_names"], expected_backgroundable,
+                        "publish must track long repository gates with the managed process lifecycle"
+                    );
+                }
+                let live_io = read_pack_json_defaults(
+                    &pack.join("datastore-tool-surfaces/port-live-io/object.json"),
+                )
+                .expect("port-live-io should load");
+                let live_io_text = live_io.to_string();
+                assert!(live_io_text.contains("write_port_live_environment_proof"));
+                assert!(live_io_text.contains("cleanup_listener_absent"));
+                assert!(live_io_text.contains("pty_session_id"));
+                assert!(live_io_text.contains("proof_json_continuation"));
+                let live_review_io = read_pack_json_defaults(
+                    &pack.join("datastore-tool-surfaces/port-live-review-io/object.json"),
+                )
+                .expect("port-live-review-io should load");
+                let live_review_io_text = live_review_io.to_string();
+                assert!(live_review_io_text.contains("read_grok_port_job"));
+                assert!(live_review_io_text.contains("read_port_live_environment_proof"));
+                let live_prompt =
+                    std::fs::read_to_string(pack.join("tasks/port-live-task/prompt.md"))
+                        .expect("live prompt should load");
+                let live_behavior = std::fs::read_to_string(
+                    pack.join("agent-behaviors/port-live/system_prompt.md"),
+                )
+                .expect("live behavior prompt should load");
+                for prompt in [&live_prompt, &live_behavior] {
+                    assert!(prompt.contains("GENTS_GROK_PORT_ENDPOINT_1"));
+                    assert!(prompt.contains("obsolete"));
+                    assert!(prompt.contains("wrapper shell"));
+                    assert!(prompt.contains("durable assistant"));
+                    assert!(prompt.contains("Terminal repaint bytes"));
+                    assert!(prompt.contains("framed probe"));
+                }
+                assert!(live_prompt.contains("InferenceBackend"));
+                assert!(live_prompt.contains("fresh random"));
+                assert!(live_prompt.contains("grok_stock_pty_probe.py self-test"));
+                assert!(live_prompt.contains("grok_stock_pty_probe.py run"));
+                assert!(live_prompt.contains("grok_stock_pty_probe.py cleanup"));
+                assert!(live_prompt.contains("--total-timeout 95"));
+                assert!(live_prompt.contains("do not wrap it in another timeout"));
+                assert!(live_prompt.contains("pipe its output"));
+                assert!(live_prompt.contains("zero process exit"));
+                assert!(live_prompt.contains("connect(2)"));
+                assert!(live_prompt.contains("write_port_live_environment_proof"));
+                assert!(live_prompt.contains("exactly two non-empty strings"));
+                assert!(live_prompt
+                    .find("write_port_live_environment_proof")
+                    .zip(live_prompt.find("write_port_live_result"))
+                    .is_some_and(|(proof, result)| proof < result));
+                let live_behavior_words = live_behavior
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                assert!(live_behavior_words.contains("Only after that stock proof"));
+                assert!(live_behavior_words.contains("subprocess, subagent, and cancel"));
+                assert!(live_behavior.contains("--total-timeout 95"));
+                assert!(live_behavior_words.contains("private short Unix-socket alias"));
+                assert!(
+                    live_behavior_words.contains("never pipe or otherwise mask its exit status")
+                );
+                let live_review =
+                    std::fs::read_to_string(pack.join("tasks/port-live-review-task/prompt.md"))
+                        .expect("live review prompt should load");
+                let live_review_words =
+                    live_review.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(live_review_words.contains("Require exactly one environment proof"));
+                assert!(live_review_words.contains("GENTS_STOCK_"));
+                assert!(live_review_words.contains("24-character lowercase hexadecimal"));
+                assert!(live_review_words.contains("every duplicated value"));
+                assert!(live_review_words.contains("coverage_complete=false"));
+                assert!(live_review_words.contains("two terminal request IDs"));
+                let live_proof_schema = std::fs::read_to_string(
+                    pack.join("schemas/port_live_environment_proof.graphql"),
+                )
+                .expect("live environment proof schema should load");
+                assert!(live_proof_schema.contains("run_id: String @index(unique: true)"));
+                assert!(live_proof_schema.contains("endpoint_verified: Boolean @immutable"));
+                assert!(live_proof_schema.contains("pty_verified: Boolean @immutable"));
+                assert!(live_proof_schema.contains("cleanup_socket_absent: Boolean @immutable"));
+                assert!(live_proof_schema.contains("proof_json_continuation: String @immutable"));
+                assert!(experiment["expect"]["collection_counts"]
+                    .get("PortLiveEnvironmentProof")
+                    .is_none());
+                let live_io = read_pack_json_defaults(
+                    &pack
+                        .join("datastore-tool-surfaces")
+                        .join("port-live-io")
+                        .join("object.json"),
+                )
+                .expect("live I/O surface should load");
+                let proof_write = live_io["entries"]
+                    .as_array()
+                    .expect("live I/O entries")
+                    .iter()
+                    .find(|entry| {
+                        entry["tool_name"].as_str() == Some("write_port_live_environment_proof")
+                    })
+                    .expect("live environment proof write");
+                assert!(proof_write.get("output_obligation").is_none());
+                let plan = std::fs::read_to_string(pack.join("tasks/port-plan-task/prompt.md"))
+                    .expect("plan prompt should load");
+                assert!(plan.contains("only a compact, sorted `[surface_id=<id>]` index"));
+                assert!(experiment["expect"]["collection_counts"]
+                    .get("PortWorkUnit")
+                    .is_none());
+                assert!(experiment["expect"]["collection_counts"]
+                    .get("PortImplementation")
+                    .is_none());
+                assert!(experiment["expect"]["collection_counts"]
+                    .get("PortReview")
+                    .is_none());
+                assert_eq!(
+                    experiment["expect"]["collection_counts"]["PortIntegrateResult"],
+                    8
+                );
+                assert_eq!(experiment["expect"]["collection_counts"]["PortSurface"], 13);
+                let makefile = std::fs::read_to_string(pack.join("../../Makefile"))
+                    .expect("repository Makefile should load");
+                assert!(makefile.contains("GROK_PORT_MIN_SURFACES ?= 13"));
+                assert!(makefile.contains("GROK_PORT_MAX_SURFACES ?= 13"));
+                let audit_io = read_pack_json_defaults(
+                    &pack
+                        .join("datastore-tool-surfaces")
+                        .join("port-recon-audit-io")
+                        .join("object.json"),
+                )
+                .expect("recon audit surface should load");
+                let audit_io = audit_io.to_string();
+                assert!(audit_io.contains("repository_id"));
+                assert!(audit_io.contains("base_sha"));
+                assert!(audit_io.contains("source_field"));
+                let final_review =
+                    std::fs::read_to_string(pack.join("tasks/port-final-review-task/prompt.md"))
+                        .expect("final review prompt should load");
+                assert!(final_review.contains("gents graph run code-review"));
+                assert!(final_review.contains("not the sentinel document count"));
+                assert!(final_review.contains("independently rerun all three convergence gates"));
+                assert!(final_review.contains("failures cannot be\nwaived as environmental"));
+                let convergence =
+                    std::fs::read_to_string(pack.join("tasks/port-converge-task/prompt.md"))
+                        .expect("convergence prompt should load");
+                assert!(convergence.contains("cargo test -p gents-cli --lib grok_shim"));
+                assert!(convergence.contains("cargo check -p gents-cli --all-targets"));
+                assert!(convergence.contains("Any nonzero exit is a failed\ngate"));
+                assert!(convergence.contains("Do not waive, reinterpret"));
+                let final_review_trigger = read_pack_json_defaults(
+                    &pack.join("event_triggers/port-final-review/object.json"),
+                )
+                .expect("final-review trigger should load");
+                assert_eq!(
+                    final_review_trigger["source_collection"],
+                    "PortConvergenceReport"
+                );
+            } else if pack_name == "repo-maintenance" {
                 assert!(trigger_ids
                     .iter()
                     .any(|id| id == "maintenance-execute-skip"));
@@ -4315,6 +5606,8 @@ mod tests {
 
             let patch_or_execute = if pack_name == "defending-code" {
                 pack.join("tasks/defend-patch-task/prompt.md")
+            } else if pack_name == "grok-tui-port" {
+                pack.join("tasks/port-implement-task/prompt.md")
             } else {
                 pack.join("tasks/maintenance-execute-task/prompt.md")
             };
@@ -4407,6 +5700,167 @@ mod tests {
         let query = stage_requests_query("review-\"scan", "run-\"42");
         assert!(query.contains(r#"caused_by_trigger_id: { _eq: "review-\"scan" }"#));
         assert!(query.contains(r#"caused_by_correlation: { _eq: "run-\"42" }"#));
+    }
+
+    #[test]
+    fn stage_tool_sequence_is_fail_closed_at_the_write_boundary() {
+        let stage = StageResult {
+            trigger_id: "recon".into(),
+            request_id: "request-1".into(),
+            lifecycle_state: RequestLifecycleState::Completed,
+            caused_by_source_doc_id: None,
+        };
+        let expected = StageToolSequenceExpectation {
+            trigger_id: "recon".into(),
+            boundary_tool_name: "write_row".into(),
+            max_calls_before_boundary: 2,
+            max_calls_per_message_before_boundary: 2,
+            exact_boundary_calls: 2,
+            allowed_at_or_after_boundary: vec![
+                "write_row".into(),
+                "get_goal".into(),
+                "update_goal".into(),
+            ],
+        };
+        let mut call_ordinal = 0usize;
+        let mut row = |sequence, name| {
+            call_ordinal += 1;
+            json!({
+                "message_sequence": sequence,
+                "tool_name": name,
+                "args": format!(r#"{{"call":{call_ordinal}}}"#),
+                "lifecycle_state": "completed"
+            })
+        };
+        let valid = vec![
+            row(2, "read_file"),
+            row(2, "grep"),
+            row(4, "write_row"),
+            row(4, "write_row"),
+            row(6, "get_goal"),
+            row(6, "update_goal"),
+        ];
+        verify_stage_tool_sequence_rows(&stage, &expected, &valid)
+            .expect("bounded consecutive writes followed by goal completion should pass");
+
+        let over_budget = vec![
+            row(2, "read_file"),
+            row(2, "grep"),
+            row(3, "glob"),
+            row(4, "write_row"),
+            row(4, "write_row"),
+        ];
+        let error = verify_stage_tool_sequence_rows(&stage, &expected, &over_budget)
+            .expect_err("the pre-write budget must be enforced");
+        assert!(error.to_string().contains("maximum is 2"));
+
+        let oversized_batch = vec![
+            row(2, "read_file"),
+            row(2, "grep"),
+            row(2, "glob"),
+            row(4, "write_row"),
+            row(4, "write_row"),
+        ];
+        let mut batch_expected = StageToolSequenceExpectation {
+            trigger_id: "recon".into(),
+            boundary_tool_name: "write_row".into(),
+            max_calls_before_boundary: 3,
+            max_calls_per_message_before_boundary: 2,
+            exact_boundary_calls: 2,
+            allowed_at_or_after_boundary: vec!["write_row".into()],
+        };
+        let error = verify_stage_tool_sequence_rows(&stage, &batch_expected, &oversized_batch)
+            .expect_err("the per-message discovery ceiling must be enforced");
+        assert!(error.to_string().contains("pre-boundary message"));
+        batch_expected.max_calls_per_message_before_boundary = 3;
+        verify_stage_tool_sequence_rows(&stage, &batch_expected, &oversized_batch)
+            .expect("the configured per-message discovery ceiling should pass");
+
+        let first_write = json!({
+            "message_sequence": 4,
+            "tool_name": "write_row",
+            "args": r#"{"row_id":"one","value":"first"}"#,
+            "lifecycle_state": "completed"
+        });
+        let second_write = json!({
+            "message_sequence": 4,
+            "tool_name": "write_row",
+            "args": r#"{"row_id":"two","value":"second"}"#,
+            "lifecycle_state": "completed"
+        });
+        let exact_retry = json!({
+            "message_sequence": 6,
+            "tool_name": "write_row",
+            "args": r#"{"row_id":"two","value":"second"}"#,
+            "lifecycle_state": "failed"
+        });
+        verify_stage_tool_sequence_rows(
+            &stage,
+            &expected,
+            &[first_write.clone(), second_write.clone(), exact_retry],
+        )
+        .expect("a byte-identical deterministic retry is one logical write");
+
+        let conflicting_retry = json!({
+            "message_sequence": 6,
+            "tool_name": "write_row",
+            "args": r#"{"row_id":"two","value":"changed"}"#,
+            "lifecycle_state": "failed"
+        });
+        let error = verify_stage_tool_sequence_rows(
+            &stage,
+            &expected,
+            &[first_write, second_write, conflicting_retry],
+        )
+        .expect_err("a conflicting deterministic retry must remain an extra logical write");
+        assert!(error.to_string().contains("3 distinct write_row calls"));
+
+        let interleaved = vec![
+            row(2, "read_file"),
+            row(3, "write_row"),
+            row(3, "grep"),
+            row(3, "write_row"),
+        ];
+        let error = verify_stage_tool_sequence_rows(&stage, &expected, &interleaved)
+            .expect_err("discovery in the first write batch must be rejected");
+        assert!(error.to_string().contains("disallowed tools"));
+    }
+
+    #[test]
+    fn workspace_receipt_paths_reject_unowned_build_artifacts() {
+        let expected = WorkspaceReceiptPathExpectation {
+            work_unit_collection: "PortWorkUnit".into(),
+            correlation_field: "run_id".into(),
+            work_unit_id_field: "work_unit_id".into(),
+            owned_paths_field: "owned_paths".into(),
+        };
+        let units = vec![json!({
+            "work_unit_id": "run:unit-08:attempt-1",
+            "owned_paths": "[\"crates/gents-cli/src/commands/serve.rs\"]"
+        })];
+        let clean = vec![json!({
+            "work_unit_id": "run:unit-08:attempt-1",
+            "changed_files": "[\"crates/gents-cli/src/commands/serve.rs\"]"
+        })];
+        validate_workspace_receipt_path_rows(&expected, &units, &clean)
+            .expect("an exact owned path should pass");
+
+        let contaminated = vec![json!({
+            "work_unit_id": "run:unit-08:attempt-1",
+            "changed_files": "[\".tmp-build/test-build.log\"]"
+        })];
+        let error = validate_workspace_receipt_path_rows(&expected, &units, &contaminated)
+            .expect_err("an unowned build log must fail the run independently of model review");
+        assert!(error.to_string().contains("out-of-scope path"));
+        assert!(error.to_string().contains(".tmp-build/test-build.log"));
+
+        let traversal = vec![json!({
+            "work_unit_id": "run:unit-08:attempt-1",
+            "owned_paths": "[\"../outside.rs\"]"
+        })];
+        let error = validate_workspace_receipt_path_rows(&expected, &traversal, &[])
+            .expect_err("ownership paths must be canonical repository-relative names");
+        assert!(error.to_string().contains("invalid, non-canonical"));
     }
 
     #[test]
@@ -4515,6 +5969,7 @@ mod tests {
                 api_key_env_var: None,
                 backend_preset: None,
                 openai_wire_api: None,
+                max_concurrent: None,
                 tool_package: "readonly".into(),
                 tool_root: None,
                 tool_root_env_var: None,
@@ -4540,10 +5995,14 @@ mod tests {
                 prompt_tool_contracts: Vec::new(),
                 background_completion: None,
                 tool_calls: Vec::new(),
+                stage_tool_sequences: Vec::new(),
+                workspace_receipt_paths: None,
                 result_documents: Vec::new(),
             },
             await_timeout_secs: 1,
             scan: None,
+            bundled_graph_packages: Vec::new(),
+            bundled_graph_bindings: BTreeMap::new(),
         };
         let error = validate_manifest(&manifest).expect_err("readonly needs tool_root");
         assert!(error.to_string().contains("tool_root"), "{error}");

@@ -166,6 +166,13 @@ pub(crate) fn capture_seal_snapshot(dest: &Path) -> Result<SealSnapshot> {
         .tempdir()
         .context("creating temporary git index for seal")?;
     let index = tmp.path().join("index");
+    // Seed the temporary index from HEAD before overlaying the working tree.
+    // Starting from an empty index makes tracked files that are also ignored
+    // look deleted: `git add -A` honors ignore rules when it has no tracked
+    // entry to update. Every workspace would then carry the same spurious
+    // deletion, so the first integration succeeds and later disjoint diffs
+    // conflict while trying to delete the already-removed path.
+    git_run_with_index(dest, &index, &["read-tree", "HEAD"])?;
     git_run_with_index(dest, &index, &["add", "-A", "--"])?;
     let tree_hash = git_output_with_index(dest, &index, &["write-tree"])?;
     let diff =

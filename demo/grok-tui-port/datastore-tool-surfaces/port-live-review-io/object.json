@@ -1,0 +1,65 @@
+{
+  "surface_id": "port-live-review-io",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Adversarial live-report over probe results",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_grok_port_job",
+      "collection": "GrokPortJob",
+      "description": "Load the immutable expected live endpoint for global-proof verification.",
+      "fields": ["live_endpoint", "live_home", "live_graphql", "live_socket"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_final_review_report",
+      "collection": "PortFinalReviewReport",
+      "description": "Load the reviewed head and expected implement-surface coverage.",
+      "fields": ["status", "head_sha", "implement_surface_count", "live_result_count"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_surface",
+      "collection": "PortSurface",
+      "description": "Load the exact non-ignore surface IDs and expectations.",
+      "fields": ["surface_id", "verdict", "live_prompt", "live_expect"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_live_result",
+      "collection": "PortLiveResult",
+      "description": "Load every live probe result for this run.",
+      "fields": ["probe_id", "surface_id", "live_prompt", "status", "grok_wire_observed", "gents_docs_observed", "evidence", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_live_environment_proof",
+      "collection": "PortLiveEnvironmentProof",
+      "description": "Load the singleton structured endpoint, listener, stock-PTY, and cleanup proof.",
+      "fields": ["final_review_head", "preflight_nonce", "preflight_port_vacant", "preflight_socket_absent", "expected_endpoint", "applied_endpoint", "backend_id", "live_home", "live_graphql", "live_socket", "endpoint_env_name", "endpoint_verified", "listener_pid", "listener_command", "listener_verified", "pty_challenge", "pty_expected", "pty_prompt_sha256", "pty_pre_submit_bytes", "pty_session_id", "pty_terminal_request_id", "pty_idle_challenge", "pty_idle_expected", "pty_idle_probe_request_id", "pty_idle_transition", "pty_verified", "cleanup_listener_absent", "cleanup_socket_absent", "proof_json", "proof_json_continuation"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_port_live_report",
+      "collection": "PortLiveReport",
+      "description": "Close the live campaign. Fail closed on missing wire or Gents-document evidence.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "passed_count", "required": true},
+        {"name": "failed_count", "required": true},
+        {"name": "blocked_count", "required": true},
+        {"name": "expected_count", "required": true},
+        {"name": "observed_count", "required": true},
+        {"name": "coverage_complete", "required": true},
+        {"name": "final_review_head", "required": true},
+        {"name": "summary", "required": true}
+      ]
+    }
+  ]
+}

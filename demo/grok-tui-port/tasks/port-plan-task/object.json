@@ -1,0 +1,11 @@
+{
+  "task_id": "port-plan-task",
+  "name": "port-plan-task",
+  "description": null,
+  "behavior_id": "port-plan",
+  "prompt_template": "./prompt.md",
+  "goal_objective_template": "Complete Grok TUI port planning for run {{ event.correlation }} and persist every required work unit and plan record.",
+  "goal_token_budget": 300000,
+  "enabled": true,
+  "output_schema_ref": null
+}

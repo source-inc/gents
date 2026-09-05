@@ -1,0 +1,25 @@
+type CodeReviewEvidencePage {
+  page_key: String @index(unique: true) @immutable
+  evidence_id: String @index @immutable
+  page_index: String @index @immutable
+  page_count: String @immutable
+  evidence_chunk_count: String @immutable
+  evidence_byte_count: String @immutable
+  evidence_sha256: String @immutable
+  evidence_chunk_0: String @immutable
+  evidence_chunk_1: String @immutable
+  evidence_chunk_2: String @immutable
+  evidence_chunk_3: String @immutable
+  evidence_chunk_4: String @immutable
+  evidence_chunk_5: String @immutable
+  evidence_chunk_6: String @immutable
+  evidence_chunk_7: String @immutable
+  evidence_chunk_8: String @immutable
+  evidence_chunk_9: String @immutable
+  evidence_chunk_10: String @immutable
+  evidence_chunk_11: String @immutable
+  evidence_chunk_12: String @immutable
+  evidence_chunk_13: String @immutable
+  evidence_chunk_14: String @immutable
+  evidence_chunk_15: String @immutable
+}

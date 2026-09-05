@@ -21,7 +21,7 @@ use super::claim::invocation_is_claimable;
 use super::documents::{
     strip_secret_fields, succeeded_missing_result, succeeded_repair_cutoff,
     validate_callback_binding, CallbackBindingDoc, CallbackInvocationDoc, CallbackModuleDoc,
-    SUCCEEDED_REPAIR_LIMIT, SUCCEEDED_REPAIR_WINDOW,
+    CallbackResultInvocationRow, SUCCEEDED_REPAIR_LIMIT, SUCCEEDED_REPAIR_WINDOW,
 };
 use super::host::ensure_local_host_deployment;
 use super::run::{
@@ -245,6 +245,21 @@ fn succeeded_without_result_repair_is_windowed_and_batched() {
             .map(|row| row.invocation_id.as_str())
             .collect::<Vec<_>>(),
         vec!["inv-gap"]
+    );
+}
+
+#[test]
+fn callback_result_recovery_decodes_its_narrow_batch_projection() {
+    let rows: Vec<CallbackResultInvocationRow> = serde_json::from_value(json!([
+        { "invocation_id": "inv-ok" },
+        { "invocation_id": "inv-gap" }
+    ]))
+    .expect("narrow CallbackResult projection should decode without provenance fields");
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.invocation_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["inv-ok", "inv-gap"]
     );
 }
 

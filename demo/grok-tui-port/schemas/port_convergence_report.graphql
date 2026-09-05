@@ -1,0 +1,9 @@
+type PortConvergenceReport {
+  run_id: String @index(unique: true) @immutable
+  status: String @immutable
+  applied_count: String @immutable
+  expected_count: String @immutable
+  head_sha: String @immutable
+  tests_run: String @immutable
+  summary: String @immutable
+}

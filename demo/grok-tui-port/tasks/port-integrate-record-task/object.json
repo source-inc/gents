@@ -1,0 +1,11 @@
+{
+  "task_id": "port-integrate-record-task",
+  "name": "port-integrate-record-task",
+  "description": "Record an applied slice from its host integrator receipt",
+  "behavior_id": "port-integrate-record",
+  "prompt_template": "./prompt.md",
+  "goal_objective_template": "Complete integration receipt recording for Grok TUI port unit {{ event.correlation }} and persist its durable result.",
+  "goal_token_budget": 200000,
+  "enabled": true,
+  "output_schema_ref": null
+}

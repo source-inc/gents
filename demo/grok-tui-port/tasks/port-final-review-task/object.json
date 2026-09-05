@@ -1,0 +1,11 @@
+{
+  "task_id": "port-final-review-task",
+  "name": "port-final-review-task",
+  "description": null,
+  "behavior_id": "port-final-review",
+  "prompt_template": "./prompt.md",
+  "goal_objective_template": "Complete the final combined Grok TUI port review for run {{ event.correlation }} and persist its reviewed terminal report.",
+  "goal_token_budget": 2000000,
+  "enabled": true,
+  "output_schema_ref": null
+}

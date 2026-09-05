@@ -1,0 +1,87 @@
+{
+  "surface_id": "port-live-io",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Live GLM probes against the integrated shim",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_grok_port_job",
+      "collection": "GrokPortJob",
+      "description": "Load this run's gents_root, grok_root, live model, endpoint, and PR branch.",
+      "fields": ["gents_root", "grok_root", "ceiling", "live_model", "live_endpoint", "live_home", "live_graphql", "live_socket", "repository_id", "base_sha", "pr_base", "branch"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_final_review_report",
+      "collection": "PortFinalReviewReport",
+      "description": "Load the exact reviewed head and fixed probe cardinality.",
+      "fields": ["status", "confirmed_findings", "head_sha", "implement_surface_count", "live_result_count", "summary"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_surface",
+      "collection": "PortSurface",
+      "description": "Load implement and shaped-stub surfaces and their live probes.",
+      "fields": ["surface_id", "area", "verdict", "grok_wire", "grok_wire_continuation", "gents_docs", "live_prompt", "live_expect", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_port_live_result",
+      "collection": "PortLiveResult",
+      "description": "Record one live GLM probe through the Grok wire against Gents documents.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "probe_id", "required": true},
+        {"name": "surface_id", "required": true},
+        {"name": "live_prompt", "required": true},
+        {"name": "status", "required": true},
+        {"name": "grok_wire_observed", "required": true},
+        {"name": "gents_docs_observed", "required": true},
+        {"name": "evidence", "required": true},
+        {"name": "expected_total", "required": false, "fill": {"source_field": "live_result_count"}}
+      ]
+    },
+    {
+      "tool_name": "write_port_live_environment_proof",
+      "collection": "PortLiveEnvironmentProof",
+      "description": "Record the structured endpoint, listener, stock-PTY, and cleanup proof before surface results.",
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "final_review_head", "required": true},
+        {"name": "preflight_nonce", "required": true},
+        {"name": "preflight_port_vacant", "required": true},
+        {"name": "preflight_socket_absent", "required": true},
+        {"name": "expected_endpoint", "required": true},
+        {"name": "applied_endpoint", "required": true},
+        {"name": "backend_id", "required": true},
+        {"name": "live_home", "required": true},
+        {"name": "live_graphql", "required": true},
+        {"name": "live_socket", "required": true},
+        {"name": "endpoint_env_name", "required": true},
+        {"name": "endpoint_verified", "required": true},
+        {"name": "listener_pid", "required": true},
+        {"name": "listener_command", "required": true},
+        {"name": "listener_verified", "required": true},
+        {"name": "pty_challenge", "required": true},
+        {"name": "pty_expected", "required": true},
+        {"name": "pty_prompt_sha256", "required": true},
+        {"name": "pty_pre_submit_bytes", "required": true},
+        {"name": "pty_session_id", "required": true},
+        {"name": "pty_terminal_request_id", "required": true},
+        {"name": "pty_idle_challenge", "required": true},
+        {"name": "pty_idle_expected", "required": true},
+        {"name": "pty_idle_probe_request_id", "required": true},
+        {"name": "pty_idle_transition", "required": true},
+        {"name": "pty_verified", "required": true},
+        {"name": "cleanup_listener_absent", "required": true},
+        {"name": "cleanup_socket_absent", "required": true},
+        {"name": "proof_json", "required": true},
+        {"name": "proof_json_continuation", "required": true}
+      ]
+    }
+  ]
+}

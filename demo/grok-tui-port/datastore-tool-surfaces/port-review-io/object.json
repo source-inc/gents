@@ -1,0 +1,68 @@
+{
+  "surface_id": "port-review-io",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Review: sealed-tree code-review then close the unit",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_port_work_unit",
+      "collection": "PortWorkUnit",
+      "description": "Load the immutable structured path ownership for the exact work unit.",
+      "fields": ["work_unit_id", "logical_unit_id", "attempt", "owned_paths", "instructions"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_surface",
+      "collection": "PortSurface",
+      "description": "Load the mapped Grok wire packets for this run.",
+      "fields": ["surface_id", "area", "verdict", "grok_call_sites", "grok_wire", "grok_wire_continuation", "gents_docs", "live_prompt", "live_expect", "evidence"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_implementation",
+      "collection": "PortImplementation",
+      "description": "Load the writer receipt for this work unit.",
+      "fields": ["implementation_id", "work_unit_id", "logical_unit_id", "surface_ids", "attempt", "changed_paths", "tests_run", "summary", "expected_total"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_port_review",
+      "collection": "PortReview",
+      "description": "Accept or reject the sealed unit after the code-review graph.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "review_id", "required": true},
+        {"name": "work_unit_id", "required": false, "fill": {"source_field": "work_unit_id"}},
+        {"name": "logical_unit_id", "required": true},
+        {"name": "implementation_id", "required": true},
+        {"name": "workspace_id", "required": false, "fill": {"source_field": "workspace_id"}},
+        {"name": "attempt", "required": true},
+        {"name": "verdict", "required": true},
+        {"name": "grok_call_site_checked", "required": true},
+        {"name": "evidence", "required": true},
+        {"name": "notes", "required": true},
+        {"name": "expected_total", "required": true}
+      ]
+    },
+    {
+      "tool_name": "write_port_unit_closure",
+      "collection": "PortUnitClosure",
+      "description": "Close this attempt. status=accepted only with zero findings; otherwise status=retry creates a fresh attempt.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "work_unit_id", "required": false, "fill": {"source_field": "work_unit_id"}},
+        {"name": "logical_unit_id", "required": true},
+        {"name": "implementation_id", "required": true},
+        {"name": "workspace_id", "required": false, "fill": {"source_field": "workspace_id"}},
+        {"name": "status", "required": true},
+        {"name": "attempt", "required": true},
+        {"name": "expected_total", "required": true}
+      ]
+    }
+  ]
+}

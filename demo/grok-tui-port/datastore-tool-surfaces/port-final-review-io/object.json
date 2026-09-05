@@ -1,0 +1,48 @@
+{
+  "surface_id": "port-final-review-io",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Full combined review and repair",
+  "enabled": true,
+  "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_grok_port_job",
+      "collection": "GrokPortJob",
+      "description": "Load pinned review and orchestration authority.",
+      "fields": ["gents_root", "base_sha", "orchestrator_home", "orchestrator_graphql"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_convergence_report",
+      "collection": "PortConvergenceReport",
+      "description": "Load the exact compiled semantic-merge head.",
+      "fields": ["status", "applied_count", "expected_count", "head_sha", "tests_run", "summary"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_port_surface",
+      "collection": "PortSurface",
+      "description": "Count exact live coverage required after review.",
+      "fields": ["surface_id", "area", "verdict", "live_prompt", "live_expect"],
+      "filter_fields": [{"name": "run_id", "required": false, "fill": "correlation"}]
+    },
+    {
+      "tool_name": "write_port_final_review_report",
+      "collection": "PortFinalReviewReport",
+      "description": "Close the full combined review and pin the live-tested head.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "status", "required": true},
+        {"name": "review_rounds", "required": true},
+        {"name": "confirmed_findings", "required": true},
+        {"name": "head_sha", "required": true},
+        {"name": "implement_surface_count", "required": true},
+        {"name": "live_result_count", "required": true},
+        {"name": "summary", "required": true}
+      ]
+    }
+  ]
+}

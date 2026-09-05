@@ -4,6 +4,8 @@
   "description": null,
   "behavior_id": "review-recon",
   "prompt_template": "./prompt.md",
+  "goal_objective_template": "Dispatch every required review lens for code-review run {{ event.correlation }} and persist the complete area ledger.",
+  "goal_token_budget": null,
   "enabled": true,
   "output_schema_ref": null
 }

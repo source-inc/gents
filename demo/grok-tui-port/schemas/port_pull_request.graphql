@@ -1,0 +1,14 @@
+type PortPullRequest {
+  run_id: String @index(unique: true) @immutable
+  branch: String @immutable
+  pr_base: String @immutable
+  status: String @immutable
+  url: String @immutable
+  title: String @immutable
+  commit_count: String @immutable
+  review_rounds: String @immutable
+  confirmed_review_findings: String @immutable
+  ci_status: String @immutable
+  validation: String @immutable
+  summary: String @immutable
+}

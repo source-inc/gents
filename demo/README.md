@@ -9,11 +9,12 @@ that agent.
 
 ```bash
 # Run a pack end to end: init, apply, seed, await, report. Exit code is the result.
-gents demo run pipeline
+gents demo run ./demo/pipeline --http-port 19191
+gents demo run ./demo/grok-tui-port --http-port 19195 # audited Grok wire → shim → live proof
 
 gents demo list                      # what packs exist
-gents demo run pipeline --prompt "…" # override the seed prompt
-gents demo run pipeline --keep-home  # keep the node home for debugging
+gents demo run ./demo/pipeline --http-port 19191 --prompt "…"
+gents demo run ./demo/pipeline --http-port 19191 --keep-home
 
 # Against a node that is already serving (or demo run --keep-home):
 gents demo init pipeline --home /tmp/pack-home

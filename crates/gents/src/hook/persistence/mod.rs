@@ -23,9 +23,7 @@ use crate::background_tools::{
     ProcessControlScope, ReadToolOutputOutcome, SpawnSubagentArgs, SteerSubagentTarget,
     WaitSubagentArgs, WaitToolArgs,
 };
-use crate::descendant_graph::{
-    resolve_descendant_edge, resolve_descendant_root_request_id, DescendantGraphAccess,
-};
+use crate::descendant_graph::DescendantGraphAccess;
 use crate::document_config::{load_agent_behavior, SubagentTarget};
 use crate::session;
 use crate::tool_call_lifecycle::query::load_tool_call_result;

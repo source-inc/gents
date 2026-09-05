@@ -6,101 +6,13 @@ impl DefraSessionHook {
         child_session_id: &str,
         cause: CancelCause,
     ) -> anyhow::Result<usize> {
-        let tool_call_ids = running_subagent_bridge_ids(&self.node, child_session_id).await?;
-        let mut cancelled = 0;
-        for tool_call_id in tool_call_ids {
-            if self
-                .cancel_stored_running_subagent_bridge(
-                    child_session_id,
-                    &tool_call_id,
-                    "descendant",
-                    cause,
-                )
-                .await?
-            {
-                cancelled += 1;
-            }
-        }
-        Ok(cancelled)
-    }
-
-    pub(super) async fn cancel_running_subagent_bridge(
-        &self,
-        session_id: &str,
-        tool_call_id: &str,
-        bridge_kind: &str,
-        cause: CancelCause,
-    ) -> anyhow::Result<bool> {
-        let Some(mut lifecycle) = self
-            .take_or_load_in_flight_lifecycle(session_id, tool_call_id)
-            .await?
-        else {
-            return Ok(false);
-        };
-        if !lifecycle.is_running() {
-            return Ok(false);
-        }
-
-        let dispatch = lifecycle
-            .cancel_during_run_with_cascade_dispatch(cause, &self.agent_did)
-            .await?;
-        if !lifecycle.is_cancelled() {
-            return Ok(false);
-        }
-
-        let Some(dispatch) = dispatch else {
-            return Ok(false);
-        };
-        if let CascadeDispatch::Local(intent) = dispatch {
-            crate::interrupt::interrupt_request(&self.node, &intent.child_request_id)
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!(
-                        "failed to cascade cancel_subagent {bridge_kind} bridge {tool_call_id} cancellation to child request {}: {error}",
-                        intent.child_request_id
-                    )
-                })?;
-        }
-        Ok(true)
-    }
-
-    pub(super) async fn cancel_stored_running_subagent_bridge(
-        &self,
-        session_id: &str,
-        tool_call_id: &str,
-        bridge_kind: &str,
-        cause: CancelCause,
-    ) -> anyhow::Result<bool> {
-        let Some(mut lifecycle) =
-            ToolCallLifecycle::load(self.node.clone(), session_id, tool_call_id).await?
-        else {
-            return Ok(false);
-        };
-        if !lifecycle.is_running() {
-            return Ok(false);
-        }
-
-        let dispatch = lifecycle
-            .cancel_during_run_with_cascade_dispatch(cause, &self.agent_did)
-            .await?;
-        if !lifecycle.is_cancelled() {
-            return Ok(false);
-        }
-
-        let Some(dispatch) = dispatch else {
-            return Ok(false);
-        };
-        if let CascadeDispatch::Local(intent) = dispatch {
-            crate::interrupt::interrupt_request(&self.node, &intent.child_request_id)
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!(
-                        "failed to cascade cancel_subagent {bridge_kind} bridge {tool_call_id} cancellation to child request {}: {error}",
-                        intent.child_request_id
-                    )
-                })?;
-        }
-        Ok(true)
+        crate::background_tools::subagent_control::cancel_live_subagent_descendants(
+            self.node.clone(),
+            child_session_id,
+            &self.agent_did,
+            cause,
+        )
+        .await
     }
 
     pub(super) async fn await_foreground_subagent(
@@ -342,6 +254,7 @@ impl DefraSessionHook {
     pub(super) async fn await_existing_subagent_bridge(
         &self,
         parent_context: &ParentSubagentContext,
+        caller_request_id: &str,
         parent_tool_call_id: &str,
         child_request_id: &str,
         child_session_id: &str,
@@ -393,12 +306,9 @@ impl DefraSessionHook {
             }
 
             if edge.lifecycle_state == "running"
-                && crate::interrupt::fetch_interrupt_requested_at(
-                    &self.node,
-                    &parent_context.request_id,
-                )
-                .await?
-                .is_some()
+                && crate::interrupt::fetch_interrupt_requested_at(&self.node, caller_request_id)
+                    .await?
+                    .is_some()
             {
                 if let Some(mut lifecycle) = self
                     .take_or_load_in_flight_lifecycle(

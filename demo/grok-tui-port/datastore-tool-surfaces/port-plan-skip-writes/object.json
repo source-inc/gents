@@ -1,0 +1,43 @@
+{
+  "surface_id": "port-plan-skip-writes",
+  "agent_did": "did:key:zGrokTuiPortAgentPlaceholder00000000000000000000000",
+  "display_name": "Close a zero-work plan",
+  "enabled": true,
+  "entries": [
+    {
+      "tool_name": "write_port_unit_closure",
+      "collection": "PortUnitClosure",
+      "description": "Write the non-workspace closure sentinel.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "work_unit_id", "required": true},
+        {"name": "logical_unit_id", "required": true},
+        {"name": "implementation_id", "required": true},
+        {"name": "workspace_id", "required": true},
+        {"name": "status", "required": true},
+        {"name": "attempt", "required": true},
+        {"name": "expected_total", "required": true}
+      ]
+    },
+    {
+      "tool_name": "write_port_integrate_result",
+      "collection": "PortIntegrateResult",
+      "description": "Write the zero-work integrate sentinel.",
+      "output_obligation": {"scope": "trigger", "minimum_writes": 1},
+      "fields": [
+        {"name": "run_id", "required": false, "fill": "correlation"},
+        {"name": "integrate_id", "required": true},
+        {"name": "work_unit_id", "required": true},
+        {"name": "logical_unit_id", "required": true},
+        {"name": "workspace_id", "required": true},
+        {"name": "status", "required": true},
+        {"name": "attempt", "required": true},
+        {"name": "expected_total", "required": true},
+        {"name": "head_sha", "required": true},
+        {"name": "seal_hash", "required": true},
+        {"name": "summary", "required": true}
+      ]
+    }
+  ]
+}

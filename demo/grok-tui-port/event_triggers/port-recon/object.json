@@ -1,0 +1,15 @@
+{
+  "trigger_id": "port-recon",
+  "task_id": "port-recon-task",
+  "source_collection": "GrokPortJob",
+  "event_kind": "created",
+  "filter": null,
+  "correlation_field": "run_id",
+  "fire_mode": "per_document",
+  "expected_count": null,
+  "expected_count_field": null,
+  "group_timeout_secs": null,
+  "group_min_count": null,
+  "enabled": true,
+  "concurrency": "serial"
+}

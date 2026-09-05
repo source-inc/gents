@@ -1,0 +1,11 @@
+{
+  "task_id": "port-integrate-task",
+  "name": "port-integrate-task",
+  "description": null,
+  "behavior_id": "port-integrate",
+  "prompt_template": "./prompt.md",
+  "goal_objective_template": "Complete integration authorization for Grok TUI port unit {{ event.correlation }} and persist the required callback result.",
+  "goal_token_budget": 200000,
+  "enabled": true,
+  "output_schema_ref": null
+}

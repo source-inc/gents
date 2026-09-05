@@ -1,36 +1,99 @@
 {
   "surface_id": "review-scan-writes",
   "agent_did": "did:key:zCodeReviewAgentPlaceholder0000000000000000000000000",
-  "display_name": "CodeReviewFinding and scan-result writes",
+  "display_name": "Immutable review evidence reads and finding writes",
   "enabled": true,
   "entries": [
+    {
+      "kind": "read",
+      "tool_name": "read_review_evidence_manifest",
+      "collection": "CodeReviewEvidenceManifest",
+      "description": "Read the exact immutable manifest for this review run before reading evidence pages.",
+      "fields": [
+        "evidence_id",
+        "format_version",
+        "page_count",
+        "evidence_chunk_count",
+        "evidence_byte_count",
+        "evidence_sha256"
+      ],
+      "filter_fields": [
+        {
+          "name": "evidence_id",
+          "required": false,
+          "fill": {"source_field": "evidence_id"}
+        }
+      ]
+    },
+    {
+      "kind": "read",
+      "tool_name": "read_review_evidence_page",
+      "collection": "CodeReviewEvidencePage",
+      "description": "Read one exact immutable host-evidence page for this review run.",
+      "fields": [
+        "page_key",
+        "evidence_id",
+        "page_index",
+        "page_count",
+        "evidence_chunk_count",
+        "evidence_byte_count",
+        "evidence_sha256",
+        "evidence_chunk_0",
+        "evidence_chunk_1",
+        "evidence_chunk_2",
+        "evidence_chunk_3",
+        "evidence_chunk_4",
+        "evidence_chunk_5",
+        "evidence_chunk_6",
+        "evidence_chunk_7",
+        "evidence_chunk_8",
+        "evidence_chunk_9",
+        "evidence_chunk_10",
+        "evidence_chunk_11",
+        "evidence_chunk_12",
+        "evidence_chunk_13",
+        "evidence_chunk_14",
+        "evidence_chunk_15"
+      ],
+      "filter_fields": [
+        {
+          "name": "evidence_id",
+          "required": false,
+          "fill": {"source_field": "evidence_id"}
+        },
+        {
+          "name": "page_index",
+          "required": true
+        }
+      ]
+    },
     {
       "tool_name": "write_candidate_finding",
       "collection": "CodeReviewCandidateFinding",
       "description": "Record one evidenced Critical, Major, or Cleanup candidate for adversarial verification.",
       "fields": [
         {"name": "run_id", "required": false, "fill": "correlation"},
-        {"name": "finding_id", "required": true},
         {"name": "area_id", "required": false, "fill": {"source_field": "area_id"}},
+        {"name": "finding_id", "required": true},
         {"name": "severity", "required": true},
-        {"name": "confidence", "required": true},
+        {"name": "title", "required": true},
         {"name": "path", "required": true},
         {"name": "line", "required": false},
-        {"name": "title", "required": true},
+        {"name": "evidence", "required": true},
         {"name": "detail", "required": true},
-        {"name": "evidence", "required": true}
+        {"name": "confidence", "required": true}
       ]
     },
     {
       "tool_name": "write_scan_result",
       "collection": "CodeReviewScanResult",
-      "description": "Signal that one review area has finished scanning.",
+      "description": "Close this lens after every evidence page was read and candidate writes are durable.",
       "output_obligation": {"scope": "trigger", "minimum_writes": 1},
       "fields": [
         {"name": "run_id", "required": false, "fill": "correlation"},
         {"name": "area_id", "required": false, "fill": {"source_field": "area_id"}},
-        {"name": "expected_total", "required": false, "fill": {"source_field": "expected_total"}},
-        {"name": "summary", "required": true}
+        {"name": "summary", "required": true},
+        {"name": "expected_total", "required": false, "fill": {"source_field": "expected_total"}}
       ]
     }
   ]

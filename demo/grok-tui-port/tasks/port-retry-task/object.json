@@ -1,0 +1,11 @@
+{
+  "task_id": "port-retry-task",
+  "name": "port-retry-task",
+  "description": "Create a fresh workspace attempt from a rejected sealed slice",
+  "behavior_id": "port-retry",
+  "prompt_template": "./prompt.md",
+  "goal_objective_template": "Complete retry preparation for rejected Grok TUI port unit {{ event.correlation }} and persist the next work-unit attempt.",
+  "goal_token_budget": 200000,
+  "enabled": true,
+  "output_schema_ref": null
+}

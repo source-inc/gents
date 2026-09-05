@@ -40,14 +40,9 @@ impl DefraSessionHook {
             ));
         }
 
-        let root_request_id = resolve_descendant_root_request_id(
+        let Some(canonical) = crate::descendant_graph::resolve_session_descendant_edge(
             DescendantGraphAccess::Local(&self.node),
             &request_id,
-        )
-        .await?;
-        let Some(canonical) = resolve_descendant_edge(
-            DescendantGraphAccess::Local(&self.node),
-            &root_request_id,
             child_request_id,
         )
         .await?
@@ -55,7 +50,7 @@ impl DefraSessionHook {
             let result = service_unavailable_payload(
                 WAIT_SUBAGENT_TOOL_NAME,
                 "/child_request_id",
-                "child subagent request is not available to this parent request",
+                "child subagent request is not available to this session principal",
                 false,
             );
             return Ok(self.skip_tool_result(WAIT_SUBAGENT_TOOL_NAME, result));
@@ -76,7 +71,7 @@ impl DefraSessionHook {
                 WAIT_SUBAGENT_TOOL_NAME,
                 "/child_request_id",
                 child_request_id,
-                "descendant is visible but control belongs to its immediate parent",
+                "descendant is visible but control belongs to its immediate parent session principal",
                 Vec::new(),
             );
             return Ok(self.skip_tool_result(WAIT_SUBAGENT_TOOL_NAME, result));
@@ -107,6 +102,7 @@ impl DefraSessionHook {
         let result = self
             .await_existing_subagent_bridge(
                 &parent_context,
+                &request_id,
                 &edge.parent_tool_call_id,
                 &edge.child_request_id,
                 &edge.child_session_id,
@@ -405,83 +401,41 @@ impl DefraSessionHook {
             ));
         }
 
-        let root_request_id = resolve_descendant_root_request_id(
-            DescendantGraphAccess::Local(&self.node),
+        let outcome = crate::cancel_session_subagent(
+            self.node.clone(),
             &request_id,
-        )
-        .await?;
-        let Some(canonical) = resolve_descendant_edge(
-            DescendantGraphAccess::Local(&self.node),
-            &root_request_id,
             child_request_id,
-        )
-        .await?
-        else {
-            let result = service_unavailable_payload(
-                CANCEL_SUBAGENT_TOOL_NAME,
-                "/child_request_id",
-                "child subagent request is not available to this parent request",
-                false,
-            );
-            return Ok(self.skip_tool_result(CANCEL_SUBAGENT_TOOL_NAME, result));
-        };
-        if !canonical.readable() {
-            let result = service_unavailable_payload(
-                CANCEL_SUBAGENT_TOOL_NAME,
-                "/child_request_id",
-                canonical.diagnostic.clone().unwrap_or_else(|| {
-                    format!("child request {child_request_id} is not materialized")
-                }),
-                canonical.retryable(),
-            );
-            return Ok(self.skip_tool_result(CANCEL_SUBAGENT_TOOL_NAME, result));
-        }
-        if !canonical.controllable() {
-            let result = tool_not_allowed_payload(
-                CANCEL_SUBAGENT_TOOL_NAME,
-                "/child_request_id",
-                child_request_id,
-                "descendant is visible but control belongs to its immediate parent",
-                Vec::new(),
-            );
-            return Ok(self.skip_tool_result(CANCEL_SUBAGENT_TOOL_NAME, result));
-        }
-        let edge = ChildEdge::from_descendant(&canonical).ok_or_else(|| {
-            anyhow::anyhow!("authorized descendant edge lacks materialized child identity")
-        })?;
-
-        let reason = parsed
-            .reason
-            .as_deref()
-            .map(str::trim)
-            .filter(|reason| !reason.is_empty())
-            .unwrap_or("subagent cancelled by parent request");
-
-        let mut queued_drained = crate::interrupt::cancel_subagent_session_queue(
-            &self.node,
-            &edge.child_session_id,
-            &edge.child_agent_did,
-            reason,
+            parsed.reason.as_deref(),
         )
         .await?;
-        self.cancel_running_subagent_bridge(
+        let edge = match outcome {
+            crate::CancelSubagentOutcome::Unavailable {
+                diagnostic,
+                retryable,
+            } => {
+                return Ok(self.skip_tool_result(
+                    CANCEL_SUBAGENT_TOOL_NAME,
+                    service_unavailable_payload(
+                        CANCEL_SUBAGENT_TOOL_NAME,
+                        "/child_request_id",
+                        diagnostic,
+                        retryable,
+                    ),
+                ));
+            }
+            crate::CancelSubagentOutcome::NotAuthorized => {
+                return Ok(self.skip_tool_result(CANCEL_SUBAGENT_TOOL_NAME,
+                    tool_not_allowed_payload(CANCEL_SUBAGENT_TOOL_NAME, "/child_request_id", child_request_id,
+                        "descendant is visible but control belongs to its immediate parent session principal", Vec::new())));
+            }
+            crate::CancelSubagentOutcome::Cancelled(receipt)
+            | crate::CancelSubagentOutcome::AlreadyTerminal(receipt) => receipt,
+        };
+        // The shared helper owns persisted cancellation. Refresh the hook's
+        // execution handle so it cannot retain a now-terminal bridge.
+        self.refresh_owned_in_flight_lifecycle_from_storage(
             &edge.parent_session_id,
             &edge.parent_tool_call_id,
-            "root",
-            CancelCause::UserCancelled,
-        )
-        .await?;
-        let active_interrupted =
-            crate::interrupt::interrupt_active_session_request(&self.node, &edge.child_session_id)
-                .await?;
-        let descendants_cancelled = self
-            .cancel_live_subagent_descendants(&edge.child_session_id, CancelCause::UserCancelled)
-            .await?;
-        queued_drained += crate::interrupt::cancel_subagent_session_queue(
-            &self.node,
-            &edge.child_session_id,
-            &edge.child_agent_did,
-            reason,
         )
         .await?;
 
@@ -493,9 +447,9 @@ impl DefraSessionHook {
                 "child_session_id": edge.child_session_id,
                 "behavior_id": edge.behavior_id,
                 "status": "cancelled",
-                "active_interrupted": active_interrupted,
-                "descendants_cancelled": descendants_cancelled,
-                "queued_drained": queued_drained
+                "active_interrupted": edge.active_interrupted,
+                "descendants_cancelled": edge.descendants_cancelled,
+                "queued_drained": edge.queued_drained
             })),
         ))
     }
