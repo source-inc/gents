@@ -34,7 +34,13 @@ pub(crate) fn resolve_backend_config_with_preset(
 
     let endpoint = resolve_backend_endpoint(explicit_endpoint, preset, mode)?;
     let provider_kind = resolve_backend_provider_kind(explicit_provider_kind, preset)?;
-    let openai_wire_api = resolve_openai_wire_api(explicit_openai_wire_api, preset);
+    let openai_wire_api = if provider_kind == BackendProviderKind::ClaudeCliSubscription {
+        // Claude is not an OpenAI-wire provider. Never persist a sticky wire
+        // value when migrating an existing OpenAiCompatible backend.
+        None
+    } else {
+        resolve_openai_wire_api(explicit_openai_wire_api, preset)
+    };
     let api_key_env_var =
         resolve_backend_api_key_env_var(explicit_api_key_env_var, api_key.is_some(), preset);
 
@@ -199,6 +205,29 @@ mod tests {
         assert_eq!(
             resolved.openai_wire_api,
             Some(OpenAiWireApi::ChatCompletions)
+        );
+    }
+
+    #[test]
+    fn claude_cli_subscription_drops_sticky_openai_wire_api() {
+        let resolved = resolve_backend_config_with_preset(
+            Some(BackendPresetArg::ClaudeCliSubscription),
+            None,
+            None,
+            Some(OpenAiWireApiArg::ChatCompletions),
+            None,
+            None,
+            BackendResolutionMode::ConfigWrite,
+        )
+        .expect("resolve claude preset");
+
+        assert_eq!(
+            resolved.provider_kind,
+            BackendProviderKind::ClaudeCliSubscription
+        );
+        assert_eq!(
+            resolved.openai_wire_api, None,
+            "Claude migration must not persist sticky openai_wire_api"
         );
     }
 }

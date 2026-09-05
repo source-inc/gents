@@ -1506,6 +1506,129 @@ async fn chatgpt_codex_behavior_with_enabled_credential_is_runnable() {
     );
 }
 
+async fn bind_default_behavior_claude_backend(
+    node: &defra_node::EmbeddedNode,
+    agent_did: &str,
+    backend_id: &str,
+) {
+    let bootstrap = crate::ensure_agent_principal(node, agent_did)
+        .await
+        .unwrap();
+    let escaped_backend_id = escape_graphql_string(backend_id);
+    let escaped_endpoint =
+        escape_graphql_string(crate::claude_subscription::default_backend_endpoint());
+    let mutation = format!(
+        r#"mutation {{
+            upsert_InferenceBackend(
+                filter: {{ backend_id: {{ _eq: "{escaped_backend_id}" }} }},
+                add: {{
+                    backend_id: "{escaped_backend_id}",
+                    name: "{escaped_backend_id}",
+                    provider_kind: "ClaudeCliSubscription",
+                    endpoint: "{escaped_endpoint}",
+                    max_concurrent: 1,
+                    enabled: true,
+                    models: ["default"],
+                    probe_status: "healthy"
+                }},
+                update: {{
+                    name: "{escaped_backend_id}",
+                    provider_kind: "ClaudeCliSubscription",
+                    enabled: true,
+                    probe_status: "healthy"
+                }}
+            ) {{ _docID }}
+        }}"#
+    );
+    let response = node.execute(&mutation).await;
+    assert!(
+        !response.has_errors(),
+        "upsert ClaudeCliSubscription InferenceBackend failed: {:?}",
+        response.errors
+    );
+
+    let mut default_behavior =
+        crate::load_agent_behavior(node, &bootstrap.default_behavior.behavior_id)
+            .await
+            .unwrap()
+            .expect("default behavior document");
+    default_behavior.backend_id = Some(backend_id.to_string());
+    crate::upsert_agent_behavior(node, &default_behavior)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn claude_subscription_behavior_requires_enabled_credential() {
+    let node = test_node().await;
+    ensure_runtime_schemas(node.as_ref()).await.unwrap();
+    let identity = Arc::new(test_identity("document-view-claude-cred"));
+    bind_default_behavior_claude_backend(node.as_ref(), identity.did(), "backend-claude-cred")
+        .await;
+    let default_behavior_id = crate::default_behavior_id_for_agent(identity.did());
+    let resolve_context = DocumentResolveContext {
+        identity: identity.clone(),
+        tool_ceiling: ToolCeiling::readonly(),
+        backend_health: crate::backend_health::BackendHealthMap::new(),
+    };
+
+    let view = load_document_runtime_view(node.as_ref(), identity.did())
+        .await
+        .expect("document view");
+    let snapshot =
+        resolve_document_runtime_snapshot_from_view(node.as_ref(), &resolve_context, &view)
+            .await
+            .expect("snapshot");
+    assert!(
+        !snapshot.behaviors.contains_key(&default_behavior_id),
+        "a ClaudeCliSubscription behavior without an OAuthCredential must not be runnable"
+    );
+    let reason = snapshot
+        .unavailable_behaviors
+        .get(&default_behavior_id)
+        .expect("behavior should be reported unavailable");
+    assert_eq!(
+        reason.public_reason,
+        gents_protocol::row::BehaviorReadinessUnavailableReason::CredentialsRequired
+    );
+    assert!(
+        reason.diagnostic.contains(&format!(
+            "run `gents claude-login --agent-did {}`",
+            identity.did()
+        )),
+        "unavailable reason should point at claude-login: {}",
+        reason.diagnostic
+    );
+
+    let credential = crate::claude_oauth::credential_from_login_tokens(
+        identity.did(),
+        crate::claude_oauth::CLAUDE_OAUTH_PROVIDER,
+        &crate::claude_oauth::ClaudeLoginTokens {
+            access_token: "access-token".to_string(),
+            refresh_token: "refresh-token".to_string(),
+            expires_in: Some(3600),
+            scope: None,
+        },
+        chrono::Utc::now(),
+    );
+    crate::oauth_credential::upsert_oauth_credential(node.as_ref(), &credential)
+        .await
+        .expect("upsert credential");
+
+    let view = load_document_runtime_view(node.as_ref(), identity.did())
+        .await
+        .expect("document view");
+    let snapshot =
+        resolve_document_runtime_snapshot_from_view(node.as_ref(), &resolve_context, &view)
+            .await
+            .expect("snapshot");
+    assert!(
+        snapshot.behaviors.contains_key(&default_behavior_id),
+        "a ClaudeCliSubscription behavior with an enabled OAuthCredential must be runnable; unavailable: {:?}",
+        snapshot.unavailable_behaviors
+    );
+}
+
 #[tokio::test]
 async fn apply_control_update_admits_chatgpt_behavior_when_credential_added() {
     let node = test_node().await;

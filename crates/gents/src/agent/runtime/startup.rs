@@ -538,6 +538,7 @@ async fn run_agent_owned(
         agent.backend_prober_options.clone(),
         backend_health_events_tx,
         cancel.child_token(),
+        agent.agent_did().to_string(),
     );
 
     let runtime_snapshot_observer_handle =

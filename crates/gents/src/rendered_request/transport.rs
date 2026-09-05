@@ -180,6 +180,7 @@ async fn capture_or_refuse(decision: CaptureDecision, body: &Bytes) -> http_clie
     hasher.update(match source {
         RenderedRequestSource::OpenAiResponses => [0],
         RenderedRequestSource::OpenAiChatCompletions => [1],
+        RenderedRequestSource::ClaudeCliSubscription => [2],
     });
     hasher.update(body.as_ref());
     let body_fingerprint: [u8; 32] = hasher.finalize().into();

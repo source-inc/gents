@@ -60,6 +60,20 @@ impl OpenAiWireApi {
             // The Grok proxy serves both wires and the official client picks
             // per model; default Responses, honor an explicit override.
             BackendProviderKind::XaiGrokOAuth => configured.unwrap_or(Self::Responses),
+            // Claude is not an OpenAI wire provider; ChatCompletions is only a
+            // placeholder so SamplingConfig / loop_config keep compiling. The
+            // Messages HTTP wire (`claude_messages`) ignores openai_wire_api.
+            BackendProviderKind::ClaudeCliSubscription => {
+                if let Some(value) = configured {
+                    tracing::warn!(
+                        backend_id = %backend_id,
+                        openai_wire_api = value.as_str(),
+                        provider_kind = %provider_kind,
+                        "openai_wire_api is ignored for this backend provider"
+                    );
+                }
+                Self::ChatCompletions
+            }
         }
     }
 }
@@ -107,6 +121,14 @@ mod tests {
                 "codex",
             ),
             OpenAiWireApi::Responses
+        );
+        assert_eq!(
+            OpenAiWireApi::effective_for_provider(
+                BackendProviderKind::ClaudeCliSubscription,
+                Some(OpenAiWireApi::Responses),
+                "claude",
+            ),
+            OpenAiWireApi::ChatCompletions
         );
     }
 

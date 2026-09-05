@@ -23,6 +23,9 @@ pub(crate) enum ProviderInputProfile {
     OpenRouterChatCompletions,
     ChatGptCodexResponses,
     XaiResponses,
+    /// Anthropic Messages body (`claude_messages`); the OpenAI wire setting
+    /// does not apply.
+    ClaudeMessages,
 }
 
 impl ProviderInputProfile {
@@ -38,6 +41,7 @@ impl ProviderInputProfile {
             (BackendProviderKind::OpenRouter, _) => Self::OpenRouterChatCompletions,
             (BackendProviderKind::ChatGptCodex, _) => Self::ChatGptCodexResponses,
             (BackendProviderKind::XaiGrokOAuth, OpenAiWireApi::Responses) => Self::XaiResponses,
+            (BackendProviderKind::ClaudeCliSubscription, _) => Self::ClaudeMessages,
         }
     }
 
@@ -48,6 +52,7 @@ impl ProviderInputProfile {
             Self::OpenRouterChatCompletions => "openrouter_chat_wire_json_bytes_div_4_v1",
             Self::ChatGptCodexResponses => "chatgpt_codex_wire_json_bytes_div_4_v1",
             Self::XaiResponses => "xai_responses_wire_json_bytes_div_4_v1",
+            Self::ClaudeMessages => "claude_messages_wire_json_bytes_div_4_v1",
         }
     }
 }
@@ -143,6 +148,9 @@ impl ProviderInputCounter {
                 let mut body = self.responses_body(request)?;
                 set_streaming_fields(&mut body, false);
                 rewrite_bytes(body, crate::xai_grok_oauth::patch_store_false)?
+            }
+            ProviderInputProfile::ClaudeMessages => {
+                crate::claude_messages::build_messages_body(&self.model, request)
             }
         };
         Ok(body)
@@ -296,12 +304,13 @@ fn projected_accounting(
     remove_output_limits(&mut body);
     let estimated_input_tokens = estimate_json(&body)?;
 
-    let provider_messages = field_estimate(&body, &["messages", "input", "instructions"])?;
+    let provider_messages =
+        field_estimate(&body, &["messages", "system", "input", "instructions"])?;
     let documentless_messages = documentless_body
         .as_mut()
         .map(|body| {
             remove_output_limits(body);
-            field_estimate(body, &["messages", "input", "instructions"])
+            field_estimate(body, &["messages", "system", "input", "instructions"])
         })
         .transpose()?
         .unwrap_or(provider_messages);

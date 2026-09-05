@@ -785,6 +785,27 @@ pub fn registered_conformance_consumers() -> &'static [ConformanceConsumer] {
             function: "generated_retention_cases_drive_production_compaction_target",
         },
         ConformanceConsumer::RustTest {
+            id: "conformance::prompt_assembly::generated_claude_map_cases_drive_the_messages_parser",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/prompt_assembly.rs",
+            module_path: "conformance::prompt_assembly",
+            function: "generated_claude_map_cases_drive_the_messages_parser",
+        },
+        ConformanceConsumer::RustTest {
+            id: "conformance::prompt_assembly::generated_claude_body_cases_drive_the_body_builder",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/prompt_assembly.rs",
+            module_path: "conformance::prompt_assembly",
+            function: "generated_claude_body_cases_drive_the_body_builder",
+        },
+        ConformanceConsumer::RustTest {
+            id: "conformance::prompt_assembly::generated_claude_stream_cases_drive_the_messages_parser",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/prompt_assembly.rs",
+            module_path: "conformance::prompt_assembly",
+            function: "generated_claude_stream_cases_drive_the_messages_parser",
+        },
+        ConformanceConsumer::RustTest {
             id: "agent::loop_stream::tests::generated_rendered_capture_cases_fence_persist_before_send",
             package: "gents",
             source_path: "crates/gents/src/agent/loop_stream/tests/capture.rs",

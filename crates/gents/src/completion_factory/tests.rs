@@ -446,6 +446,12 @@ fn profile_seed_rejects_provider_paths_without_seed_support() {
             crate::OpenAiWireApi::ChatCompletions,
         )
         .is_err());
+    assert!(sampling
+        .validate_for_provider(
+            BackendProviderKind::ClaudeCliSubscription,
+            crate::OpenAiWireApi::ChatCompletions,
+        )
+        .is_err());
 }
 
 fn behavior_with_retry(completion_retry: CompletionRetryProfileFields) -> AgentBehavior {

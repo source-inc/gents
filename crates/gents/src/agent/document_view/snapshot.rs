@@ -208,6 +208,21 @@ pub(crate) async fn resolve_document_runtime_snapshot_from_view(
                     ),
                 ));
             }
+            if backend.provider_kind
+                == crate::backend_provider::BackendProviderKind::ClaudeCliSubscription
+                && !view.has_enabled_oauth_credential(crate::claude_oauth::CLAUDE_OAUTH_PROVIDER)
+            {
+                let agent_did = view.principal.value.agent_did.as_str();
+                return Err(BehaviorResolutionError::new(
+                    BehaviorReadinessUnavailableReason::CredentialsRequired,
+                    anyhow!(
+                        "behavior {} ClaudeCliSubscription backend {} has no enabled OAuthCredential for agent \
+                         {agent_did}; run `gents claude-login --agent-did {agent_did}`",
+                        behavior.behavior_id,
+                        backend.backend_id,
+                    ),
+                ));
+            }
             let profile_id = behavior
                 .inference_profile_id
                 .as_deref()
