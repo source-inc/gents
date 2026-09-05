@@ -29,6 +29,11 @@ pub enum BackendProviderKind {
     ChatGptCodex,
     #[serde(rename = "XaiGrokOAuth")]
     XaiGrokOAuth,
+    /// Claude subscription over Messages HTTP, authenticated with an
+    /// agent-scoped `OAuthCredential` (`claude-subscription`) written by
+    /// `gents claude-login`.
+    #[serde(rename = "ClaudeCliSubscription")]
+    ClaudeCliSubscription,
 }
 
 impl BackendProviderKind {
@@ -39,6 +44,7 @@ impl BackendProviderKind {
             Some("OpenRouter") => Ok(Self::OpenRouter),
             Some("ChatGptCodex") => Ok(Self::ChatGptCodex),
             Some("XaiGrokOAuth") => Ok(Self::XaiGrokOAuth),
+            Some("ClaudeCliSubscription") => Ok(Self::ClaudeCliSubscription),
             Some(other) => anyhow::bail!("unknown backend provider kind {other}"),
         }
     }
@@ -49,13 +55,47 @@ impl BackendProviderKind {
             Self::OpenRouter => "OpenRouter",
             Self::ChatGptCodex => "ChatGptCodex",
             Self::XaiGrokOAuth => "XaiGrokOAuth",
+            Self::ClaudeCliSubscription => "ClaudeCliSubscription",
         }
     }
 
     /// Backends that authenticate with agent-scoped `OAuthCredential` documents
     /// rather than a fleet-global API key. These must not be fleet-probed.
     pub fn is_agent_scoped_oauth(self) -> bool {
-        matches!(self, Self::ChatGptCodex | Self::XaiGrokOAuth)
+        matches!(
+            self,
+            Self::ChatGptCodex | Self::XaiGrokOAuth | Self::ClaudeCliSubscription
+        )
+    }
+
+    /// The `OAuthCredential.provider` value an agent-scoped kind authenticates with.
+    pub fn oauth_provider(self) -> Option<&'static str> {
+        match self {
+            Self::ChatGptCodex => Some(crate::chatgpt_codex::CHATGPT_CODEX_PROVIDER),
+            Self::XaiGrokOAuth => Some(crate::xai_grok_oauth::XAI_OAUTH_PROVIDER),
+            Self::ClaudeCliSubscription => Some(crate::claude_oauth::CLAUDE_OAUTH_PROVIDER),
+            _ => None,
+        }
+    }
+
+    pub fn oauth_auth_guidance(
+        self,
+        agent_did: &str,
+        provider: &str,
+        problem: &crate::oauth_credential::OAuthAuthProblem,
+    ) -> String {
+        match self {
+            Self::ChatGptCodex => {
+                crate::oauth_credential::classify_chatgpt_auth_error(agent_did, provider, problem)
+            }
+            Self::XaiGrokOAuth => {
+                crate::xai_grok_oauth::classify_xai_auth_error(agent_did, provider, problem)
+            }
+            Self::ClaudeCliSubscription => {
+                crate::claude_oauth::classify_claude_auth_error(agent_did, provider, problem)
+            }
+            _ => format!("{self} does not use OAuth credentials"),
+        }
     }
 }
 
@@ -71,6 +111,7 @@ fn provider_display_name(kind: BackendProviderKind) -> &'static str {
         BackendProviderKind::OpenRouter => "OpenRouter",
         BackendProviderKind::ChatGptCodex => "ChatGPT Codex",
         BackendProviderKind::XaiGrokOAuth => "Grok / xAI OAuth",
+        BackendProviderKind::ClaudeCliSubscription => "Claude CLI subscription",
     }
 }
 

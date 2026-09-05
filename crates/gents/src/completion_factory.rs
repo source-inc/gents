@@ -334,6 +334,8 @@ fn reasoning_profile_params(
         })),
         // Grok: do not force reasoning.effort — several grok models 400 on it.
         (BackendProviderKind::XaiGrokOAuth, _) => None,
+        // Claude Messages sends no sampling or reasoning keys (`claude_messages`).
+        (BackendProviderKind::ClaudeCliSubscription, _) => None,
     }
 }
 
@@ -345,7 +347,9 @@ fn provider_additional_params(kind: BackendProviderKind) -> Option<serde_json::V
                 .require_parameters(true)
                 .to_json(),
         ),
-        BackendProviderKind::ChatGptCodex | BackendProviderKind::XaiGrokOAuth => None,
+        BackendProviderKind::ChatGptCodex
+        | BackendProviderKind::XaiGrokOAuth
+        | BackendProviderKind::ClaudeCliSubscription => None,
     }
 }
 
@@ -357,7 +361,8 @@ fn request_additional_params(
         BackendProviderKind::OpenAiCompatible => openai_cache_scope_params(request),
         BackendProviderKind::OpenRouter
         | BackendProviderKind::ChatGptCodex
-        | BackendProviderKind::XaiGrokOAuth => None,
+        | BackendProviderKind::XaiGrokOAuth
+        | BackendProviderKind::ClaudeCliSubscription => None,
     }
 }
 

@@ -381,3 +381,57 @@ fn resolve_backend_api_key_env_var(
             .map(ToOwned::to_owned)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    /// `backend set` validates the document before writing (#1331). The
+    /// claude-cli-subscription preset must pass that gate on its own: a
+    /// non-empty placeholder endpoint, no api_key, positive max_*.
+    #[test]
+    fn config_backend_claude_cli_subscription_preset_passes_validation() {
+        let cli = Cli::try_parse_from([
+            "gents",
+            "config",
+            "backend",
+            "set",
+            "--graphql",
+            "http://127.0.0.1:1/graphql",
+            "--backend-id",
+            "claude-max",
+            "--name",
+            "Claude Max",
+            "--backend-preset",
+            "claude-cli-subscription",
+            "--max-concurrent",
+            "1",
+        ])
+        .expect("parse");
+        let Command::Config {
+            command:
+                ConfigCommand::Backend {
+                    command: BackendCommand::Set(args),
+                },
+        } = cli.command
+        else {
+            panic!("expected config backend set")
+        };
+        let backend = resolve_backend_upsert_config(&args).expect("resolve preset");
+        assert_eq!(
+            backend.provider_kind,
+            BackendProviderKind::ClaudeCliSubscription
+        );
+        assert_eq!(
+            backend.endpoint,
+            gents::claude_subscription::default_backend_endpoint()
+        );
+        assert_eq!(backend.api_key, None);
+        assert_eq!(backend.api_key_env_var, None);
+        to_document_backend(&args, &backend)
+            .validate(None)
+            .expect("preset document validates");
+    }
+}

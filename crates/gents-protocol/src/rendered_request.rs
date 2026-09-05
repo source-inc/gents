@@ -53,6 +53,7 @@ const COMPLETION_REQUEST_PATHS: &[(&str, RenderedRequestSource)] = &[
         "/chat/completions",
         RenderedRequestSource::OpenAiChatCompletions,
     ),
+    ("/messages", RenderedRequestSource::ClaudeCliSubscription),
 ];
 
 /// The provider wire shape a captured body was actually sent on.
@@ -61,12 +62,17 @@ const COMPLETION_REQUEST_PATHS: &[(&str, RenderedRequestSource)] = &[
 /// configuration: configuration says what the runtime *intended*, and this
 /// column has to say what the provider *received*. The two can disagree — a
 /// backend document can be edited between reconcile and send.
+///
+/// `ClaudeCliSubscription` is stamped by the capturing HTTP transport for
+/// Anthropic Messages posts to `/v1/messages` — the only Claude wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RenderedRequestSource {
     #[serde(rename = "openai_responses")]
     OpenAiResponses,
     #[serde(rename = "openai_chat_completions")]
     OpenAiChatCompletions,
+    #[serde(rename = "claude_cli_subscription")]
+    ClaudeCliSubscription,
 }
 
 impl RenderedRequestSource {
@@ -83,7 +89,7 @@ impl RenderedRequestSource {
     pub fn messages_field(self) -> &'static str {
         match self {
             Self::OpenAiResponses => "input",
-            Self::OpenAiChatCompletions => "messages",
+            Self::OpenAiChatCompletions | Self::ClaudeCliSubscription => "messages",
         }
     }
 }
@@ -761,6 +767,27 @@ mod tests {
         );
         assert_eq!(RenderedRequestSource::for_request_path("/v1/models"), None);
         assert_eq!(RenderedRequestSource::for_request_path("/key"), None);
+    }
+
+    #[test]
+    fn claude_cli_subscription_classifies_messages_http_urls_only() {
+        assert_eq!(
+            RenderedRequestSource::ClaudeCliSubscription.messages_field(),
+            "messages"
+        );
+        assert_eq!(
+            serde_json::to_value(RenderedRequestSource::ClaudeCliSubscription).unwrap(),
+            json!("claude_cli_subscription")
+        );
+        assert_eq!(
+            RenderedRequestSource::for_request_path("/v1/messages"),
+            Some(RenderedRequestSource::ClaudeCliSubscription)
+        );
+        assert_eq!(RenderedRequestSource::for_request_path("/claude"), None);
+        assert_eq!(
+            RenderedRequestSource::for_request_path("claude-cli://subscription"),
+            None
+        );
     }
 
     /// Every suffix the capture path claims must classify to the wire shape the

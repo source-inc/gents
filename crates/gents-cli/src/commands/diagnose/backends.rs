@@ -122,6 +122,7 @@ async fn diagnose_backend(backend: &Value, required_models: Vec<String>) -> Valu
         .map(ToOwned::to_owned);
     let mut ok = gents::document_configured_from_fields(enabled, &probe_status);
     let mut error = None::<String>;
+    let mut note = None::<&'static str>;
     let mut discovered_models = Vec::<String>::new();
 
     let api_key = match (raw_api_key.as_ref(), api_key_env_var.as_deref()) {
@@ -169,10 +170,16 @@ async fn diagnose_backend(backend: &Value, required_models: Vec<String>) -> Valu
                     "required_models": required_models,
                     "discovered_models": discovered_models,
                     "error": error,
+                    "note": null,
                 });
             }
         };
-        if !provider_kind.is_agent_scoped_oauth() {
+        // Mirrors the runtime prober (`backend_health`): agent-scoped OAuth
+        // kinds are not discovered here (no credential is loaded); discovery is
+        // the explicit `gents config backend discover-models`.
+        if provider_kind.is_agent_scoped_oauth() {
+            note = Some(OAUTH_CREDENTIAL_DISCOVERY_NOTE);
+        } else {
             match discover_backend_models(
                 &client,
                 provider_kind,
@@ -221,6 +228,36 @@ async fn diagnose_backend(backend: &Value, required_models: Vec<String>) -> Valu
         "api_key_env_var": api_key_env_var,
         "required_models": required_models,
         "discovered_models": discovered_models,
+        "note": note,
         "error": error,
     })
+}
+
+const OAUTH_CREDENTIAL_DISCOVERY_NOTE: &str =
+    "OAuth credential backend: diagnose skips discovery (use `gents config backend discover-models`); health is the credential-expiry probe";
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Value};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn oauth_backend_skips_discovery_and_stays_ok() {
+        let backend = json!({
+            "backend_id": "claude-max",
+            "provider_kind": "ClaudeCliSubscription",
+            "endpoint": "claude-cli://subscription",
+            "enabled": true,
+            "probe_status": "healthy",
+        });
+        let report = diagnose_backend(&backend, vec!["claude-sonnet-5".to_string()]).await;
+        assert_eq!(report["ok"], Value::Bool(true), "{report}");
+        assert_eq!(report["error"], Value::Null, "{report}");
+        assert_eq!(
+            report["note"],
+            Value::String(OAUTH_CREDENTIAL_DISCOVERY_NOTE.to_string())
+        );
+        assert_eq!(report["discovered_models"], json!([]));
+    }
 }

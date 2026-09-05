@@ -25,6 +25,7 @@ use support::*;
 
 include!("budgeting.rs");
 include!("capture.rs");
+include!("claude.rs");
 include!("one_shot.rs");
 include!("request_assembly.rs");
 include!("retry.rs");

@@ -24,8 +24,19 @@ use gents::llm::message::{
     ToolResultContent, UserContent,
 };
 
+use std::collections::HashSet;
+
+use gents::claude_messages::{
+    build_messages_body_native, parse_messages_sse, CLAUDE_CODE_IDENTITY,
+};
+use gents::claude_subscription::ClaudeStreamResponse;
+use rig::completion::CompletionError;
+use rig::streaming::RawStreamingChoice;
+
 use crate::lean_vocab_test::{
-    lean_prompt_assembly_sanitize_cases, LeanPromptAssemblyItem, LeanPromptAssemblyRow,
+    lean_prompt_assembly_claude_body_cases, lean_prompt_assembly_claude_map_cases,
+    lean_prompt_assembly_claude_stream_cases, lean_prompt_assembly_sanitize_cases,
+    LeanPromptAssemblyItem, LeanPromptAssemblyRow,
 };
 
 /// Stable identities for the abstract ids the model uses. The model abstracts
@@ -310,6 +321,280 @@ fn generated_sanitize_cases_drive_the_production_sanitizer() {
                 split.index
             );
         }
+    }
+}
+
+/// Fence: the Messages SSE parser reproduces `ClaudeMap.mapTurn` on every
+/// generated witness (mapped ids, empty-surface / unmapped / duplicate fail closed).
+#[test]
+fn generated_claude_map_cases_drive_the_messages_parser() {
+    let cases = lean_prompt_assembly_claude_map_cases();
+    assert!(
+        !cases.is_empty(),
+        "Lean emitted no PromptAssembly Claude map cases"
+    );
+    for case in cases {
+        let surface: HashSet<String> = case.surface.iter().cloned().collect();
+        let sse = claude_map_blocks_as_sse(&case.blocks);
+        let parsed = parse_messages_sse(&sse, &surface);
+        match case.outcome.as_str() {
+            "ok" => {
+                let events =
+                    parsed.unwrap_or_else(|err| panic!("case {} should map: {err}", case.name));
+                let got_ids: Vec<u64> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        RawStreamingChoice::ToolCall(call) => {
+                            Some(call.id.parse::<u64>().unwrap_or_else(|_| {
+                                panic!("case {} mapped id {} is not a Nat", case.name, call.id)
+                            }))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(got_ids, case.ids, "mapped ids ({})", case.name);
+            }
+            outcome => assert_fail_closed(&case.name, outcome, parsed),
+        }
+    }
+}
+
+/// Shared fail-closed oracle for the ClaudeMap and stream witnesses: the
+/// Lean `errorName` tag must correspond to the parser's frozen Display text.
+fn assert_fail_closed(
+    case_name: &str,
+    outcome: &str,
+    parsed: Result<Vec<RawStreamingChoice<ClaudeStreamResponse>>, CompletionError>,
+) {
+    let err = parsed
+        .expect_err("witness outcome is an error; parser must fail closed")
+        .to_string();
+    let ok = match outcome {
+        "emptySurface" => err.contains("fail-closed: tool_use observed"),
+        o if o.starts_with("unmappedName:") => {
+            let name = o.strip_prefix("unmappedName:").expect("prefix");
+            err.contains("fail-closed: tool_use observed") && err.contains(name)
+        }
+        o if o.starts_with("duplicateId:") => err.contains(&format!(
+            "fail-closed: duplicate tool_use id {}",
+            o.strip_prefix("duplicateId:").expect("prefix")
+        )),
+        o if o.starts_with("overlappingBlock:") => err.contains(&format!(
+            "fail-closed: overlapping tool_use block {}",
+            o.strip_prefix("overlappingBlock:").expect("prefix")
+        )),
+        other => panic!("case {case_name} unknown outcome {other}"),
+    };
+    assert!(
+        ok,
+        "case {case_name}: outcome {outcome} but error was: {err}"
+    );
+}
+
+fn sse_event(payload: serde_json::Value) -> String {
+    let kind = payload["type"].as_str().expect("type").to_string();
+    format!("event: {kind}\ndata: {payload}\n\n")
+}
+
+/// Render ClaudeMap block tags (`text`, `toolUse:id:name`, `toolResult:id`) as
+/// an assistant-turn SSE body. `toolResult` never appears in an assistant turn
+/// and is skipped.
+fn claude_map_blocks_as_sse(blocks: &[String]) -> String {
+    let mut sse = String::new();
+    for (index, block) in blocks.iter().enumerate() {
+        if block == "text" {
+            sse.push_str(&sse_event(serde_json::json!({
+                "type": "content_block_start", "index": index,
+                "content_block": {"type": "text", "text": ""}
+            })));
+            sse.push_str(&sse_event(serde_json::json!({
+                "type": "content_block_delta", "index": index,
+                "delta": {"type": "text_delta", "text": "hi"}
+            })));
+            sse.push_str(&sse_event(serde_json::json!({
+                "type": "content_block_stop", "index": index
+            })));
+        } else if let Some(rest) = block.strip_prefix("toolUse:") {
+            let (id, name) = rest
+                .split_once(':')
+                .unwrap_or_else(|| panic!("toolUse tag must be toolUse:id:name, got {block}"));
+            sse.push_str(&sse_event(serde_json::json!({
+                "type": "content_block_start", "index": index,
+                "content_block": {"type": "tool_use", "id": id, "name": name, "input": {}}
+            })));
+            sse.push_str(&sse_event(serde_json::json!({
+                "type": "content_block_stop", "index": index
+            })));
+        } else if block.starts_with("toolResult:") {
+            continue;
+        } else {
+            panic!("unknown Claude map block tag {block}");
+        }
+    }
+    sse.push_str(&sse_event(serde_json::json!({"type": "message_stop"})));
+    sse
+}
+
+/// Fence: the Messages SSE parser reproduces `ClaudeMap.runStream` — deltas
+/// win over the start input, overlap / duplicate / unmapped fail closed, an
+/// unterminated block flushes at end of stream.
+#[test]
+fn generated_claude_stream_cases_drive_the_messages_parser() {
+    let cases = lean_prompt_assembly_claude_stream_cases();
+    assert!(
+        !cases.is_empty(),
+        "Lean emitted no PromptAssembly Claude stream cases"
+    );
+    for case in cases {
+        let surface: HashSet<String> = case.surface.iter().cloned().collect();
+        let sse = claude_stream_events_as_sse(&case.events);
+        let parsed = parse_messages_sse(&sse, &surface);
+        match case.outcome.as_str() {
+            "ok" => {
+                let events =
+                    parsed.unwrap_or_else(|err| panic!("case {} should parse: {err}", case.name));
+                let got: Vec<String> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        RawStreamingChoice::ToolCall(call) => {
+                            Some(format!("{}={}", call.id, call.arguments))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let want: Vec<String> = case
+                    .calls
+                    .iter()
+                    .map(|entry| {
+                        let (id, args) = entry.split_once('=').expect("id=args");
+                        let value: serde_json::Value =
+                            serde_json::from_str(args).unwrap_or_else(|err| {
+                                panic!("case {} witness args {args}: {err}", case.name)
+                            });
+                        format!("{id}={value}")
+                    })
+                    .collect();
+                assert_eq!(got, want, "calls ({})", case.name);
+            }
+            outcome => assert_fail_closed(&case.name, outcome, parsed),
+        }
+    }
+}
+
+/// Render `StreamEvent` tags as SSE. `start:<id>:<name>:<input>` with empty
+/// input emits no `input` key (Lean `none`); a non-empty input is embedded as
+/// the parsed JSON object.
+fn claude_stream_events_as_sse(events: &[String]) -> String {
+    let mut sse = String::new();
+    for tag in events {
+        if let Some(text) = tag.strip_prefix("text:") {
+            sse.push_str(&sse_event(serde_json::json!({
+                "type": "content_block_delta", "index": 0,
+                "delta": {"type": "text_delta", "text": text}
+            })));
+        } else if let Some(rest) = tag.strip_prefix("start:") {
+            let mut parts = rest.splitn(3, ':');
+            let id = parts.next().expect("id");
+            let name = parts.next().expect("name");
+            let input = parts.next().unwrap_or("");
+            let mut block = serde_json::json!({"type": "tool_use", "id": id, "name": name});
+            if !input.is_empty() {
+                block["input"] = serde_json::from_str(input)
+                    .unwrap_or_else(|err| panic!("witness start input {input}: {err}"));
+            }
+            sse.push_str(&sse_event(serde_json::json!({
+                "type": "content_block_start", "index": 0, "content_block": block
+            })));
+        } else if let Some(partial) = tag.strip_prefix("delta:") {
+            sse.push_str(&sse_event(serde_json::json!({
+                "type": "content_block_delta", "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": partial}
+            })));
+        } else if tag == "stop" {
+            sse.push_str(&sse_event(serde_json::json!({
+                "type": "content_block_stop", "index": 0
+            })));
+        } else {
+            panic!("unknown Claude stream event tag {tag}");
+        }
+    }
+    sse
+}
+
+/// Fence: `build_messages_body_native` reproduces `ClaudeMap.systemBlocks` /
+/// `splitSystem` / `toolsField` — identity first, preamble, then `System`
+/// rows in order; `tools` absent for an empty surface.
+#[test]
+fn generated_claude_body_cases_drive_the_body_builder() {
+    let cases = lean_prompt_assembly_claude_body_cases();
+    assert!(
+        !cases.is_empty(),
+        "Lean emitted no PromptAssembly Claude body cases"
+    );
+    for case in cases {
+        let history: Vec<Message> = case
+            .rows
+            .iter()
+            .map(|row| {
+                if let Some(text) = row.strip_prefix("system:") {
+                    Message::System {
+                        content: text.to_string(),
+                    }
+                } else if row == "other:assistant" {
+                    Message::assistant("ok")
+                } else {
+                    Message::user("hi")
+                }
+            })
+            .collect();
+        let tools: Vec<rig::completion::ToolDefinition> = case
+            .tools
+            .iter()
+            .map(|name| rig::completion::ToolDefinition {
+                name: name.clone(),
+                description: name.clone(),
+                parameters: serde_json::json!({"type": "object"}),
+            })
+            .collect();
+        let body = build_messages_body_native(
+            "claude-sonnet-5",
+            case.preamble.as_deref(),
+            None,
+            &history,
+            &tools,
+        );
+        let system: Vec<String> = body["system"]
+            .as_array()
+            .unwrap_or_else(|| panic!("case {} system array: {body}", case.name))
+            .iter()
+            .map(|block| block["text"].as_str().expect("text").to_string())
+            .collect();
+        assert_eq!(system, case.system, "system blocks ({})", case.name);
+        assert_eq!(system[0], CLAUDE_CODE_IDENTITY, "case {}", case.name);
+        assert_eq!(
+            body.get("tools").is_some(),
+            case.tools_present,
+            "tools key ({})",
+            case.name
+        );
+        let leaked = body["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .any(|message| {
+                message["content"].as_array().is_some_and(|blocks| {
+                    blocks.iter().any(|block| {
+                        block["text"]
+                            .as_str()
+                            .is_some_and(|t| t.starts_with("system: "))
+                    })
+                })
+            });
+        assert!(
+            !leaked,
+            "System row leaked into messages ({}): {body}",
+            case.name
+        );
     }
 }
 
